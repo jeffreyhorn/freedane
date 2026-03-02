@@ -1,6 +1,6 @@
 # AccessDane McFarland Audit
 
-Pipeline for enumerating parcels by TRS (06/10 + section splits), scraping AccessDane pages, storing raw HTML, parsing assessment/tax/payment data, and running anomaly checks.
+Migration-managed data pipeline for AccessDane parcel records. It can enumerate parcels by TRS, fetch and archive raw parcel HTML, parse assessment/tax/payment data into Postgres, and produce quality checks, profiling output, and derived parcel-year facts for downstream analysis.
 
 ## Quick start
 
