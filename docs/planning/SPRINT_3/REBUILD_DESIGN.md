@@ -42,6 +42,14 @@ The baseline behavior that the rebuild path must preserve is:
 - Avoid one giant transaction for the whole corpus.
 - Make failures visible and isolated, not silent.
 
+Important practical constraint:
+
+- `parcel_characteristics` cannot be rebuilt from database rows alone today because `_build_parcel_characteristic_candidate(...)` depends on the in-memory `parsed` object produced during parsing.
+- V1 therefore must either:
+  - reparse the local raw HTML inside the rebuild command to produce that in-memory parsed structure, or
+  - refactor the characteristic builder so it can operate from raw HTML plus already-persisted tables without requiring the parse-time object
+- Day 3 should treat this as an explicit implementation task, not an incidental detail.
+
 ## Non-Goals For V1
 
 - No new schema changes.
@@ -111,6 +119,7 @@ V1 transaction behavior:
 - precompute the target parcel list first
 - process one parcel at a time
 - each parcel rebuild runs in its own transaction
+- replace data parcel-by-parcel, not with one global upfront delete
 - if one parcel fails:
   - roll back only that parcel
   - record the failure in the command summary
@@ -132,7 +141,9 @@ One row per `parcel_id`.
 
 Full rebuild:
 
-- delete and recompute every `parcel_characteristics` row from the eligible fetch universe
+- treat every eligible parcel as selected scope
+- for each selected parcel, replace only that parcel's existing row inside that parcel's transaction
+- do not wipe the entire table up front
 
 Scoped rebuild:
 
@@ -145,18 +156,22 @@ Scoped rebuild:
 For each selected parcel:
 
 1. Gather all eligible fetches for that parcel.
-2. Build a candidate from each fetch using the existing `_build_parcel_characteristic_candidate(...)` logic.
-3. Discard fetches that produce no candidate.
-4. Select the single winner by the same rank tuple already used today:
+2. Produce the required parse context for each fetch:
+   - either by reparsing the stored raw HTML into the same in-memory parsed structure used by `_store_parsed(...)`, or
+   - by using a refactored equivalent helper that no longer requires the parse-time object
+3. Build a candidate from each fetch using the existing `_build_parcel_characteristic_candidate(...)` logic or a refactored equivalent.
+4. Discard fetches that produce no candidate.
+5. Select the single winner by the same rank tuple already used today:
    - characteristic completeness
    - `fetch.fetched_at`
    - `fetch.id`
-5. Write exactly one row for the winning candidate.
+6. Replace only that parcel's row with the winning candidate inside the parcel transaction.
 
 Important implementation rule:
 
 - the rebuild must compute the winner from the full candidate set for that parcel
 - it must not depend on whatever row currently exists in `parcel_characteristics`
+- if reparsing is used to build the candidate set, it must use only local raw HTML and must not refetch anything from AccessDane
 
 That keeps rebuilds deterministic and independent from prior incremental history.
 
@@ -178,7 +193,9 @@ One row per (`parcel_id`, `related_parcel_id`, `relationship_type`).
 
 Full rebuild:
 
-- delete and recompute all `parcel_lineage_links`
+- treat every eligible parcel as selected scope
+- for each selected parcel, replace only that parcel-owned lineage rows inside that parcel's transaction
+- do not wipe the entire table up front
 
 Scoped rebuild:
 
@@ -237,7 +254,9 @@ Optional per-parcel progress output is acceptable for long runs, but the command
 
 Day 3 (`parcel_characteristics`):
 
-- factor the rebuild logic so it can call `_build_parcel_characteristic_candidate(...)`
+- explicitly solve the parse-context dependency first:
+  - either reparse local raw HTML during rebuild, or
+  - refactor `_build_parcel_characteristic_candidate(...)` so rebuild can call an equivalent helper without the parse-time object
 - avoid duplicating the field derivation rules already inside that helper
 - add tests for:
   - full rebuild
