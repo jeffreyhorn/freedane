@@ -48,6 +48,24 @@ class ParseWorkItem:
     raw_path: Optional[str]
 
 
+@dataclass(frozen=True)
+class ParcelCharacteristicRebuildSummary:
+    selected_parcels: int
+    eligible_fetches_scanned: int
+    rows_deleted: int
+    rows_written: int
+    skipped_fetches: int
+    parcel_failures: int
+
+
+@dataclass(frozen=True)
+class _ParcelCharacteristicRebuildResult:
+    eligible_fetches_scanned: int
+    rows_deleted: int
+    rows_written: int
+    skipped_fetches: int
+
+
 @app.command("init-db")
 def init_db() -> None:
     settings = load_settings()
@@ -631,6 +649,147 @@ def build_parcel_year_facts_cmd(
     with session_scope(settings.database_url) as session:
         row_count = rebuild_parcel_year_facts(session, parcel_ids=parcel_ids)
     typer.echo(f"parcel_year_facts rows built: {row_count}")
+
+
+@app.command("rebuild-parcel-characteristics")
+def rebuild_parcel_characteristics_cmd(
+    ids: list[str] = typer.Option([], "--id", "-i", help="Parcel ID (repeatable)"),
+    ids_file: Optional[Path] = typer.Option(None, "--ids", help="File with parcel IDs"),
+) -> None:
+    if ids and ids_file:
+        raise typer.BadParameter("Use either --id or --ids, not both.")
+    settings = load_settings()
+    parcel_ids = _collect_ids(ids, ids_file) or None
+    summary = rebuild_parcel_characteristics(settings.database_url, parcel_ids=parcel_ids)
+    typer.echo(f"Selected parcels: {summary.selected_parcels}")
+    typer.echo(f"Eligible fetches scanned: {summary.eligible_fetches_scanned}")
+    typer.echo(f"Rows deleted: {summary.rows_deleted}")
+    typer.echo(f"Rows written: {summary.rows_written}")
+    typer.echo(f"Skipped fetches: {summary.skipped_fetches}")
+    typer.echo(f"Parcel failures: {summary.parcel_failures}")
+    if summary.parcel_failures:
+        raise typer.Exit(code=1)
+
+
+def rebuild_parcel_characteristics(
+    database_url: str,
+    *,
+    parcel_ids: Optional[list[str]] = None,
+) -> ParcelCharacteristicRebuildSummary:
+    target_parcel_ids = _select_parcel_ids_for_parcel_characteristics_rebuild(
+        database_url,
+        parcel_ids=parcel_ids,
+    )
+    eligible_fetches_scanned = 0
+    rows_deleted = 0
+    rows_written = 0
+    skipped_fetches = 0
+    parcel_failures = 0
+
+    for parcel_id in target_parcel_ids:
+        try:
+            with session_scope(database_url) as session:
+                result = _rebuild_parcel_characteristics_for_parcel(session, parcel_id)
+        except Exception:
+            parcel_failures += 1
+            continue
+
+        eligible_fetches_scanned += result.eligible_fetches_scanned
+        rows_deleted += result.rows_deleted
+        rows_written += result.rows_written
+        skipped_fetches += result.skipped_fetches
+
+    return ParcelCharacteristicRebuildSummary(
+        selected_parcels=len(target_parcel_ids),
+        eligible_fetches_scanned=eligible_fetches_scanned,
+        rows_deleted=rows_deleted,
+        rows_written=rows_written,
+        skipped_fetches=skipped_fetches,
+        parcel_failures=parcel_failures,
+    )
+
+
+def _select_parcel_ids_for_parcel_characteristics_rebuild(
+    database_url: str,
+    *,
+    parcel_ids: Optional[list[str]],
+) -> list[str]:
+    if parcel_ids:
+        return list(dict.fromkeys(parcel_ids))
+
+    with session_scope(database_url) as session:
+        existing_ids = session.execute(select(ParcelCharacteristic.parcel_id)).scalars().all()
+        eligible_fetch_ids = session.execute(
+            select(Fetch.parcel_id)
+            .where(
+                Fetch.status_code == 200,
+                Fetch.parsed_at.is_not(None),
+                Fetch.parse_error.is_(None),
+                Fetch.raw_path.is_not(None),
+            )
+            .distinct()
+        ).scalars().all()
+
+    return sorted(set(existing_ids).union(eligible_fetch_ids))
+
+
+def _rebuild_parcel_characteristics_for_parcel(
+    session,
+    parcel_id: str,
+) -> _ParcelCharacteristicRebuildResult:
+    fetches = session.execute(
+        select(Fetch)
+        .where(
+            Fetch.parcel_id == parcel_id,
+            Fetch.status_code == 200,
+            Fetch.parsed_at.is_not(None),
+            Fetch.parse_error.is_(None),
+            Fetch.raw_path.is_not(None),
+        )
+        .order_by(Fetch.fetched_at, Fetch.id)
+    ).scalars().all()
+
+    deleted_result = session.execute(
+        delete(ParcelCharacteristic).where(ParcelCharacteristic.parcel_id == parcel_id)
+    )
+    rows_deleted = deleted_result.rowcount or 0
+
+    best_candidate: Optional[dict[str, object]] = None
+    best_fetch: Optional[Fetch] = None
+    skipped_fetches = 0
+
+    for fetch in fetches:
+        if not fetch.raw_path:
+            continue
+        raw_path = Path(fetch.raw_path)
+        if not raw_path.exists():
+            skipped_fetches += 1
+            continue
+        html = raw_path.read_text(encoding="utf-8")
+        parsed = parse_page(html)
+        candidate = _build_parcel_characteristic_candidate(fetch, parsed, raw_html=html)
+        if candidate is None:
+            continue
+        if best_candidate is None or candidate["rank_key"] > best_candidate["rank_key"]:
+            best_candidate = candidate
+            best_fetch = fetch
+
+    rows_written = 0
+    if best_candidate is not None and best_fetch is not None:
+        target = ParcelCharacteristic(parcel_id=parcel_id)
+        for field_name, value in best_candidate["fields"].items():
+            setattr(target, field_name, value)
+        target.source_fetch_id = best_fetch.id
+        target.built_at = datetime.now(timezone.utc)
+        session.add(target)
+        rows_written = 1
+
+    return _ParcelCharacteristicRebuildResult(
+        eligible_fetches_scanned=len(fetches),
+        rows_deleted=rows_deleted,
+        rows_written=rows_written,
+        skipped_fetches=skipped_fetches,
+    )
 
 
 @app.command("check-data-quality")

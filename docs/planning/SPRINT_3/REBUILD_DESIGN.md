@@ -141,7 +141,9 @@ One row per `parcel_id`.
 
 Full rebuild:
 
-- treat every eligible parcel as selected scope
+- treat the union of these parcel IDs as selected scope:
+  - parcels with at least one eligible fetch
+  - parcels that already have a `parcel_characteristics` row
 - for each selected parcel, replace only that parcel's existing row inside that parcel's transaction
 - do not wipe the entire table up front
 
