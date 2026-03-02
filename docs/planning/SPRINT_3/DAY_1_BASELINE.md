@@ -64,6 +64,12 @@ Scoped coverage highlights:
 - `parcel_year_fact_parcel_rate = 0.8333`
 - `parcel_year_fact_source_year_rate = 1.0`
 
+Important interpretation:
+
+- The lower parcel-level `parcel_year_facts` coverage is expected for this scoped acceptance set, not a new regression.
+- One parcel in the set is the known exempt-style empty-page case, which contributes no source parcel-years and therefore no `parcel_year_facts` rows.
+- That is why source-year coverage remains `1.0` while parcel-level coverage is `5` of `6`.
+
 ## Quality Snapshot
 
 All current scoped checks passed:
