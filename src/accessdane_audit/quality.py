@@ -17,6 +17,7 @@ ASSESSMENT_EXPECTED_CARRY_FORWARD_RUN_LENGTH = 5
 UNPARSED_SUCCESSFUL_FETCH_MESSAGE = (
     "Successful fetch has neither parse results nor parse error."
 )
+PARSED_WITHOUT_RECORDS_MESSAGE = "Fetch was marked parsed but no records were stored."
 
 
 @dataclass
@@ -387,9 +388,7 @@ def _check_fetch_parse_consistency(
             issues.append(
                 QualityIssue(
                     code="parsed_without_records",
-                    message=(
-                        "Fetch was marked parsed but no parsed records were " "stored."
-                    ),
+                    message=PARSED_WITHOUT_RECORDS_MESSAGE,
                     parcel_id=fetch.parcel_id,
                     fetch_id=fetch.id,
                 )
