@@ -107,6 +107,9 @@ Operational notes:
 - `check-data-quality` and `profile-data` both support `--ids` to limit runs to a parcel subset and `--out` to write JSON for later review.
 - `check-data-quality --fail-on-issues` exits with status code `1` when any check fails, which is useful for CI or repeatable local gates.
 - `run-all --skip-anomalies` skips the final anomaly JSON step for faster parser iteration.
+- `parse` supports `--resume-after-fetch-id` and `--limit` so long reparses can resume in smaller chunks.
+- `run-all --parse-only` supports `--parse-resume-after-fetch-id` and `--parse-limit` for the same chunked parse-stage control.
+- both parse paths now print a final parse summary with selected, succeeded, failed, and skipped fetch counts.
 
 To reparse and replace existing rows for each fetch:
 
@@ -168,6 +171,18 @@ Parse-only for a subset of parcel IDs:
 accessdane run-all --parse-only --reparse --parse-ids data/parcel_ids.txt
 ```
 
+Resume a long parse-only run from a later fetch id and stop after a bounded chunk:
+
+```bash
+accessdane run-all --parse-only --reparse --parse-resume-after-fetch-id 120000 --parse-limit 500 --skip-anomalies
+```
+
+Resume the direct parse command after a known fetch id:
+
+```bash
+accessdane parse --reparse --resume-after-fetch-id 120000 --limit 500
+```
+
 Debug parsing output (counts per parcel):
 
 ```bash
@@ -207,10 +222,13 @@ accessdane profile-data --out data/profile_report.json
 
 Use `run-all --parse-only --reparse` when parser logic changes and you want stored parsed rows replaced from existing `fetches.raw_path` files.
 Re-run `build-parcel-year-facts` after any reparse or manual edits to source tables so the derived table stays in sync.
-The same reparse path is also how `parcel_characteristics` and `parcel_lineage_links` are refreshed; there is not yet a separate full rebuild command for those Sprint 2 outputs.
-`parse --reparse` now commits work fetch-by-fetch, so one bad parcel is less likely to roll back the entire run.
+The same reparse path still refreshes the parse-time source tables, while `rebuild-parcel-characteristics` and `rebuild-parcel-lineage-links` can repair those derived Sprint 2 outputs independently.
+`parse --reparse` and `run-all --parse-only --reparse` now both commit work fetch-by-fetch, so one bad parcel is less likely to roll back the entire run.
+Use `--resume-after-fetch-id` with `parse` or `--parse-resume-after-fetch-id` with `run-all` to resume after a known successful checkpoint.
+Use `--limit` or `--parse-limit` to break a full-corpus reparse into bounded chunks.
 For a quick scoped smoke run on a small parcel subset, prefer `parse`, `build-parcel-year-facts --ids`, `check-data-quality --ids`, and `profile-data --ids` directly.
 If you do use `run-all` for scoped parser iteration, `--parse-ids` now keeps `build-parcel-year-facts` and anomaly generation scoped to the same parcel subset.
+`run-all` also keeps downstream rebuilds scoped to the actual parse-stage subset when `--parse-limit` or `--parse-resume-after-fetch-id` is used.
 Use `--skip-anomalies` when you want `run-all` to stop after parsing (and optional fact rebuild) without writing anomaly output.
 On the current local McFarland corpus, the full parse-only rebuild path can take materially longer than a quick smoke test because it processes thousands of stored fetches.
 

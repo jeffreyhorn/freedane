@@ -275,6 +275,175 @@ def test_parse_reparse_commits_successful_fetches_even_if_a_later_fetch_hits_db_
     assert fetches[succeeding_parcel_id].parsed_at is not None
 
 
+def test_parse_supports_resume_after_fetch_id_and_limit(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "parse_resume_limit.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    first_parcel_id = "061001391511"
+    second_parcel_id = "061002275801"
+    third_parcel_id = "061003330128"
+    raw_paths = {
+        first_parcel_id: tmp_path / f"{first_parcel_id}.html",
+        second_parcel_id: tmp_path / f"{second_parcel_id}.html",
+        third_parcel_id: tmp_path / f"{third_parcel_id}.html",
+    }
+    for parcel_id, raw_path in raw_paths.items():
+        raw_path.write_text(load_raw_html(parcel_id), encoding="utf-8")
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id=first_parcel_id),
+                Parcel(id=second_parcel_id),
+                Parcel(id=third_parcel_id),
+            ]
+        )
+        first_fetch = Fetch(
+            parcel_id=first_parcel_id,
+            url=f"https://example.test/{first_parcel_id}",
+            status_code=200,
+            raw_path=str(raw_paths[first_parcel_id]),
+        )
+        second_fetch = Fetch(
+            parcel_id=second_parcel_id,
+            url=f"https://example.test/{second_parcel_id}",
+            status_code=200,
+            raw_path=str(raw_paths[second_parcel_id]),
+        )
+        third_fetch = Fetch(
+            parcel_id=third_parcel_id,
+            url=f"https://example.test/{third_parcel_id}",
+            status_code=200,
+            raw_path=str(raw_paths[third_parcel_id]),
+        )
+        session.add_all([first_fetch, second_fetch, third_fetch])
+        session.flush()
+        first_fetch_id = first_fetch.id
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "parse",
+            "--reparse",
+            "--resume-after-fetch-id",
+            str(first_fetch_id),
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Parsing 1 fetched pages..." in result.stdout
+    assert (
+        "Parse summary: selected=1 succeeded=1 failed=0 skipped_missing_raw_path=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        fetches = list(session.execute(select(Fetch).order_by(Fetch.id)).scalars())
+
+    assert fetches[0].parsed_at is None
+    assert fetches[1].parsed_at is not None
+    assert fetches[2].parsed_at is None
+
+
+def test_run_all_parse_limit_scopes_downstream_steps_to_parsed_subset(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "run_all_parse_limit.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    first_parcel_id = "061001391511"
+    second_parcel_id = "061002275801"
+    first_raw_path = tmp_path / f"{first_parcel_id}.html"
+    second_raw_path = tmp_path / f"{second_parcel_id}.html"
+    first_raw_path.write_text(load_raw_html(first_parcel_id), encoding="utf-8")
+    second_raw_path.write_text(load_raw_html(second_parcel_id), encoding="utf-8")
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id=first_parcel_id), Parcel(id=second_parcel_id)])
+        session.add_all(
+            [
+                Fetch(
+                    parcel_id=first_parcel_id,
+                    url=f"https://example.test/{first_parcel_id}",
+                    status_code=200,
+                    raw_path=str(first_raw_path),
+                ),
+                Fetch(
+                    parcel_id=second_parcel_id,
+                    url=f"https://example.test/{second_parcel_id}",
+                    status_code=200,
+                    raw_path=str(second_raw_path),
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "run-all",
+            "--parse-only",
+            "--reparse",
+            "--parse-limit",
+            "1",
+            "--build-parcel-year-facts",
+            "--skip-anomalies",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "Parse summary: selected=1 succeeded=1 failed=0 skipped_missing_raw_path=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        first_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == first_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
+        second_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == second_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+    assert first_rows
+    assert second_rows == []
+
+
 def test_clean_stringifies_non_string_scalars() -> None:
     assert cli._clean(6) == "6"
     assert cli._clean(3.5) == "3.5"
