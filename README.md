@@ -2,6 +2,13 @@
 
 Migration-managed data pipeline for AccessDane parcel records. It can enumerate parcels by TRS, fetch and archive raw parcel HTML, parse assessment/tax/payment data into Postgres, and produce quality checks, profiling output, and derived parcel-year facts for downstream analysis.
 
+## Current scope and limitations
+
+- This is a local operator workflow, not a hosted service or public API.
+- It depends on the current AccessDane HTML structure and may need parser updates if the site changes.
+- Raw HTML and generated audit artifacts are stored locally and are intentionally not committed to the repo.
+- Full-corpus fetch and reparse runs can be long-running; scoped parcel workflows are the practical path for quick iteration.
+
 ## Quick start
 
 ```bash
