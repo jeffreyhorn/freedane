@@ -13,7 +13,8 @@ accessdane init-db
 
 `accessdane init-db` now applies managed database migrations to `head`.
 If it detects a pre-Alembic database that already has the legacy schema, it stamps the baseline revision first and then upgrades to `head` as a temporary transition step.
-You can also run `alembic upgrade head` directly from the repository root.
+Use `accessdane init-db` as the default migration path.
+Direct `alembic` commands use `alembic.ini` unless you explicitly point them at the same `DATABASE_URL`.
 
 For a minimal runtime-only install, use `pip install -e .` instead.
 Use `.[dev]` when you want the pytest-based test workflow locally.
@@ -45,9 +46,10 @@ accessdane init-db
 Manual migration workflow:
 
 ```bash
-alembic current
-alembic upgrade head
+accessdane init-db
 ```
+
+If you intentionally want raw Alembic commands instead, make sure they target the same database URL as the app.
 
 Automated test workflow:
 
@@ -55,7 +57,7 @@ Automated test workflow:
 .venv/bin/python -m pytest
 ```
 
-Targeted validation workflow after parser or transform changes:
+Full-dataset validation workflow after broad parser or transform changes:
 
 ```bash
 accessdane run-all --parse-only --reparse --build-parcel-year-facts
@@ -63,7 +65,7 @@ accessdane check-data-quality --out data/quality_report.json --fail-on-issues
 accessdane profile-data --out data/profile_report.json
 ```
 
-For a quick parcel-subset smoke test, prefer the lower-level scoped commands in the Operations section instead of `run-all`.
+For a quick parcel-subset smoke test, prefer the lower-level scoped commands in the Operations section instead of this full-dataset `run-all` path.
 
 ## Typical flow
 
