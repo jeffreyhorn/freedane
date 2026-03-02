@@ -555,7 +555,11 @@ def run_all_cmd(
             limit=parse_limit if parse_limit > 0 else None,
         )
 
-    if parsed_scope_ids or parse_resume_after_fetch_id is not None or parse_limit > 0:
+    if parse_only and (
+        parsed_scope_ids is not None
+        or parse_resume_after_fetch_id is not None
+        or parse_limit > 0
+    ):
         run_scope_parcel_ids = list(
             dict.fromkeys(item.parcel_id for item in work_items)
         )
@@ -677,7 +681,7 @@ def parse_cmd(
         debug_only_empty=debug_only_empty,
     )
     if parse_summary.selected_fetches == 0:
-        return
+        typer.echo("No matching fetches selected for parsing.")
 
 
 def _collect_parse_work_items(

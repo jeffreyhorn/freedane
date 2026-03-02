@@ -528,6 +528,107 @@ def test_run_all_parse_resume_after_fetch_id_scopes_downstream_steps(
     assert second_rows
 
 
+def test_run_all_full_run_keeps_fetch_scope_when_parse_chunking_is_enabled(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "run_all_full_parse_chunk_scope.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    first_parcel_id = "061001391511"
+    second_parcel_id = "061002275801"
+    first_raw_path = tmp_path / f"{first_parcel_id}.html"
+    second_raw_path = tmp_path / f"{second_parcel_id}.html"
+    first_raw_path.write_text(load_raw_html(first_parcel_id), encoding="utf-8")
+    second_raw_path.write_text(load_raw_html(second_parcel_id), encoding="utf-8")
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id=first_parcel_id), Parcel(id=second_parcel_id)])
+        session.add(
+            ParcelYearFact(
+                parcel_id=second_parcel_id,
+                year=2025,
+                built_at=datetime.now(timezone.utc),
+            )
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_enumerate_trs_rows",
+        lambda **_: [
+            {
+                "trs_code": "06/10",
+                "township": "06",
+                "range": "10",
+                "section": "01",
+                "subsection": "",
+                "quarter": "",
+                "quarter_quarter": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_search_trs_rows",
+        lambda **_: [first_parcel_id, second_parcel_id],
+    )
+
+    def fake_fetch_page(parcel_id: str, settings) -> SimpleNamespace:
+        raw_path = first_raw_path if parcel_id == first_parcel_id else second_raw_path
+        html = raw_path.read_text(encoding="utf-8")
+        return SimpleNamespace(
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+            raw_path=raw_path,
+            raw_sha256=f"{parcel_id}-sha",
+            raw_size=len(html.encode("utf-8")),
+        )
+
+    monkeypatch.setattr(cli, "fetch_page", fake_fetch_page)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "run-all",
+            "--trs",
+            "06/10",
+            "--sections",
+            "1",
+            "--parse-limit",
+            "1",
+            "--build-parcel-year-facts",
+            "--skip-anomalies",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "Parse summary: selected=1 succeeded=1 failed=0 skipped_missing_raw_path=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        second_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == second_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+    assert second_rows == []
+
+
 def test_clean_stringifies_non_string_scalars() -> None:
     assert cli._clean(6) == "6"
     assert cli._clean(3.5) == "3.5"
