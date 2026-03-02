@@ -58,7 +58,27 @@ class ParcelCharacteristicRebuildSummary:
 
 
 @dataclass(frozen=True)
+class ParcelLineageLinkRebuildSummary:
+    selected_parcels: int
+    eligible_fetches_scanned: int
+    rows_deleted: int
+    rows_written: int
+    skipped_fetches: int
+    parcel_failures: int
+
+
+@dataclass(frozen=True)
 class _ParcelCharacteristicRebuildResult:
+    eligible_fetches_scanned: int
+    rows_deleted: int
+    rows_written: int
+    skipped_fetches: int
+    parcel_failed: bool = False
+    error_message: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _ParcelLineageLinkRebuildResult:
     eligible_fetches_scanned: int
     rows_deleted: int
     rows_written: int
@@ -787,6 +807,32 @@ def rebuild_parcel_characteristics_cmd(
         raise typer.Exit(code=1)
 
 
+@app.command("rebuild-parcel-lineage-links")
+def rebuild_parcel_lineage_links_cmd(
+    ids: list[str] = typer.Option([], "--id", "-i", help="Parcel ID (repeatable)"),
+    ids_file: Optional[Path] = typer.Option(None, "--ids", help="File with parcel IDs"),
+) -> None:
+    if ids and ids_file:
+        raise typer.BadParameter("Use either --id or --ids, not both.")
+    settings = load_settings()
+    parcel_ids = None
+    if ids or ids_file is not None:
+        parcel_ids = _collect_ids(ids, ids_file)
+    summary = rebuild_parcel_lineage_links(
+        settings.database_url,
+        parcel_ids=parcel_ids,
+        raw_dir=settings.raw_dir,
+    )
+    typer.echo(f"Selected parcels: {summary.selected_parcels}")
+    typer.echo(f"Eligible fetches scanned: {summary.eligible_fetches_scanned}")
+    typer.echo(f"Rows deleted: {summary.rows_deleted}")
+    typer.echo(f"Rows written: {summary.rows_written}")
+    typer.echo(f"Skipped fetches: {summary.skipped_fetches}")
+    typer.echo(f"Parcel failures: {summary.parcel_failures}")
+    if summary.parcel_failures:
+        raise typer.Exit(code=1)
+
+
 def rebuild_parcel_characteristics(
     database_url: str,
     *,
@@ -857,6 +903,76 @@ def rebuild_parcel_characteristics(
     )
 
 
+def rebuild_parcel_lineage_links(
+    database_url: str,
+    *,
+    parcel_ids: Optional[list[str]] = None,
+    raw_dir: Optional[Path] = None,
+) -> ParcelLineageLinkRebuildSummary:
+    target_parcel_ids = _select_parcel_ids_for_parcel_lineage_links_rebuild(
+        database_url,
+        parcel_ids=parcel_ids,
+    )
+    resolved_raw_dir = (
+        raw_dir.expanduser().resolve()
+        if raw_dir is not None
+        else load_settings().raw_dir.expanduser().resolve()
+    )
+    eligible_fetches_scanned = 0
+    rows_deleted = 0
+    rows_written = 0
+    skipped_fetches = 0
+    parcel_failures = 0
+    SessionFactory = get_session_factory(database_url)
+
+    for parcel_id in target_parcel_ids:
+        session = SessionFactory()
+        try:
+            result = _rebuild_parcel_lineage_links_for_parcel(
+                session,
+                parcel_id,
+                raw_dir=resolved_raw_dir,
+            )
+            eligible_fetches_scanned += result.eligible_fetches_scanned
+            skipped_fetches += result.skipped_fetches
+            if result.parcel_failed:
+                session.rollback()
+                parcel_failures += 1
+                typer.echo(
+                    result.error_message
+                    or (
+                        "Failed to rebuild parcel lineage links for "
+                        f"parcel_id={parcel_id}"
+                    ),
+                    err=True,
+                )
+                continue
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            parcel_failures += 1
+            typer.echo(
+                f"Failed to rebuild parcel lineage links for parcel_id={parcel_id} "
+                f"({type(exc).__name__}: {exc})",
+                err=True,
+            )
+            continue
+        finally:
+            session.close()
+
+        rows_deleted += result.rows_deleted
+        rows_written += result.rows_written
+
+    return ParcelLineageLinkRebuildSummary(
+        selected_parcels=len(target_parcel_ids),
+        eligible_fetches_scanned=eligible_fetches_scanned,
+        rows_deleted=rows_deleted,
+        rows_written=rows_written,
+        skipped_fetches=skipped_fetches,
+        parcel_failures=parcel_failures,
+    )
+
+
 def _select_parcel_ids_for_parcel_characteristics_rebuild(
     database_url: str,
     *,
@@ -868,6 +984,36 @@ def _select_parcel_ids_for_parcel_characteristics_rebuild(
     with session_scope(database_url) as session:
         existing_ids = (
             session.execute(select(ParcelCharacteristic.parcel_id)).scalars().all()
+        )
+        eligible_fetch_ids = (
+            session.execute(
+                select(Fetch.parcel_id)
+                .where(
+                    Fetch.status_code == 200,
+                    Fetch.parsed_at.is_not(None),
+                    Fetch.parse_error.is_(None),
+                    Fetch.raw_path.is_not(None),
+                )
+                .distinct()
+            )
+            .scalars()
+            .all()
+        )
+
+    return sorted(set(existing_ids).union(eligible_fetch_ids))
+
+
+def _select_parcel_ids_for_parcel_lineage_links_rebuild(
+    database_url: str,
+    *,
+    parcel_ids: Optional[list[str]],
+) -> list[str]:
+    if parcel_ids is not None:
+        return list(dict.fromkeys(parcel_ids))
+
+    with session_scope(database_url) as session:
+        existing_ids = (
+            session.execute(select(ParcelLineageLink.parcel_id)).scalars().all()
         )
         eligible_fetch_ids = (
             session.execute(
@@ -982,6 +1128,124 @@ def _rebuild_parcel_characteristics_for_parcel(
     rows_written = 1
 
     return _ParcelCharacteristicRebuildResult(
+        eligible_fetches_scanned=len(fetches),
+        rows_deleted=rows_deleted,
+        rows_written=rows_written,
+        skipped_fetches=skipped_fetches,
+    )
+
+
+def _rebuild_parcel_lineage_links_for_parcel(
+    session,
+    parcel_id: str,
+    *,
+    raw_dir: Path,
+) -> _ParcelLineageLinkRebuildResult:
+    fetches = (
+        session.execute(
+            select(Fetch)
+            .where(
+                Fetch.parcel_id == parcel_id,
+                Fetch.status_code == 200,
+                Fetch.parsed_at.is_not(None),
+                Fetch.parse_error.is_(None),
+                Fetch.raw_path.is_not(None),
+            )
+            .order_by(Fetch.fetched_at, Fetch.id)
+        )
+        .scalars()
+        .all()
+    )
+
+    if not fetches:
+        deleted_result = session.execute(
+            delete(ParcelLineageLink).where(ParcelLineageLink.parcel_id == parcel_id)
+        )
+        rows_deleted = deleted_result.rowcount or 0
+        return _ParcelLineageLinkRebuildResult(
+            eligible_fetches_scanned=0,
+            rows_deleted=rows_deleted,
+            rows_written=0,
+            skipped_fetches=0,
+        )
+
+    processed_fetches = 0
+    skipped_fetches = 0
+    best_links: dict[tuple[str, str], dict[str, Optional[str]]] = {}
+    best_fetches: dict[tuple[str, str], Fetch] = {}
+
+    for fetch in fetches:
+        if not fetch.raw_path:
+            continue
+        raw_path = _resolve_raw_path(fetch.raw_path, raw_dir=raw_dir)
+        if raw_path is None:
+            skipped_fetches += 1
+            continue
+        try:
+            html = raw_path.read_text(encoding="utf-8")
+            links = _extract_parcel_lineage_links(html)
+        except Exception as exc:
+            skipped_fetches += 1
+            typer.echo(
+                f"Skipping fetch_id={fetch.id} during parcel_lineage_links rebuild "
+                f"for parcel_id={parcel_id} ({type(exc).__name__}: {exc})",
+                err=True,
+            )
+            continue
+
+        processed_fetches += 1
+        candidate_rank_key = _lineage_fetch_rank_key(fetch)
+        for link in links:
+            related_parcel_id = link.get("related_parcel_id")
+            relationship_type = link.get("relationship_type")
+            if related_parcel_id is None or relationship_type is None:
+                continue
+            identity = (related_parcel_id, relationship_type)
+            existing_fetch = best_fetches.get(identity)
+            if (
+                existing_fetch is not None
+                and _lineage_fetch_rank_key(existing_fetch) > candidate_rank_key
+            ):
+                continue
+            best_links[identity] = link
+            best_fetches[identity] = fetch
+
+    if processed_fetches == 0:
+        return _ParcelLineageLinkRebuildResult(
+            eligible_fetches_scanned=len(fetches),
+            rows_deleted=0,
+            rows_written=0,
+            skipped_fetches=skipped_fetches,
+            parcel_failed=True,
+            error_message=(
+                "Failed to rebuild parcel lineage links for "
+                f"parcel_id={parcel_id} (no usable fetch HTML)"
+            ),
+        )
+
+    deleted_result = session.execute(
+        delete(ParcelLineageLink).where(ParcelLineageLink.parcel_id == parcel_id)
+    )
+    rows_deleted = deleted_result.rowcount or 0
+
+    rows_written = 0
+    for related_parcel_id, relationship_type in sorted(best_links):
+        link = best_links[(related_parcel_id, relationship_type)]
+        source_fetch = best_fetches[(related_parcel_id, relationship_type)]
+        session.add(
+            ParcelLineageLink(
+                parcel_id=parcel_id,
+                related_parcel_id=related_parcel_id,
+                relationship_type=relationship_type,
+                source_fetch_id=source_fetch.id,
+                related_parcel_status=link.get("related_parcel_status"),
+                relationship_note=link.get("relationship_note"),
+                built_at=datetime.now(timezone.utc),
+            )
+        )
+        rows_written += 1
+
+    return _ParcelLineageLinkRebuildResult(
         eligible_fetches_scanned=len(fetches),
         rows_deleted=rows_deleted,
         rows_written=rows_written,
