@@ -299,3 +299,57 @@ def test_rebuild_parcel_characteristics_skips_broken_fetches_within_a_parcel(
     assert summary.skipped_fetches == 1
     assert summary.parcel_failures == 0
     assert row is not None
+
+
+def test_rebuild_parcel_characteristics_preserves_existing_row_when_no_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_preserve_existing.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    bad_raw_path = _write_raw_html(tmp_path, "bad_only", "BROKEN")
+    now = datetime.now(timezone.utc)
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add(
+            Fetch(
+                parcel_id=parcel_id,
+                url=f"https://example.test/{parcel_id}/bad",
+                status_code=200,
+                raw_path=str(bad_raw_path),
+                fetched_at=now,
+                parsed_at=now,
+            )
+        )
+        session.add(
+            ParcelCharacteristic(
+                parcel_id=parcel_id,
+                formatted_parcel_number="KEEP-ME",
+                built_at=now,
+            )
+        )
+
+    def always_failing_parse_page(
+        html: str, *, include_tax_detail_payments: bool = True
+    ):
+        raise ValueError("simulated parse failure")
+
+    monkeypatch.setattr(cli, "parse_page", always_failing_parse_page)
+
+    summary = cli.rebuild_parcel_characteristics(database_url)
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert summary.selected_parcels == 1
+    assert summary.eligible_fetches_scanned == 1
+    assert summary.rows_deleted == 0
+    assert summary.rows_written == 0
+    assert summary.skipped_fetches == 1
+    assert summary.parcel_failures == 1
+    assert row is not None
+    assert row.formatted_parcel_number == "KEEP-ME"

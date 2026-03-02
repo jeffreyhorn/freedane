@@ -16,8 +16,8 @@ from sqlalchemy import delete, select
 
 from .anomaly import detect_anomalies
 from .config import load_settings
+from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
-from .db import session_scope
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -62,6 +62,8 @@ class _ParcelCharacteristicRebuildResult:
     rows_deleted: int
     rows_written: int
     skipped_fetches: int
+    parcel_failed: bool = False
+    error_message: Optional[str] = None
 
 
 class AssessmentFields(TypedDict):
@@ -796,12 +798,29 @@ def rebuild_parcel_characteristics(
     rows_written = 0
     skipped_fetches = 0
     parcel_failures = 0
+    SessionFactory = get_session_factory(database_url)
 
     for parcel_id in target_parcel_ids:
+        session = SessionFactory()
         try:
-            with session_scope(database_url) as session:
-                result = _rebuild_parcel_characteristics_for_parcel(session, parcel_id)
+            result = _rebuild_parcel_characteristics_for_parcel(session, parcel_id)
+            eligible_fetches_scanned += result.eligible_fetches_scanned
+            skipped_fetches += result.skipped_fetches
+            if result.parcel_failed:
+                session.rollback()
+                parcel_failures += 1
+                typer.echo(
+                    result.error_message
+                    or (
+                        "Failed to rebuild parcel characteristics for "
+                        f"parcel_id={parcel_id}"
+                    ),
+                    err=True,
+                )
+                continue
+            session.commit()
         except Exception as exc:
+            session.rollback()
             parcel_failures += 1
             typer.echo(
                 f"Failed to rebuild parcel characteristics for parcel_id={parcel_id} "
@@ -809,11 +828,11 @@ def rebuild_parcel_characteristics(
                 err=True,
             )
             continue
+        finally:
+            session.close()
 
-        eligible_fetches_scanned += result.eligible_fetches_scanned
         rows_deleted += result.rows_deleted
         rows_written += result.rows_written
-        skipped_fetches += result.skipped_fetches
 
     return ParcelCharacteristicRebuildSummary(
         selected_parcels=len(target_parcel_ids),
@@ -875,10 +894,19 @@ def _rebuild_parcel_characteristics_for_parcel(
         .all()
     )
 
-    deleted_result = session.execute(
-        delete(ParcelCharacteristic).where(ParcelCharacteristic.parcel_id == parcel_id)
-    )
-    rows_deleted = deleted_result.rowcount or 0
+    if not fetches:
+        deleted_result = session.execute(
+            delete(ParcelCharacteristic).where(
+                ParcelCharacteristic.parcel_id == parcel_id
+            )
+        )
+        rows_deleted = deleted_result.rowcount or 0
+        return _ParcelCharacteristicRebuildResult(
+            eligible_fetches_scanned=0,
+            rows_deleted=rows_deleted,
+            rows_written=0,
+            skipped_fetches=0,
+        )
 
     best_candidate: Optional[ParcelCharacteristicCandidate] = None
     best_fetch: Optional[Fetch] = None
@@ -911,15 +939,32 @@ def _rebuild_parcel_characteristics_for_parcel(
             best_candidate = candidate
             best_fetch = fetch
 
+    if best_candidate is None or best_fetch is None:
+        return _ParcelCharacteristicRebuildResult(
+            eligible_fetches_scanned=len(fetches),
+            rows_deleted=0,
+            rows_written=0,
+            skipped_fetches=skipped_fetches,
+            parcel_failed=True,
+            error_message=(
+                "Failed to rebuild parcel characteristics for "
+                f"parcel_id={parcel_id} (no usable candidate from eligible fetches)"
+            ),
+        )
+
+    deleted_result = session.execute(
+        delete(ParcelCharacteristic).where(ParcelCharacteristic.parcel_id == parcel_id)
+    )
+    rows_deleted = deleted_result.rowcount or 0
+
     rows_written = 0
-    if best_candidate is not None and best_fetch is not None:
-        target = ParcelCharacteristic(parcel_id=parcel_id)
-        for field_name, value in best_candidate.fields.items():
-            setattr(target, field_name, value)
-        target.source_fetch_id = best_fetch.id
-        target.built_at = datetime.now(timezone.utc)
-        session.add(target)
-        rows_written = 1
+    target = ParcelCharacteristic(parcel_id=parcel_id)
+    for field_name, value in best_candidate.fields.items():
+        setattr(target, field_name, value)
+    target.source_fetch_id = best_fetch.id
+    target.built_at = datetime.now(timezone.utc)
+    session.add(target)
+    rows_written = 1
 
     return _ParcelCharacteristicRebuildResult(
         eligible_fetches_scanned=len(fetches),
