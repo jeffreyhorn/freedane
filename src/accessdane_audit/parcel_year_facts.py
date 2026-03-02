@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Iterable, Optional
@@ -16,6 +17,26 @@ from .models import (
     PaymentRecord,
     TaxRecord,
 )
+
+
+@dataclass(frozen=True)
+class PaymentRollupCandidate:
+    fetch_id: int
+    usable_rows: tuple[tuple[date, Decimal], ...]
+    has_placeholder: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "usable_rows", tuple(self.usable_rows))
+
+
+@dataclass(frozen=True)
+class PaymentRollup:
+    payment_fetch_id: int
+    payment_event_count: int
+    payment_total_amount: Optional[Decimal]
+    payment_first_date: Optional[date]
+    payment_last_date: Optional[date]
+    payment_has_placeholder_row: bool
 
 
 def rebuild_parcel_year_facts(
@@ -75,11 +96,13 @@ def rebuild_parcel_year_facts(
     return len(rows)
 
 
-def _load_records(session: Session, model, *, parcel_filter: Optional[set[str]]) -> list:
+def _load_records(
+    session: Session, model, *, parcel_filter: Optional[set[str]]
+) -> list:
     query = select(model)
     if parcel_filter:
         query = query.where(model.parcel_id.in_(parcel_filter))
-    return session.execute(query).scalars().all()
+    return list(session.execute(query).scalars().all())
 
 
 def _delete_facts_query(parcel_filter: Optional[set[str]]):
@@ -171,9 +194,13 @@ def _assessment_completeness(record: AssessmentRecord) -> int:
     return sum(value is not None for value in values)
 
 
-def _choose_tax(records: list[TaxRecord], fetch_by_id: dict[int, Fetch]) -> Optional[TaxRecord]:
+def _choose_tax(
+    records: list[TaxRecord], fetch_by_id: dict[int, Fetch]
+) -> Optional[TaxRecord]:
     candidates = [
-        record for record in records if str(record.data.get("source") or "") == "summary"
+        record
+        for record in records
+        if str(record.data.get("source") or "") == "summary"
     ]
     if not candidates:
         return None
@@ -204,7 +231,7 @@ def _tax_completeness(record: TaxRecord) -> int:
 def _choose_payment(
     records: list[PaymentRecord],
     fetch_by_id: dict[int, Fetch],
-) -> Optional[dict[str, object]]:
+) -> Optional[PaymentRollup]:
     summary_records = [
         record
         for record in records
@@ -217,26 +244,26 @@ def _choose_payment(
     for record in summary_records:
         rows_by_fetch[record.fetch_id].append(record)
 
-    candidates = []
+    candidates: list[PaymentRollupCandidate] = []
     for fetch_id, fetch_rows in rows_by_fetch.items():
-        usable_rows = []
+        usable_payment_rows: list[tuple[date, Decimal]] = []
         for row in fetch_rows:
             payment_date = _parse_date(row.data.get("Date of Payment"))
             amount = _parse_money(row.data.get("Amount"))
             if payment_date is not None and amount is not None:
-                usable_rows.append((payment_date, amount))
+                usable_payment_rows.append((payment_date, amount))
         has_placeholder = any(
             str(row.data.get("Date of Payment") or "").strip() == "No payments found."
             for row in fetch_rows
         )
-        if not usable_rows and not has_placeholder:
+        if not usable_payment_rows and not has_placeholder:
             continue
         candidates.append(
-            {
-                "fetch_id": fetch_id,
-                "usable_rows": usable_rows,
-                "has_placeholder": has_placeholder,
-            }
+            PaymentRollupCandidate(
+                fetch_id=fetch_id,
+                usable_rows=tuple(usable_payment_rows),
+                has_placeholder=has_placeholder,
+            )
         )
 
     if not candidates:
@@ -245,33 +272,33 @@ def _choose_payment(
     chosen = max(
         candidates,
         key=lambda item: (
-            len(item["usable_rows"]),
-            _fetch_rank(item["fetch_id"], fetch_by_id),
-            item["fetch_id"],
+            len(item.usable_rows),
+            _fetch_rank(item.fetch_id, fetch_by_id),
+            item.fetch_id,
         ),
     )
 
-    usable_rows = chosen["usable_rows"]
-    if usable_rows:
-        dates = [payment_date for payment_date, _ in usable_rows]
-        amounts = [amount for _, amount in usable_rows]
-        return {
-            "payment_fetch_id": chosen["fetch_id"],
-            "payment_event_count": len(usable_rows),
-            "payment_total_amount": sum(amounts, Decimal("0.00")),
-            "payment_first_date": min(dates),
-            "payment_last_date": max(dates),
-            "payment_has_placeholder_row": bool(chosen["has_placeholder"]),
-        }
+    selected_rows = chosen.usable_rows
+    if selected_rows:
+        dates = [payment_date for payment_date, _ in selected_rows]
+        amounts = [amount for _, amount in selected_rows]
+        return PaymentRollup(
+            payment_fetch_id=chosen.fetch_id,
+            payment_event_count=len(selected_rows),
+            payment_total_amount=sum(amounts, Decimal("0.00")),
+            payment_first_date=min(dates),
+            payment_last_date=max(dates),
+            payment_has_placeholder_row=chosen.has_placeholder,
+        )
 
-    return {
-        "payment_fetch_id": chosen["fetch_id"],
-        "payment_event_count": 0,
-        "payment_total_amount": None,
-        "payment_first_date": None,
-        "payment_last_date": None,
-        "payment_has_placeholder_row": True if chosen["has_placeholder"] else False,
-    }
+    return PaymentRollup(
+        payment_fetch_id=chosen.fetch_id,
+        payment_event_count=0,
+        payment_total_amount=None,
+        payment_first_date=None,
+        payment_last_date=None,
+        payment_has_placeholder_row=chosen.has_placeholder,
+    )
 
 
 def _build_fact_row(
@@ -282,16 +309,15 @@ def _build_fact_row(
     summary: Optional[ParcelSummary],
     assessment: Optional[AssessmentRecord],
     tax: Optional[TaxRecord],
-    payment: Optional[dict[str, object]],
+    payment: Optional[PaymentRollup],
 ) -> ParcelYearFact:
-    payment = payment or {}
     return ParcelYearFact(
         parcel_id=parcel_id,
         year=year,
         parcel_summary_fetch_id=summary.fetch_id if summary else None,
         assessment_fetch_id=assessment.fetch_id if assessment else None,
         tax_fetch_id=tax.fetch_id if tax else None,
-        payment_fetch_id=payment.get("payment_fetch_id"),
+        payment_fetch_id=payment.payment_fetch_id if payment else None,
         municipality_name=summary.municipality_name if summary else None,
         current_parcel_description=summary.parcel_description if summary else None,
         current_owner_name=summary.owner_name if summary else None,
@@ -329,16 +355,20 @@ def _build_fact_row(
             tax.data.get("Lottery Credit(-)") if tax else None
         ),
         tax_amount=_parse_money(tax.data.get("Amount") if tax else None),
-        payment_event_count=payment.get("payment_event_count"),
-        payment_total_amount=payment.get("payment_total_amount"),
-        payment_first_date=payment.get("payment_first_date"),
-        payment_last_date=payment.get("payment_last_date"),
-        payment_has_placeholder_row=payment.get("payment_has_placeholder_row"),
+        payment_event_count=payment.payment_event_count if payment else None,
+        payment_total_amount=payment.payment_total_amount if payment else None,
+        payment_first_date=payment.payment_first_date if payment else None,
+        payment_last_date=payment.payment_last_date if payment else None,
+        payment_has_placeholder_row=(
+            payment.payment_has_placeholder_row if payment else None
+        ),
         built_at=built_at,
     )
 
 
-def _fetch_rank(fetch_id: Optional[int], fetch_by_id: dict[int, Fetch]) -> tuple[datetime, int]:
+def _fetch_rank(
+    fetch_id: Optional[int], fetch_by_id: dict[int, Fetch]
+) -> tuple[datetime, int]:
     if fetch_id is None:
         return (datetime.min, -1)
     fetch = fetch_by_id.get(fetch_id)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .config import Settings
-
+from .html_utils import html_attr_text
 
 PARCEL_NUMBER_RE = re.compile(r"\b\d{4}-\d{3}-\d{4}-\d\b")
 PARCEL_ID_RE = re.compile(r"\b\d{10,14}\b")
@@ -46,7 +46,9 @@ def search_trs(
         response = client.get(url, params=params)
         html = response.text or ""
     parcel_ids, truncated = parse_search_results(html)
-    return SearchResult(parcel_ids=parcel_ids, truncated=truncated, url=str(response.url))
+    return SearchResult(
+        parcel_ids=parcel_ids, truncated=truncated, url=str(response.url)
+    )
 
 
 def parse_search_results(html: str) -> tuple[list[str], bool]:
@@ -56,7 +58,10 @@ def parse_search_results(html: str) -> tuple[list[str], bool]:
     parcel_ids: list[str] = []
     seen: set[str] = set()
     for anchor in soup.find_all("a"):
-        candidate = _extract_parcel_id(anchor.get_text(" ", strip=True), anchor.get("href"))
+        candidate = _extract_parcel_id(
+            anchor.get_text(" ", strip=True),
+            html_attr_text(anchor.get("href")) or None,
+        )
         if candidate and candidate not in seen:
             parcel_ids.append(candidate)
             seen.add(candidate)

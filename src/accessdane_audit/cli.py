@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
-from pathlib import Path
 import re
 import sys
-from typing import Iterable, Optional
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from pathlib import Path
+from typing import Iterable, Mapping, Optional, Sequence, TypedDict
 
-from bs4 import BeautifulSoup
 import typer
-from sqlalchemy import select
-from sqlalchemy import delete
+from bs4 import BeautifulSoup
+from sqlalchemy import delete, select
 
 from .anomaly import detect_anomalies
 from .config import load_settings
+from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
-from .db import session_scope
+from .html_utils import html_attr_text
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -30,13 +30,12 @@ from .models import (
     TaxRecord,
 )
 from .parcel_year_facts import rebuild_parcel_year_facts
-from .parse import parse_page
+from .parse import ParsedPage, parse_page
 from .profiling import build_data_profile
 from .quality import quality_report_to_dict, run_data_quality_checks
 from .scrape import fetch_page
 from .search import search_trs
-from .trs import parse_trs_code
-from .trs import DEFAULT_SPLIT_PARTS, enumerate_trs
+from .trs import DEFAULT_SPLIT_PARTS, enumerate_trs, parse_trs_code
 
 app = typer.Typer(add_completion=False)
 
@@ -46,6 +45,66 @@ class ParseWorkItem:
     fetch_id: int
     parcel_id: str
     raw_path: Optional[str]
+
+
+@dataclass(frozen=True)
+class ParcelCharacteristicRebuildSummary:
+    selected_parcels: int
+    eligible_fetches_scanned: int
+    rows_deleted: int
+    rows_written: int
+    skipped_fetches: int
+    parcel_failures: int
+
+
+@dataclass(frozen=True)
+class _ParcelCharacteristicRebuildResult:
+    eligible_fetches_scanned: int
+    rows_deleted: int
+    rows_written: int
+    skipped_fetches: int
+    parcel_failed: bool = False
+    error_message: Optional[str] = None
+
+
+class AssessmentFields(TypedDict):
+    valuation_classification: Optional[str]
+    assessment_acres: Optional[Decimal]
+    land_value: Optional[Decimal]
+    improved_value: Optional[Decimal]
+    total_value: Optional[Decimal]
+    average_assessment_ratio: Optional[Decimal]
+    estimated_fair_market_value: Optional[Decimal]
+    valuation_date: Optional[date]
+
+
+class ParcelCharacteristicFields(TypedDict):
+    formatted_parcel_number: Optional[str]
+    state_municipality_code: Optional[str]
+    township: Optional[str]
+    range: Optional[str]
+    section: Optional[str]
+    quarter_quarter: Optional[str]
+    has_dcimap_link: Optional[bool]
+    has_google_map_link: Optional[bool]
+    has_bing_map_link: Optional[bool]
+    current_assessment_year: Optional[int]
+    current_valuation_classification: Optional[str]
+    current_assessment_acres: Optional[Decimal]
+    current_assessment_ratio: Optional[Decimal]
+    current_estimated_fair_market_value: Optional[Decimal]
+    current_tax_info_available: Optional[bool]
+    current_payment_history_available: Optional[bool]
+    tax_jurisdiction_count: Optional[int]
+    is_exempt_style_page: Optional[bool]
+    has_empty_valuation_breakout: Optional[bool]
+    has_empty_tax_section: Optional[bool]
+
+
+@dataclass(frozen=True)
+class ParcelCharacteristicCandidate:
+    fields: ParcelCharacteristicFields
+    rank_key: tuple[int, datetime, int]
 
 
 @app.command("init-db")
@@ -58,13 +117,17 @@ def init_db() -> None:
 @app.command("enumerate-trs")
 def enumerate_trs_cmd(
     trs: str = typer.Option(..., "--trs", help="TRS code, e.g. 06/10"),
-    sections: str = typer.Option(..., "--sections", help="Section list, e.g. 1-36 or 1,2,3"),
+    sections: str = typer.Option(
+        ..., "--sections", help="Section list, e.g. 1-36 or 1,2,3"
+    ),
     split: str = typer.Option("", "--split", help="Comma list of sections to split"),
     split_quarters: bool = typer.Option(
         False, "--split-quarters", help="Split all sections into quarters"
     ),
     split_quarter_quarters: bool = typer.Option(
-        False, "--split-quarter-quarters", help="Split quarter rows into quarter-quarters"
+        False,
+        "--split-quarter-quarters",
+        help="Split quarter rows into quarter-quarters",
     ),
     split_parts: str = typer.Option(
         ",".join(DEFAULT_SPLIT_PARTS), "--split-parts", help="Subsection labels"
@@ -123,19 +186,29 @@ def search_trs_cmd(
     trs: Optional[str] = typer.Option(None, "--trs", help="TRS code, e.g. 06/10"),
     township: Optional[int] = typer.Option(None, "--township", help="Township number"),
     range_: Optional[int] = typer.Option(None, "--range", help="Range number"),
-    sections: str = typer.Option("", "--sections", help="Section list, e.g. 1-36 or 1,2,3"),
-    quarters: str = typer.Option("", "--quarters", help="Quarter list, e.g. NE,NW,SE,SW"),
+    sections: str = typer.Option(
+        "", "--sections", help="Section list, e.g. 1-36 or 1,2,3"
+    ),
+    quarters: str = typer.Option(
+        "", "--quarters", help="Quarter list, e.g. NE,NW,SE,SW"
+    ),
     quarter_quarters: str = typer.Option(
         "NE,NW,SE,SW", "--quarter-quarters", help="Quarter-quarter list"
     ),
     auto_split: bool = typer.Option(
-        False, "--auto-split", help="Split into quarter-quarters when results are truncated"
+        False,
+        "--auto-split",
+        help="Split into quarter-quarters when results are truncated",
     ),
     quarter_quarter_parts: str = typer.Option(
-        "NE,NW,SE,SW", "--quarter-quarter-parts", help="Quarter-quarter parts for auto-split"
+        "NE,NW,SE,SW",
+        "--quarter-quarter-parts",
+        help="Quarter-quarter parts for auto-split",
     ),
     cap: int = typer.Option(0, "--cap", help="Maximum parcel IDs to emit (0 = no cap)"),
-    municipality_id: int = typer.Option(50, "--municipality-id", help="AccessDane municipality id"),
+    municipality_id: int = typer.Option(
+        50, "--municipality-id", help="AccessDane municipality id"
+    ),
     out: Optional[Path] = typer.Option(None, "--out", help="Output parcel ID file"),
 ) -> None:
     if trs:
@@ -143,12 +216,25 @@ def search_trs_cmd(
     if township is None or range_ is None:
         raise typer.BadParameter("Provide --trs or both --township and --range.")
 
-    section_list = _parse_sections(sections) if sections else [None]
-    quarter_list = _parse_list(quarters) if quarters else [None]
-    if quarter_list == [None]:
-        quarter_quarter_list = [None]
+    section_list: Sequence[Optional[int]]
+    if sections:
+        section_list = _parse_sections(sections)
     else:
-        quarter_quarter_list = _parse_list(quarter_quarters) if quarter_quarters else [None]
+        section_list = [None]
+
+    quarter_list: Sequence[Optional[str]]
+    if quarters:
+        quarter_list = _parse_list(quarters)
+    else:
+        quarter_list = [None]
+
+    if quarter_list == [None]:
+        quarter_quarter_list: Sequence[Optional[str]] = [None]
+    else:
+        if quarter_quarters:
+            quarter_quarter_list = _parse_list(quarter_quarters)
+        else:
+            quarter_quarter_list = [None]
     auto_parts = _parse_list(quarter_quarter_parts) if quarter_quarter_parts else []
 
     settings = load_settings()
@@ -209,7 +295,9 @@ def search_trs_cmd(
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("\n".join(collected) + ("\n" if collected else ""), encoding="utf-8")
+        out.write_text(
+            "\n".join(collected) + ("\n" if collected else ""), encoding="utf-8"
+        )
     else:
         typer.echo("\n".join(collected))
 
@@ -217,15 +305,23 @@ def search_trs_cmd(
 @app.command("search-trs-csv")
 def search_trs_csv_cmd(
     trs_csv: Path = typer.Option(..., "--trs-csv", help="CSV of TRS blocks"),
-    municipality_id: int = typer.Option(50, "--municipality-id", help="AccessDane municipality id"),
+    municipality_id: int = typer.Option(
+        50, "--municipality-id", help="AccessDane municipality id"
+    ),
     auto_split: bool = typer.Option(
-        False, "--auto-split", help="Split into quarter-quarters when results are truncated"
+        False,
+        "--auto-split",
+        help="Split into quarter-quarters when results are truncated",
     ),
     quarter_quarter_parts: str = typer.Option(
-        "NE,NW,SE,SW", "--quarter-quarter-parts", help="Quarter-quarter parts for auto-split"
+        "NE,NW,SE,SW",
+        "--quarter-quarter-parts",
+        help="Quarter-quarter parts for auto-split",
     ),
     quarter_quarters: str = typer.Option(
-        "NE,NW,SE,SW", "--quarter-quarters", help="Quarter-quarter defaults when a quarter is set"
+        "NE,NW,SE,SW",
+        "--quarter-quarters",
+        help="Quarter-quarter defaults when a quarter is set",
     ),
     cap: int = typer.Option(0, "--cap", help="Maximum parcel IDs to emit (0 = no cap)"),
     out: Optional[Path] = typer.Option(None, "--out", help="Output parcel ID file"),
@@ -258,7 +354,9 @@ def run_all_cmd(
         False, "--split-quarters", help="Split all sections into quarters"
     ),
     split_quarter_quarters: bool = typer.Option(
-        False, "--split-quarter-quarters", help="Split quarter rows into quarter-quarters"
+        False,
+        "--split-quarter-quarters",
+        help="Split quarter rows into quarter-quarters",
     ),
     split_parts: str = typer.Option(
         ",".join(DEFAULT_SPLIT_PARTS), "--split-parts", help="Subsection labels"
@@ -266,18 +364,28 @@ def run_all_cmd(
     quarter_quarter_parts: str = typer.Option(
         "NE,NW,SE,SW", "--quarter-quarter-parts", help="Quarter-quarter labels"
     ),
-    municipality_id: int = typer.Option(50, "--municipality-id", help="AccessDane municipality id"),
+    municipality_id: int = typer.Option(
+        50, "--municipality-id", help="AccessDane municipality id"
+    ),
     auto_split: bool = typer.Option(
-        False, "--auto-split", help="Split into quarter-quarters when results are truncated"
+        False,
+        "--auto-split",
+        help="Split into quarter-quarters when results are truncated",
     ),
     quarter_quarters: str = typer.Option(
-        "NE,NW,SE,SW", "--quarter-quarters", help="Quarter-quarter defaults when a quarter is set"
+        "NE,NW,SE,SW",
+        "--quarter-quarters",
+        help="Quarter-quarter defaults when a quarter is set",
     ),
     cap_trs: int = typer.Option(0, "--cap-trs", help="Cap TRS rows (0 = no cap)"),
     cap_ids: int = typer.Option(0, "--cap-ids", help="Cap parcel IDs (0 = no cap)"),
-    fetch_limit: int = typer.Option(0, "--fetch-limit", help="Cap fetches (0 = no cap)"),
+    fetch_limit: int = typer.Option(
+        0, "--fetch-limit", help="Cap fetches (0 = no cap)"
+    ),
     parse_only: bool = typer.Option(
-        False, "--parse-only", help="Skip TRS search and fetch; only parse existing fetches"
+        False,
+        "--parse-only",
+        help="Skip TRS search and fetch; only parse existing fetches",
     ),
     skip_tax_detail_payments: bool = typer.Option(
         False,
@@ -287,12 +395,16 @@ def run_all_cmd(
     debug_parse: bool = typer.Option(
         False, "--debug-parse", help="Log parsed record counts during parsing"
     ),
-    debug_limit: int = typer.Option(20, "--debug-limit", help="Max debug lines to print"),
+    debug_limit: int = typer.Option(
+        20, "--debug-limit", help="Max debug lines to print"
+    ),
     debug_only_empty: bool = typer.Option(
         False, "--debug-only-empty", help="Only log when tax or payments are empty"
     ),
     reparse: bool = typer.Option(
-        False, "--reparse", help="Delete existing parsed rows for each fetch before inserting"
+        False,
+        "--reparse",
+        help="Delete existing parsed rows for each fetch before inserting",
     ),
     build_parcel_year_facts: bool = typer.Option(
         False,
@@ -305,8 +417,12 @@ def run_all_cmd(
         help="Skip anomaly generation after parsing",
     ),
     init_db: bool = typer.Option(False, "--init-db", help="Initialize DB schema"),
-    trs_csv: Path = typer.Option(Path("data/trs_blocks.csv"), "--trs-csv", help="TRS CSV output"),
-    ids_out: Path = typer.Option(Path("data/parcel_ids.txt"), "--ids-out", help="Parcel ID output"),
+    trs_csv: Path = typer.Option(
+        Path("data/trs_blocks.csv"), "--trs-csv", help="TRS CSV output"
+    ),
+    ids_out: Path = typer.Option(
+        Path("data/parcel_ids.txt"), "--ids-out", help="Parcel ID output"
+    ),
     parse_ids: Optional[Path] = typer.Option(
         None, "--parse-ids", help="Limit parse-only to IDs in a file"
     ),
@@ -322,7 +438,9 @@ def run_all_cmd(
 
     if not parse_only:
         if not trs or not sections:
-            raise typer.BadParameter("Provide --trs and --sections unless using --parse-only.")
+            raise typer.BadParameter(
+                "Provide --trs and --sections unless using --parse-only."
+            )
         rows = _enumerate_trs_rows(
             trs=trs,
             sections=sections,
@@ -415,7 +533,9 @@ def run_all_cmd(
                 total_assessments += len(parsed.assessment)
                 if debug_parse:
                     is_empty = (len(parsed.tax) == 0) or (len(parsed.payments) == 0)
-                    if (not debug_only_empty or is_empty) and debug_printed < debug_limit:
+                    if (
+                        not debug_only_empty or is_empty
+                    ) and debug_printed < debug_limit:
                         typer.echo(
                             f"Debug parse {fetch.parcel_id}: "
                             f"assessment={len(parsed.assessment)} "
@@ -432,7 +552,8 @@ def run_all_cmd(
         if debug_parse:
             typer.echo(
                 "Debug totals: "
-                f"assessment={total_assessments} tax={total_tax} payments={total_payments}"
+                f"assessment={total_assessments} "
+                f"tax={total_tax} payments={total_payments}"
             )
 
     if build_parcel_year_facts:
@@ -452,6 +573,7 @@ def run_all_cmd(
                 encoding="utf-8",
             )
             typer.echo(f"Anomalies: {len(anomalies)} -> {anomalies_out}")
+
 
 @app.command("fetch")
 def fetch_cmd(
@@ -484,14 +606,20 @@ def fetch_cmd(
 @app.command("parse")
 def parse_cmd(
     parcel_id: Optional[str] = typer.Option(None, "--parcel-id", help="Parcel ID"),
-    unparsed: bool = typer.Option(False, "--unparsed", help="Only parse unparsed fetches"),
+    unparsed: bool = typer.Option(
+        False, "--unparsed", help="Only parse unparsed fetches"
+    ),
     reparse: bool = typer.Option(
-        False, "--reparse", help="Delete existing parsed rows for each fetch before inserting"
+        False,
+        "--reparse",
+        help="Delete existing parsed rows for each fetch before inserting",
     ),
     debug_parse: bool = typer.Option(
         False, "--debug-parse", help="Log parsed record counts during parsing"
     ),
-    debug_limit: int = typer.Option(20, "--debug-limit", help="Max debug lines to print"),
+    debug_limit: int = typer.Option(
+        20, "--debug-limit", help="Max debug lines to print"
+    ),
     debug_only_empty: bool = typer.Option(
         False, "--debug-only-empty", help="Only log when tax or payments are empty"
     ),
@@ -580,7 +708,7 @@ def _collect_parse_work_items(
 def _persist_parsed_fetch(
     database_url: str,
     work_item: ParseWorkItem,
-    parsed,
+    parsed: ParsedPage,
     raw_html: str,
     *,
     reparse: bool,
@@ -631,6 +759,234 @@ def build_parcel_year_facts_cmd(
     with session_scope(settings.database_url) as session:
         row_count = rebuild_parcel_year_facts(session, parcel_ids=parcel_ids)
     typer.echo(f"parcel_year_facts rows built: {row_count}")
+
+
+@app.command("rebuild-parcel-characteristics")
+def rebuild_parcel_characteristics_cmd(
+    ids: list[str] = typer.Option([], "--id", "-i", help="Parcel ID (repeatable)"),
+    ids_file: Optional[Path] = typer.Option(None, "--ids", help="File with parcel IDs"),
+) -> None:
+    if ids and ids_file:
+        raise typer.BadParameter("Use either --id or --ids, not both.")
+    settings = load_settings()
+    parcel_ids = None
+    if ids or ids_file is not None:
+        parcel_ids = _collect_ids(ids, ids_file)
+    summary = rebuild_parcel_characteristics(
+        settings.database_url,
+        parcel_ids=parcel_ids,
+        raw_dir=settings.raw_dir,
+    )
+    typer.echo(f"Selected parcels: {summary.selected_parcels}")
+    typer.echo(f"Eligible fetches scanned: {summary.eligible_fetches_scanned}")
+    typer.echo(f"Rows deleted: {summary.rows_deleted}")
+    typer.echo(f"Rows written: {summary.rows_written}")
+    typer.echo(f"Skipped fetches: {summary.skipped_fetches}")
+    typer.echo(f"Parcel failures: {summary.parcel_failures}")
+    if summary.parcel_failures:
+        raise typer.Exit(code=1)
+
+
+def rebuild_parcel_characteristics(
+    database_url: str,
+    *,
+    parcel_ids: Optional[list[str]] = None,
+    raw_dir: Optional[Path] = None,
+) -> ParcelCharacteristicRebuildSummary:
+    target_parcel_ids = _select_parcel_ids_for_parcel_characteristics_rebuild(
+        database_url,
+        parcel_ids=parcel_ids,
+    )
+    resolved_raw_dir = (
+        raw_dir.expanduser().resolve()
+        if raw_dir is not None
+        else load_settings().raw_dir.expanduser().resolve()
+    )
+    eligible_fetches_scanned = 0
+    rows_deleted = 0
+    rows_written = 0
+    skipped_fetches = 0
+    parcel_failures = 0
+    SessionFactory = get_session_factory(database_url)
+
+    for parcel_id in target_parcel_ids:
+        session = SessionFactory()
+        try:
+            result = _rebuild_parcel_characteristics_for_parcel(
+                session,
+                parcel_id,
+                raw_dir=resolved_raw_dir,
+            )
+            eligible_fetches_scanned += result.eligible_fetches_scanned
+            skipped_fetches += result.skipped_fetches
+            if result.parcel_failed:
+                session.rollback()
+                parcel_failures += 1
+                typer.echo(
+                    result.error_message
+                    or (
+                        "Failed to rebuild parcel characteristics for "
+                        f"parcel_id={parcel_id}"
+                    ),
+                    err=True,
+                )
+                continue
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            parcel_failures += 1
+            typer.echo(
+                f"Failed to rebuild parcel characteristics for parcel_id={parcel_id} "
+                f"({type(exc).__name__}: {exc})",
+                err=True,
+            )
+            continue
+        finally:
+            session.close()
+
+        rows_deleted += result.rows_deleted
+        rows_written += result.rows_written
+
+    return ParcelCharacteristicRebuildSummary(
+        selected_parcels=len(target_parcel_ids),
+        eligible_fetches_scanned=eligible_fetches_scanned,
+        rows_deleted=rows_deleted,
+        rows_written=rows_written,
+        skipped_fetches=skipped_fetches,
+        parcel_failures=parcel_failures,
+    )
+
+
+def _select_parcel_ids_for_parcel_characteristics_rebuild(
+    database_url: str,
+    *,
+    parcel_ids: Optional[list[str]],
+) -> list[str]:
+    if parcel_ids is not None:
+        return list(dict.fromkeys(parcel_ids))
+
+    with session_scope(database_url) as session:
+        existing_ids = (
+            session.execute(select(ParcelCharacteristic.parcel_id)).scalars().all()
+        )
+        eligible_fetch_ids = (
+            session.execute(
+                select(Fetch.parcel_id)
+                .where(
+                    Fetch.status_code == 200,
+                    Fetch.parsed_at.is_not(None),
+                    Fetch.parse_error.is_(None),
+                    Fetch.raw_path.is_not(None),
+                )
+                .distinct()
+            )
+            .scalars()
+            .all()
+        )
+
+    return sorted(set(existing_ids).union(eligible_fetch_ids))
+
+
+def _rebuild_parcel_characteristics_for_parcel(
+    session,
+    parcel_id: str,
+    *,
+    raw_dir: Path,
+) -> _ParcelCharacteristicRebuildResult:
+    fetches = (
+        session.execute(
+            select(Fetch)
+            .where(
+                Fetch.parcel_id == parcel_id,
+                Fetch.status_code == 200,
+                Fetch.parsed_at.is_not(None),
+                Fetch.parse_error.is_(None),
+                Fetch.raw_path.is_not(None),
+            )
+            .order_by(Fetch.fetched_at, Fetch.id)
+        )
+        .scalars()
+        .all()
+    )
+
+    if not fetches:
+        deleted_result = session.execute(
+            delete(ParcelCharacteristic).where(
+                ParcelCharacteristic.parcel_id == parcel_id
+            )
+        )
+        rows_deleted = deleted_result.rowcount or 0
+        return _ParcelCharacteristicRebuildResult(
+            eligible_fetches_scanned=0,
+            rows_deleted=rows_deleted,
+            rows_written=0,
+            skipped_fetches=0,
+        )
+
+    best_candidate: Optional[ParcelCharacteristicCandidate] = None
+    best_fetch: Optional[Fetch] = None
+    skipped_fetches = 0
+
+    for fetch in fetches:
+        if not fetch.raw_path:
+            continue
+        raw_path = _resolve_raw_path(fetch.raw_path, raw_dir=raw_dir)
+        if raw_path is None:
+            skipped_fetches += 1
+            continue
+        try:
+            html = raw_path.read_text(encoding="utf-8")
+            parsed = parse_page(html)
+            candidate = _build_parcel_characteristic_candidate(
+                fetch, parsed, raw_html=html
+            )
+        except Exception as exc:
+            skipped_fetches += 1
+            typer.echo(
+                f"Skipping fetch_id={fetch.id} during parcel_characteristics rebuild "
+                f"for parcel_id={parcel_id} ({type(exc).__name__}: {exc})",
+                err=True,
+            )
+            continue
+        if candidate is None:
+            continue
+        if best_candidate is None or candidate.rank_key > best_candidate.rank_key:
+            best_candidate = candidate
+            best_fetch = fetch
+
+    if best_candidate is None or best_fetch is None:
+        return _ParcelCharacteristicRebuildResult(
+            eligible_fetches_scanned=len(fetches),
+            rows_deleted=0,
+            rows_written=0,
+            skipped_fetches=skipped_fetches,
+            parcel_failed=True,
+            error_message=(
+                "Failed to rebuild parcel characteristics for "
+                f"parcel_id={parcel_id} (no usable candidate from eligible fetches)"
+            ),
+        )
+
+    deleted_result = session.execute(
+        delete(ParcelCharacteristic).where(ParcelCharacteristic.parcel_id == parcel_id)
+    )
+    rows_deleted = deleted_result.rowcount or 0
+
+    rows_written = 0
+    target = ParcelCharacteristic(parcel_id=parcel_id)
+    for field_name, value in best_candidate.fields.items():
+        setattr(target, field_name, value)
+    target.source_fetch_id = best_fetch.id
+    target.built_at = datetime.now(timezone.utc)
+    session.add(target)
+    rows_written = 1
+
+    return _ParcelCharacteristicRebuildResult(
+        eligible_fetches_scanned=len(fetches),
+        rows_deleted=rows_deleted,
+        rows_written=rows_written,
+        skipped_fetches=skipped_fetches,
+    )
 
 
 @app.command("check-data-quality")
@@ -728,7 +1084,9 @@ def _enumerate_trs_rows(
     cap: int,
 ) -> list[dict[str, str]]:
     section_list = _parse_sections(sections)
-    split_sections = section_list if split_quarters else (_parse_sections(split) if split else [])
+    split_sections = (
+        section_list if split_quarters else (_parse_sections(split) if split else [])
+    )
     parts = [part.strip() for part in split_parts.split(",") if part.strip()]
     split_map = {section: parts for section in split_sections}
 
@@ -753,7 +1111,7 @@ def _enumerate_trs_rows(
 
 
 def _search_trs_rows(
-    rows: list[dict],
+    rows: Sequence[Mapping[str, object]],
     municipality_id: int,
     auto_split: bool,
     quarter_quarter_parts: str,
@@ -767,22 +1125,24 @@ def _search_trs_rows(
     seen: set[str] = set()
 
     for row in rows:
-        row_municipality = row.get("municipality_id")
+        row_municipality = _clean(row.get("municipality_id"))
         muni_id = int(row_municipality) if row_municipality else municipality_id
-        township = _parse_optional_int(row.get("township"))
-        range_ = _parse_optional_int(row.get("range"))
+        township = _parse_optional_int(_clean(row.get("township")))
+        range_ = _parse_optional_int(_clean(row.get("range")))
         if township is None or range_ is None:
-            trs_code = row.get("trs_code")
+            trs_code = _clean(row.get("trs_code"))
             if trs_code:
                 township, range_ = parse_trs_code(trs_code)
             else:
-                raise typer.BadParameter("Rows must include township/range or trs_code.")
-        section = _parse_optional_int(row.get("section"))
-        quarter = row.get("quarter")
-        quarter_quarter = row.get("quarter_quarter")
+                raise typer.BadParameter(
+                    "Rows must include township/range or trs_code."
+                )
+        section = _parse_optional_int(_clean(row.get("section")))
+        quarter = _clean(row.get("quarter"))
+        quarter_quarter = _clean(row.get("quarter_quarter"))
 
         if quarter and quarter_quarter is None and default_quarter_quarters:
-            quarter_quarter_list = default_quarter_quarters
+            quarter_quarter_list: Sequence[Optional[str]] = default_quarter_quarters
         else:
             quarter_quarter_list = [quarter_quarter]
 
@@ -850,19 +1210,23 @@ def _write_lines(path: Path, items: list[str]) -> None:
     path.write_text("\n".join(items) + ("\n" if items else ""), encoding="utf-8")
 
 
-def _read_trs_csv(path: Path) -> list[dict]:
+def _read_trs_csv(path: Path) -> list[dict[str, object]]:
     with path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        rows: list[dict] = []
+        rows: list[dict[str, object]] = []
         for row in reader:
             township = _parse_optional_int(row.get("township") or row.get("Township"))
             range_ = _parse_optional_int(row.get("range") or row.get("Range"))
             if township is None or range_ is None:
-                trs_code = _clean(row.get("trs_code") or row.get("TRS") or row.get("trs"))
+                trs_code = _clean(
+                    row.get("trs_code") or row.get("TRS") or row.get("trs")
+                )
                 if trs_code:
                     township, range_ = parse_trs_code(trs_code)
                 if township is None or range_ is None:
-                    raise typer.BadParameter("CSV must include township/range or trs_code columns.")
+                    raise typer.BadParameter(
+                        "CSV must include township/range or trs_code columns."
+                    )
             trs_code = _clean(row.get("trs_code") or row.get("TRS") or row.get("trs"))
             section = _parse_optional_int(row.get("section") or row.get("Section"))
             quarter = _clean(
@@ -883,7 +1247,9 @@ def _read_trs_csv(path: Path) -> list[dict]:
                     "section": section,
                     "quarter": quarter,
                     "quarter_quarter": quarter_quarter,
-                    "municipality_id": _clean(row.get("municipality_id") or row.get("MunicipalityId")),
+                    "municipality_id": _clean(
+                        row.get("municipality_id") or row.get("MunicipalityId")
+                    ),
                 }
             )
         return rows
@@ -898,14 +1264,22 @@ def _parse_optional_int(value: Optional[str]) -> Optional[int]:
     return int(value)
 
 
-def _clean(value: Optional[str]) -> Optional[str]:
+def _clean(value: object) -> Optional[str]:
     if value is None:
         return None
+    if not isinstance(value, str):
+        value = str(value)
     value = value.strip()
     return value or None
 
 
-def _store_parsed(session, fetch: Fetch, parsed, *, raw_html: Optional[str] = None) -> None:
+def _store_parsed(
+    session,
+    fetch: Fetch,
+    parsed: ParsedPage,
+    *,
+    raw_html: Optional[str] = None,
+) -> None:
     summary = parsed.parcel_summary or {}
     if summary:
         existing = (
@@ -996,7 +1370,10 @@ def _upsert_parcel_lineage_links(
                 if existing.source_fetch_id is not None
                 else None
             )
-            if _lineage_fetch_rank_key(existing_fetch, existing.source_fetch_id) > candidate_rank_key:
+            if (
+                _lineage_fetch_rank_key(existing_fetch, existing.source_fetch_id)
+                > candidate_rank_key
+            ):
                 continue
 
         target = existing or ParcelLineageLink(
@@ -1025,7 +1402,11 @@ def _extract_parcel_lineage_links(html: str) -> list[dict[str, Optional[str]]]:
             link = _parse_parcel_history_entry(history, relationship_type)
             if link is None:
                 continue
-            key = (link["related_parcel_id"], link["relationship_type"])
+            related_parcel_id = link["related_parcel_id"]
+            relationship_name = link["relationship_type"]
+            if related_parcel_id is None or relationship_name is None:
+                continue
+            key = (related_parcel_id, relationship_name)
             deduped[key] = link
     return list(deduped.values())
 
@@ -1053,7 +1434,9 @@ def _parse_parcel_history_entry(
     )
     relationship_note = None
     if len(sections) > 1:
-        relationship_note = _clean_characteristic_text(sections[1].get_text(" ", strip=True))
+        relationship_note = _clean_characteristic_text(
+            sections[1].get_text(" ", strip=True)
+        )
 
     return {
         "related_parcel_id": related_parcel_id,
@@ -1064,7 +1447,7 @@ def _parse_parcel_history_entry(
 
 
 def _extract_related_parcel_id(anchor) -> Optional[str]:
-    href = anchor.get("href") or ""
+    href = html_attr_text(anchor.get("href"))
     match = re.search(r"/(\d{10,14})\b", href)
     if match:
         return match.group(1)
@@ -1089,7 +1472,7 @@ def _lineage_fetch_rank_key(
 def _upsert_parcel_characteristic(
     session,
     fetch: Fetch,
-    parsed,
+    parsed: ParsedPage,
     *,
     raw_html: Optional[str] = None,
 ) -> None:
@@ -1108,11 +1491,14 @@ def _upsert_parcel_characteristic(
             if existing.source_fetch_id is not None
             else None
         )
-        if _parcel_characteristic_rank_key(existing, existing_fetch) >= candidate["rank_key"]:
+        if (
+            _parcel_characteristic_rank_key(existing, existing_fetch)
+            >= candidate.rank_key
+        ):
             return
 
     target = existing or ParcelCharacteristic(parcel_id=fetch.parcel_id)
-    for field_name, value in candidate["fields"].items():
+    for field_name, value in candidate.fields.items():
         setattr(target, field_name, value)
     target.source_fetch_id = fetch.id
     target.built_at = datetime.now(timezone.utc)
@@ -1121,10 +1507,10 @@ def _upsert_parcel_characteristic(
 
 def _build_parcel_characteristic_candidate(
     fetch: Fetch,
-    parsed,
+    parsed: ParsedPage,
     *,
     raw_html: Optional[str] = None,
-) -> Optional[dict[str, object]]:
+) -> Optional[ParcelCharacteristicCandidate]:
     html = raw_html
     if html is None:
         if not fetch.raw_path:
@@ -1145,21 +1531,24 @@ def _build_parcel_characteristic_candidate(
         current_assessment_year = _extract_year(current_assessment)
         assessment_fields = _extract_assessment_fields(current_assessment)
         current_valuation_classification = _clean_characteristic_text(
-            assessment_fields.get("valuation_classification")
+            assessment_fields["valuation_classification"]
         )
-        current_assessment_acres = assessment_fields.get("assessment_acres")
-        current_assessment_ratio = assessment_fields.get("average_assessment_ratio")
-        current_estimated_fair_market_value = assessment_fields.get(
+        current_assessment_acres = assessment_fields["assessment_acres"]
+        current_assessment_ratio = assessment_fields["average_assessment_ratio"]
+        current_estimated_fair_market_value = assessment_fields[
             "estimated_fair_market_value"
-        )
+        ]
 
-    formatted_parcel_number = _clean_characteristic_text(parsed.other.get("Parcel Number"))
+    formatted_parcel_number = _clean_characteristic_text(
+        parsed.other.get("Parcel Number")
+    )
     derived_parcel_components = _parse_formatted_parcel_number_components(
         formatted_parcel_number
     )
-    state_municipality_code = _clean_characteristic_text(
-        parsed.other.get("State Municipality Code")
-    ) or derived_parcel_components["state_municipality_code"]
+    state_municipality_code = (
+        _clean_characteristic_text(parsed.other.get("State Municipality Code"))
+        or derived_parcel_components["state_municipality_code"]
+    )
     township_range_value = _first_nonempty_characteristic_text(
         detail_grid.get("Township & Range"),
         detail_grid.get("Township and Range"),
@@ -1193,7 +1582,9 @@ def _build_parcel_characteristic_candidate(
 
     has_empty_tax_section = _detect_empty_tax_section(page_text)
     current_tax_info_available = _detect_tax_info_available(parsed, page_text)
-    current_payment_history_available = _detect_payment_history_available(parsed, page_text)
+    current_payment_history_available = _detect_payment_history_available(
+        parsed, page_text
+    )
     tax_jurisdiction_count = _count_tax_jurisdictions(soup)
 
     has_empty_valuation_breakout = _detect_empty_valuation_breakout(soup)
@@ -1209,7 +1600,7 @@ def _build_parcel_characteristic_candidate(
         current_tax_info_available=current_tax_info_available,
     )
 
-    fields = {
+    fields: ParcelCharacteristicFields = {
         "formatted_parcel_number": formatted_parcel_number,
         "state_municipality_code": state_municipality_code,
         "township": township,
@@ -1240,13 +1631,13 @@ def _build_parcel_characteristic_candidate(
         fetch.fetched_at or datetime.min.replace(tzinfo=timezone.utc),
         fetch.id,
     )
-    return {"fields": fields, "rank_key": rank_key}
+    return ParcelCharacteristicCandidate(fields=fields, rank_key=rank_key)
 
 
 def _parcel_characteristic_rank_key(
     row: ParcelCharacteristic,
     source_fetch: Optional[Fetch],
-) -> tuple[object, object, int]:
+) -> tuple[int, datetime, int]:
     return (
         _parcel_characteristic_completeness(
             {
@@ -1260,24 +1651,34 @@ def _parcel_characteristic_rank_key(
                 "has_google_map_link": row.has_google_map_link,
                 "has_bing_map_link": row.has_bing_map_link,
                 "current_assessment_year": row.current_assessment_year,
-                "current_valuation_classification": row.current_valuation_classification,
+                "current_valuation_classification": (
+                    row.current_valuation_classification
+                ),
                 "current_assessment_acres": row.current_assessment_acres,
                 "current_assessment_ratio": row.current_assessment_ratio,
-                "current_estimated_fair_market_value": row.current_estimated_fair_market_value,
+                "current_estimated_fair_market_value": (
+                    row.current_estimated_fair_market_value
+                ),
                 "current_tax_info_available": row.current_tax_info_available,
-                "current_payment_history_available": row.current_payment_history_available,
+                "current_payment_history_available": (
+                    row.current_payment_history_available
+                ),
                 "tax_jurisdiction_count": row.tax_jurisdiction_count,
                 "is_exempt_style_page": row.is_exempt_style_page,
                 "has_empty_valuation_breakout": row.has_empty_valuation_breakout,
                 "has_empty_tax_section": row.has_empty_tax_section,
             }
         ),
-        source_fetch.fetched_at if source_fetch and source_fetch.fetched_at else datetime.min.replace(tzinfo=timezone.utc),
+        (
+            source_fetch.fetched_at
+            if source_fetch and source_fetch.fetched_at
+            else datetime.min.replace(tzinfo=timezone.utc)
+        ),
         row.source_fetch_id or 0,
     )
 
 
-def _parcel_characteristic_completeness(fields: dict[str, object]) -> int:
+def _parcel_characteristic_completeness(fields: Mapping[str, object]) -> int:
     score = 0
     for key in (
         "formatted_parcel_number",
@@ -1295,7 +1696,10 @@ def _parcel_characteristic_completeness(fields: dict[str, object]) -> int:
     ):
         if fields.get(key) is not None:
             score += 1
-    if any(fields.get(key) is True for key in ("has_dcimap_link", "has_google_map_link", "has_bing_map_link")):
+    if any(
+        fields.get(key) is True
+        for key in ("has_dcimap_link", "has_google_map_link", "has_bing_map_link")
+    ):
         score += 1
     if fields.get("current_tax_info_available") is not None:
         score += 1
@@ -1334,7 +1738,10 @@ def _extract_parcel_detail_grid(soup: BeautifulSoup) -> dict[str, str]:
         rows = table.find_all("tr")
         for idx, row in enumerate(rows):
             cells = row.find_all(["th", "td"])
-            labels = [_clean_characteristic_text(cell.get_text(" ", strip=True)) for cell in cells]
+            labels = [
+                _clean_characteristic_text(cell.get_text(" ", strip=True))
+                for cell in cells
+            ]
             if labels in (
                 [
                     "Township & Range",
@@ -1380,7 +1787,7 @@ def _has_named_link(soup: BeautifulSoup, label: str) -> Optional[bool]:
         text = " ".join(anchor.get_text(" ", strip=True).split())
         if text == label:
             return True
-        href = (anchor.get("href") or "").lower()
+        href = html_attr_text(anchor.get("href")).lower()
         if any(token in href for token in href_tokens.get(label, ())):
             return True
     return False
@@ -1509,7 +1916,9 @@ def _detect_empty_valuation_breakout(soup: BeautifulSoup) -> Optional[bool]:
         return True
     for row in rows[1:]:
         cells = row.find_all(["th", "td"])
-        values = [_clean_characteristic_text(cell.get_text(" ", strip=True)) for cell in cells]
+        values = [
+            _clean_characteristic_text(cell.get_text(" ", strip=True)) for cell in cells
+        ]
         if any(values):
             return False
     return True
@@ -1560,13 +1969,15 @@ def _detect_exempt_style_page(
 
 
 def _delete_parsed(session, fetch_id: int, parcel_id: str) -> None:
-    session.execute(delete(AssessmentRecord).where(AssessmentRecord.fetch_id == fetch_id))
+    session.execute(
+        delete(AssessmentRecord).where(AssessmentRecord.fetch_id == fetch_id)
+    )
     session.execute(delete(TaxRecord).where(TaxRecord.fetch_id == fetch_id))
     session.execute(delete(PaymentRecord).where(PaymentRecord.fetch_id == fetch_id))
     session.execute(delete(ParcelSummary).where(ParcelSummary.parcel_id == parcel_id))
 
 
-def _extract_year(record: dict[str, str]) -> Optional[int]:
+def _extract_year(record: Mapping[str, object]) -> Optional[int]:
     year_value = record.get("year")
     year = _parse_year_value(year_value)
     if year:
@@ -1584,7 +1995,7 @@ def _extract_year(record: dict[str, str]) -> Optional[int]:
     return None
 
 
-def _get_summary_value(summary: dict[str, object], *keys: str) -> Optional[str]:
+def _get_summary_value(summary: Mapping[str, object], *keys: str) -> Optional[str]:
     normalized = {}
     for key, value in summary.items():
         if isinstance(key, str):
@@ -1609,11 +2020,12 @@ def _parse_year_value(value: object) -> Optional[int]:
     return None
 
 
-def _extract_assessment_fields(record: dict[str, object]) -> dict[str, object]:
+def _extract_assessment_fields(record: Mapping[str, object]) -> AssessmentFields:
     normalized = {}
     for key, value in record.items():
         if isinstance(key, str):
             normalized[_normalize_key(key)] = value
+
     def get_value(*keys: str) -> object:
         for key in keys:
             value = normalized.get(_normalize_key(key))
@@ -1666,6 +2078,22 @@ def _clean_characteristic_text(value: object) -> Optional[str]:
 
 def _parse_money(value: object) -> Optional[Decimal]:
     return _parse_decimal(value, 2)
+
+
+def _resolve_raw_path(raw_path_value: str, *, raw_dir: Path) -> Optional[Path]:
+    raw_path = Path(raw_path_value)
+    candidates = (
+        [raw_path] if raw_path.is_absolute() else [raw_path, raw_dir / raw_path]
+    )
+    for candidate_path in candidates:
+        try:
+            candidate = candidate_path.resolve()
+            candidate.relative_to(raw_dir)
+        except (OSError, ValueError):
+            continue
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _parse_decimal(value: object, scale: int) -> Optional[Decimal]:

@@ -27,7 +27,11 @@ def test_build_data_profile_reports_counts_and_coverage_for_seeded_parcel(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parse_page(load_raw_html(parcel_id)))
@@ -67,7 +71,9 @@ def test_build_data_profile_reports_counts_and_coverage_for_seeded_parcel(
     assert payload["coverage"]["parcel_year_fact_source_year_rate"] == 1.0
 
 
-def test_build_data_profile_reports_parse_errors_and_missing_sections(tmp_path: Path) -> None:
+def test_build_data_profile_reports_parse_errors_and_missing_sections(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "profile_missing.sqlite"
     database_url = f"sqlite:///{db_path}"
 
@@ -108,7 +114,9 @@ def test_profile_data_cli_emits_json(tmp_path: Path, monkeypatch) -> None:
 
     with session_scope(database_url) as session:
         session.add(Parcel(id="p1"))
-        session.add(Fetch(parcel_id="p1", url="https://example.test/p1", status_code=200))
+        session.add(
+            Fetch(parcel_id="p1", url="https://example.test/p1", status_code=200)
+        )
 
     monkeypatch.setattr(
         cli,
@@ -126,7 +134,9 @@ def test_profile_data_cli_emits_json(tmp_path: Path, monkeypatch) -> None:
     assert payload["missing_sections"]["assessment_fetches"] == 1
 
 
-def test_build_data_profile_can_filter_scope_and_has_stable_output_shape(tmp_path: Path) -> None:
+def test_build_data_profile_can_filter_scope_and_has_stable_output_shape(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "profile_filtered.sqlite"
     database_url = f"sqlite:///{db_path}"
 
@@ -144,7 +154,13 @@ def test_build_data_profile_can_filter_scope_and_has_stable_output_shape(tmp_pat
     with session_scope(database_url) as session:
         payload = build_data_profile(session, parcel_ids=["p1"])
 
-    assert set(payload) == {"generated_at", "scope", "counts", "missing_sections", "coverage"}
+    assert set(payload) == {
+        "generated_at",
+        "scope",
+        "counts",
+        "missing_sections",
+        "coverage",
+    }
     assert payload["scope"] == {
         "filtered": True,
         "parcel_filter_count": 1,

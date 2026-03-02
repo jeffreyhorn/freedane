@@ -1,0 +1,437 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from sqlalchemy import select
+from typer.testing import CliRunner
+
+from accessdane_audit import cli
+from accessdane_audit.db import init_db, session_scope
+from accessdane_audit.models import Fetch, Parcel, ParcelCharacteristic
+
+
+def _write_raw_html(tmp_path: Path, name: str, html: str) -> Path:
+    path = tmp_path / f"{name}.html"
+    path.write_text(html, encoding="utf-8")
+    return path
+
+
+def _minimal_characteristic_html(parcel_number: str = "0999-000-0000-0") -> str:
+    return f"""
+    <html>
+      <body>
+        <h1 id="parcel_detail_heading">Parcel Number - {parcel_number}</h1>
+      </body>
+    </html>
+    """
+
+
+def test_rebuild_parcel_characteristics_full_rebuild_removes_stale_rows(
+    load_raw_html,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_full.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    active_parcel_id = "061001391511"
+    stale_parcel_id = "stale-parcel"
+    raw_path = _write_raw_html(
+        tmp_path, active_parcel_id, load_raw_html(active_parcel_id)
+    )
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id=active_parcel_id), Parcel(id=stale_parcel_id)])
+        fetch = Fetch(
+            parcel_id=active_parcel_id,
+            url=f"https://example.test/{active_parcel_id}",
+            status_code=200,
+            raw_path=str(raw_path),
+            fetched_at=datetime.now(timezone.utc),
+            parsed_at=datetime.now(timezone.utc),
+        )
+        session.add(fetch)
+        session.add(
+            ParcelCharacteristic(
+                parcel_id=stale_parcel_id,
+                formatted_parcel_number="STALE",
+                built_at=datetime.now(timezone.utc),
+            )
+        )
+
+    summary = cli.rebuild_parcel_characteristics(database_url, raw_dir=tmp_path)
+
+    with session_scope(database_url) as session:
+        rows = (
+            session.execute(
+                select(ParcelCharacteristic).order_by(ParcelCharacteristic.parcel_id)
+            )
+            .scalars()
+            .all()
+        )
+
+    assert summary.selected_parcels == 2
+    assert summary.eligible_fetches_scanned == 1
+    assert summary.rows_deleted == 1
+    assert summary.rows_written == 1
+    assert summary.skipped_fetches == 0
+    assert summary.parcel_failures == 0
+    assert [row.parcel_id for row in rows] == [active_parcel_id]
+    assert rows[0].source_fetch_id == fetch.id
+    assert rows[0].formatted_parcel_number is not None
+
+
+def test_rebuild_parcel_characteristics_scoped_rebuild_prefers_more_complete_fetch(
+    load_raw_html,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_scoped.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    selected_parcel_id = "selected-parcel"
+    other_parcel_id = "other-parcel"
+    rich_raw_path = _write_raw_html(tmp_path, "rich", load_raw_html("061003330128"))
+    poor_raw_path = _write_raw_html(tmp_path, "poor", _minimal_characteristic_html())
+    now = datetime.now(timezone.utc)
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id=selected_parcel_id), Parcel(id=other_parcel_id)])
+        rich_fetch = Fetch(
+            parcel_id=selected_parcel_id,
+            url=f"https://example.test/{selected_parcel_id}/rich",
+            status_code=200,
+            raw_path=str(rich_raw_path),
+            fetched_at=now - timedelta(days=1),
+            parsed_at=now - timedelta(days=1),
+        )
+        poor_fetch = Fetch(
+            parcel_id=selected_parcel_id,
+            url=f"https://example.test/{selected_parcel_id}/poor",
+            status_code=200,
+            raw_path=str(poor_raw_path),
+            fetched_at=now,
+            parsed_at=now,
+        )
+        session.add_all([rich_fetch, poor_fetch])
+        session.add(
+            ParcelCharacteristic(
+                parcel_id=other_parcel_id,
+                formatted_parcel_number="UNCHANGED",
+                built_at=now,
+            )
+        )
+
+    summary = cli.rebuild_parcel_characteristics(
+        database_url,
+        parcel_ids=[selected_parcel_id],
+        raw_dir=tmp_path,
+    )
+
+    with session_scope(database_url) as session:
+        selected_row = session.get(ParcelCharacteristic, selected_parcel_id)
+        other_row = session.get(ParcelCharacteristic, other_parcel_id)
+
+    assert summary.selected_parcels == 1
+    assert summary.eligible_fetches_scanned == 2
+    assert summary.rows_deleted == 0
+    assert summary.rows_written == 1
+    assert summary.parcel_failures == 0
+    assert selected_row is not None
+    assert selected_row.source_fetch_id == rich_fetch.id
+    assert selected_row.current_assessment_year == 2023
+    assert other_row is not None
+    assert other_row.formatted_parcel_number == "UNCHANGED"
+
+
+def test_rebuild_parcel_characteristics_cli_builds_rows(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_cli.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    raw_path = _write_raw_html(tmp_path, parcel_id, load_raw_html(parcel_id))
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add(
+            Fetch(
+                parcel_id=parcel_id,
+                url=f"https://example.test/{parcel_id}",
+                status_code=200,
+                raw_path=str(raw_path),
+                fetched_at=datetime.now(timezone.utc),
+                parsed_at=datetime.now(timezone.utc),
+            )
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url, raw_dir=tmp_path),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["rebuild-parcel-characteristics"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Selected parcels: 1" in result.stdout
+    assert "Rows written: 1" in result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert row is not None
+    assert row.current_assessment_year == 2025
+
+
+def test_rebuild_parcel_characteristics_cli_treats_empty_ids_file_as_noop(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_empty_ids.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    raw_path = _write_raw_html(tmp_path, parcel_id, load_raw_html(parcel_id))
+    ids_path = tmp_path / "empty_ids.txt"
+    ids_path.write_text("", encoding="utf-8")
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add(
+            Fetch(
+                parcel_id=parcel_id,
+                url=f"https://example.test/{parcel_id}",
+                status_code=200,
+                raw_path=str(raw_path),
+                fetched_at=datetime.now(timezone.utc),
+                parsed_at=datetime.now(timezone.utc),
+            )
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url, raw_dir=tmp_path),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["rebuild-parcel-characteristics", "--ids", str(ids_path)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Selected parcels: 0" in result.stdout
+    assert "Rows written: 0" in result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert row is None
+
+
+def test_rebuild_parcel_characteristics_skips_broken_fetches_within_a_parcel(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_skip_bad_fetch.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    good_raw_path = _write_raw_html(tmp_path, "good", load_raw_html(parcel_id))
+    bad_raw_path = _write_raw_html(tmp_path, "bad", "BROKEN")
+    now = datetime.now(timezone.utc)
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add_all(
+            [
+                Fetch(
+                    parcel_id=parcel_id,
+                    url=f"https://example.test/{parcel_id}/good",
+                    status_code=200,
+                    raw_path=str(good_raw_path),
+                    fetched_at=now - timedelta(days=1),
+                    parsed_at=now - timedelta(days=1),
+                ),
+                Fetch(
+                    parcel_id=parcel_id,
+                    url=f"https://example.test/{parcel_id}/bad",
+                    status_code=200,
+                    raw_path=str(bad_raw_path),
+                    fetched_at=now,
+                    parsed_at=now,
+                ),
+            ]
+        )
+
+    original_parse_page = cli.parse_page
+
+    def flaky_parse_page(html: str, *, include_tax_detail_payments: bool = True):
+        if html == "BROKEN":
+            raise ValueError("simulated parse failure")
+        return original_parse_page(
+            html,
+            include_tax_detail_payments=include_tax_detail_payments,
+        )
+
+    monkeypatch.setattr(cli, "parse_page", flaky_parse_page)
+
+    summary = cli.rebuild_parcel_characteristics(database_url, raw_dir=tmp_path)
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert summary.selected_parcels == 1
+    assert summary.eligible_fetches_scanned == 2
+    assert summary.rows_written == 1
+    assert summary.skipped_fetches == 1
+    assert summary.parcel_failures == 0
+    assert row is not None
+
+
+def test_rebuild_parcel_characteristics_preserves_existing_row_when_no_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_preserve_existing.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    bad_raw_path = _write_raw_html(tmp_path, "bad_only", "BROKEN")
+    now = datetime.now(timezone.utc)
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add(
+            Fetch(
+                parcel_id=parcel_id,
+                url=f"https://example.test/{parcel_id}/bad",
+                status_code=200,
+                raw_path=str(bad_raw_path),
+                fetched_at=now,
+                parsed_at=now,
+            )
+        )
+        session.add(
+            ParcelCharacteristic(
+                parcel_id=parcel_id,
+                formatted_parcel_number="KEEP-ME",
+                built_at=now,
+            )
+        )
+
+    def always_failing_parse_page(
+        html: str, *, include_tax_detail_payments: bool = True
+    ):
+        raise ValueError("simulated parse failure")
+
+    monkeypatch.setattr(cli, "parse_page", always_failing_parse_page)
+
+    summary = cli.rebuild_parcel_characteristics(database_url, raw_dir=tmp_path)
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert summary.selected_parcels == 1
+    assert summary.eligible_fetches_scanned == 1
+    assert summary.rows_deleted == 0
+    assert summary.rows_written == 0
+    assert summary.skipped_fetches == 1
+    assert summary.parcel_failures == 1
+    assert row is not None
+    assert row.formatted_parcel_number == "KEEP-ME"
+
+
+def test_rebuild_parcel_characteristics_rejects_paths_outside_raw_dir(
+    load_raw_html,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_raw_dir_guard.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    raw_dir = tmp_path / "raw"
+    outside_raw_path = _write_raw_html(tmp_path, "outside", load_raw_html(parcel_id))
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add(
+            Fetch(
+                parcel_id=parcel_id,
+                url=f"https://example.test/{parcel_id}",
+                status_code=200,
+                raw_path=str(outside_raw_path),
+                fetched_at=datetime.now(timezone.utc),
+                parsed_at=datetime.now(timezone.utc),
+            )
+        )
+
+    summary = cli.rebuild_parcel_characteristics(database_url, raw_dir=raw_dir)
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert summary.selected_parcels == 1
+    assert summary.eligible_fetches_scanned == 1
+    assert summary.rows_deleted == 0
+    assert summary.rows_written == 0
+    assert summary.skipped_fetches == 1
+    assert summary.parcel_failures == 1
+    assert row is None
+
+
+def test_rebuild_parcel_characteristics_accepts_relative_paths_under_raw_dir(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "rebuild_characteristics_relative_raw_path.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    parcel_id = "061001391511"
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    raw_path = raw_dir / f"{parcel_id}.html"
+    raw_path.write_text(load_raw_html(parcel_id), encoding="utf-8")
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id=parcel_id))
+        session.add(
+            Fetch(
+                parcel_id=parcel_id,
+                url=f"https://example.test/{parcel_id}",
+                status_code=200,
+                raw_path=str(Path("raw") / raw_path.name),
+                fetched_at=datetime.now(timezone.utc),
+                parsed_at=datetime.now(timezone.utc),
+            )
+        )
+
+    monkeypatch.chdir(tmp_path)
+    summary = cli.rebuild_parcel_characteristics(database_url, raw_dir=Path("raw"))
+
+    with session_scope(database_url) as session:
+        row = session.get(ParcelCharacteristic, parcel_id)
+
+    assert summary.selected_parcels == 1
+    assert summary.eligible_fetches_scanned == 1
+    assert summary.rows_written == 1
+    assert summary.skipped_fetches == 0
+    assert summary.parcel_failures == 0
+    assert row is not None

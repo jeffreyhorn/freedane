@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 from bs4 import BeautifulSoup, Tag
+
+from .html_utils import html_attr_text
 
 
 @dataclass
 class ParsedPage:
-    assessment: list[dict[str, str]]
-    tax: list[dict[str, str]]
-    payments: list[dict[str, str]]
+    assessment: list[dict[str, object]]
+    tax: list[dict[str, object]]
+    payments: list[dict[str, object]]
     other: dict[str, Any]
     parcel_summary: dict[str, str]
 
@@ -23,12 +25,18 @@ def parse_page(html: str, *, include_tax_detail_payments: bool = True) -> Parsed
             soup, include_tax_detail_payments=include_tax_detail_payments
         )
 
-    assessment = _parse_section_tables(soup, "Assessment")
-    tax = _parse_section_tables(soup, "Tax")
-    payments = _parse_section_tables(soup, "Payment")
+    assessment = cast(
+        list[dict[str, object]], _parse_section_tables(soup, "Assessment")
+    )
+    tax = cast(list[dict[str, object]], _parse_section_tables(soup, "Tax"))
+    payments = cast(list[dict[str, object]], _parse_section_tables(soup, "Payment"))
     other = _extract_key_value_pairs(soup)
     return ParsedPage(
-        assessment=assessment, tax=tax, payments=payments, other=other, parcel_summary={}
+        assessment=assessment,
+        tax=tax,
+        payments=payments,
+        other=other,
+        parcel_summary={},
     )
 
 
@@ -43,14 +51,14 @@ def _is_accessdane_parcel(soup: BeautifulSoup) -> bool:
 def _parse_accessdane(
     soup: BeautifulSoup, *, include_tax_detail_payments: bool = True
 ) -> ParsedPage:
-    assessment = []
-    assessment.extend(_parse_assessment_summary(soup))
-    assessment.extend(_parse_assessment_detail(soup))
+    assessment: list[dict[str, object]] = []
+    assessment.extend(cast(list[dict[str, object]], _parse_assessment_summary(soup)))
+    assessment.extend(cast(list[dict[str, object]], _parse_assessment_detail(soup)))
     valuation = _parse_valuation_breakout(soup)
     if valuation:
         assessment.append({"source": "valuation_breakout", "rows": valuation})
 
-    tax = []
+    tax: list[dict[str, object]] = []
     tax.extend(_parse_tax_summary_tables(soup))
     tax_details = _parse_tax_details_modals(soup)
     if tax_details:
@@ -140,15 +148,20 @@ def _parse_valuation_breakout(soup: BeautifulSoup) -> list[dict[str, str]]:
     rows = table.find_all("tr")
     if not rows:
         return []
-    headers = [_norm(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"])]
+    headers = [
+        _norm(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"])
+    ]
     records: list[dict[str, str]] = []
     for row in rows[1:]:
         cells = row.find_all(["td", "th"])
         if not cells:
             continue
         values = [_norm(cell.get_text(" ", strip=True)) for cell in cells]
+        record: dict[str, str]
         if headers and len(values) == len(headers):
-            record = {headers[i] or f"col_{i+1}": values[i] for i in range(len(headers))}
+            record = {
+                headers[i] or f"col_{i+1}": values[i] for i in range(len(headers))
+            }
         else:
             record = {f"col_{i+1}": values[i] for i in range(len(values))}
         if any(record.values()):
@@ -156,11 +169,11 @@ def _parse_valuation_breakout(soup: BeautifulSoup) -> list[dict[str, str]]:
     return records
 
 
-def _parse_tax_summary_tables(soup: BeautifulSoup) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
+def _parse_tax_summary_tables(soup: BeautifulSoup) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
     for table in soup.select(".taxDetailTable table[data-tableyear]"):
-        year_label = table.get("data-tableyear") or ""
-        record: dict[str, str] = {"source": "summary"}
+        year_label = html_attr_text(table.get("data-tableyear"))
+        record: dict[str, object] = {"source": "summary"}
         year = _parse_year(year_label)
         if year:
             record["year"] = str(year)
@@ -172,7 +185,9 @@ def _parse_tax_summary_tables(soup: BeautifulSoup) -> list[dict[str, str]]:
             if not cells:
                 continue
             if row.find_all("th") and len(cells) == 3:
-                header_labels = [_norm(cell.get_text(" ", strip=True)) for cell in cells]
+                header_labels = [
+                    _norm(cell.get_text(" ", strip=True)) for cell in cells
+                ]
                 expect_values = True
                 continue
             if expect_values and len(cells) == 3 and not row.find_all("th"):
@@ -199,7 +214,7 @@ def _parse_tax_details_modals(soup: BeautifulSoup) -> list[dict[str, str]]:
         table = modal.select_one("table.taxInfoTable")
         if not table:
             continue
-        year = _parse_year(modal.get("id", ""))
+        year = _parse_year(html_attr_text(modal.get("id", "")))
         section = ""
         for row in table.find_all("tr"):
             cells = row.find_all(["td", "th"])
@@ -209,12 +224,14 @@ def _parse_tax_details_modals(soup: BeautifulSoup) -> list[dict[str, str]]:
                 section = _norm(cells[0].get_text(" ", strip=True))
                 continue
             values = [_norm(cell.get_text(" ", strip=True)) for cell in cells]
-            row_classes = row.get("class") or []
+            row_classes = _class_names(row.get("class"))
             record: dict[str, str] = {
                 "section": section,
-                "row_type": "header"
-                if ("rowTitle" in row_classes or row.find_all("th"))
-                else "data",
+                "row_type": (
+                    "header"
+                    if ("rowTitle" in row_classes or row.find_all("th"))
+                    else "data"
+                ),
             }
             if year:
                 record["year"] = str(year)
@@ -225,14 +242,14 @@ def _parse_tax_details_modals(soup: BeautifulSoup) -> list[dict[str, str]]:
     return records
 
 
-def _group_tax_details(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+def _group_tax_details(rows: list[dict[str, str]]) -> list[dict[str, object]]:
     grouped: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         year = row.get("year") or "unknown"
         grouped.setdefault(year, []).append(row)
-    records: list[dict[str, str]] = []
+    records: list[dict[str, object]] = []
     for year, items in grouped.items():
-        record = {"source": "detail"}
+        record: dict[str, object] = {"source": "detail"}
         if year != "unknown":
             record["year"] = year
         record["rows"] = items
@@ -337,7 +354,9 @@ def _build_tax_detail_structures(
     has_other_tax_items = any(
         _tax_detail_amount_is_nonzero(row.get("Amount"))
         for row in other_tax_item_rows
-        if not _normalize_tax_detail_label(row.get("Other Tax Items") or "").startswith("No ")
+        if not _normalize_tax_detail_label(row.get("Other Tax Items") or "").startswith(
+            "No "
+        )
     )
 
     return {
@@ -387,26 +406,32 @@ def _tax_detail_amount_is_nonzero(value: str | None) -> bool:
     return value not in {"$0.00", "0.00", "0", "$0"}
 
 
-def _parse_tax_payments(soup: BeautifulSoup) -> list[dict[str, str]]:
+def _parse_tax_payments(soup: BeautifulSoup) -> list[dict[str, object]]:
     table = soup.select_one("#TaxPayments table.taxTable")
     if not table:
         return []
     rows = table.find_all("tr")
     if not rows:
         return []
-    headers = [_norm(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"])]
-    records: list[dict[str, str]] = []
+    headers = [
+        _norm(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"])
+    ]
+    records: list[dict[str, object]] = []
     last_tax_year: str | None = None
     for row in rows[1:]:
         cells = row.find_all(["td", "th"])
         if not cells:
             continue
         values = [_norm(cell.get_text(" ", strip=True)) for cell in cells]
+        record: dict[str, object]
         if headers and len(values) == len(headers):
-            record = {headers[i] or f"col_{i+1}": values[i] for i in range(len(headers))}
+            record = {
+                headers[i] or f"col_{i+1}": values[i] for i in range(len(headers))
+            }
         else:
             record = {f"col_{i+1}": values[i] for i in range(len(values))}
-        tax_year = record.get("Tax Year") or record.get("col_1")
+        tax_year_value = record.get("Tax Year") or record.get("col_1")
+        tax_year = tax_year_value if isinstance(tax_year_value, str) else None
         if tax_year:
             last_tax_year = tax_year
         elif last_tax_year:
@@ -416,13 +441,13 @@ def _parse_tax_payments(soup: BeautifulSoup) -> list[dict[str, str]]:
     return records
 
 
-def _parse_tax_detail_payments(soup: BeautifulSoup) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
+def _parse_tax_detail_payments(soup: BeautifulSoup) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
     for modal in soup.select("div[id^='TaxDetails']"):
         table = modal.select_one("table.taxInfoTable")
         if not table:
             continue
-        year = _parse_year(modal.get("id", ""))
+        year = _parse_year(html_attr_text(modal.get("id", "")))
         rows = table.find_all("tr")
         headers: list[str] = []
         in_payments = False
@@ -438,12 +463,12 @@ def _parse_tax_detail_payments(soup: BeautifulSoup) -> list[dict[str, str]]:
                 continue
             if not in_payments:
                 continue
-            row_classes = row.get("class") or []
+            row_classes = _class_names(row.get("class"))
             if ("rowTitle" in row_classes or row.find_all("th")) and not headers:
                 headers = [_norm(cell.get_text(" ", strip=True)) for cell in cells]
                 continue
             values = [_norm(cell.get_text(" ", strip=True)) for cell in cells]
-            record: dict[str, str] = {"source": "tax_detail_payments"}
+            record: dict[str, object] = {"source": "tax_detail_payments"}
             if year:
                 record["year"] = str(year)
             if headers:
@@ -505,11 +530,19 @@ def _extract_parcel_number(soup: BeautifulSoup) -> str | None:
 
 def _extract_parcel_id(soup: BeautifulSoup) -> str | None:
     for anchor in soup.find_all("a"):
-        href = anchor.get("href") or ""
+        href = html_attr_text(anchor.get("href"))
         match = re.search(r"/(\d{10,14})", href)
         if match:
             return match.group(1)
     return None
+
+
+def _class_names(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
 
 
 def _parse_year(value: str) -> int | None:

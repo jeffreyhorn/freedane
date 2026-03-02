@@ -50,9 +50,13 @@ def build_data_profile(
     payment_count = _count_rows(session, PaymentRecord, parcel_filter)
     parcel_summary_count = _count_rows(session, ParcelSummary, parcel_filter)
     parcel_year_fact_count = _count_rows(session, ParcelYearFact, parcel_filter)
-    parcel_year_fact_parcel_count = _count_distinct(session, ParcelYearFact, "parcel_id", parcel_filter)
+    parcel_year_fact_parcel_count = _count_distinct(
+        session, ParcelYearFact, "parcel_id", parcel_filter
+    )
 
-    assessment_fetch_ids = _fetch_ids_with_rows(session, AssessmentRecord, parcel_filter)
+    assessment_fetch_ids = _fetch_ids_with_rows(
+        session, AssessmentRecord, parcel_filter
+    )
     tax_fetch_ids = _fetch_ids_with_rows(session, TaxRecord, parcel_filter)
     payment_fetch_ids = _fetch_ids_with_rows(session, PaymentRecord, parcel_filter)
 
@@ -67,7 +71,9 @@ def build_data_profile(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": {
             "filtered": parcel_filter is not None,
-            "parcel_filter_count": len(parcel_filter) if parcel_filter is not None else None,
+            "parcel_filter_count": (
+                len(parcel_filter) if parcel_filter is not None else None
+            ),
         },
         "counts": {
             "parcels": parcel_count,
@@ -87,14 +93,22 @@ def build_data_profile(
             "assessment_fetches": missing_assessment_fetch_count,
             "tax_fetches": missing_tax_fetch_count,
             "payment_fetches": missing_payment_fetch_count,
-            "current_parcel_summary_parcels": max(parcel_count - parcel_summary_count, 0),
+            "current_parcel_summary_parcels": max(
+                parcel_count - parcel_summary_count, 0
+            ),
         },
         "coverage": {
             "successful_fetch_rate": _ratio(successful_fetch_count, fetch_count),
-            "parsed_successful_fetch_rate": _ratio(parsed_fetch_count, successful_fetch_count),
-            "parse_error_successful_fetch_rate": _ratio(parse_error_count, successful_fetch_count),
+            "parsed_successful_fetch_rate": _ratio(
+                parsed_fetch_count, successful_fetch_count
+            ),
+            "parse_error_successful_fetch_rate": _ratio(
+                parse_error_count, successful_fetch_count
+            ),
             "parcel_summary_parcel_rate": _ratio(parcel_summary_count, parcel_count),
-            "parcel_year_fact_parcel_rate": _ratio(parcel_year_fact_parcel_count, parcel_count),
+            "parcel_year_fact_parcel_rate": _ratio(
+                parcel_year_fact_parcel_count, parcel_count
+            ),
             "parcel_year_fact_source_year_rate": _ratio(
                 parcel_year_fact_count,
                 source_parcel_year_count,
@@ -103,7 +117,9 @@ def build_data_profile(
     }
 
 
-def _count_rows(session: Session, model, parcel_filter: Optional[set[str]], extra_where=()) -> int:
+def _count_rows(
+    session: Session, model, parcel_filter: Optional[set[str]], extra_where=()
+) -> int:
     query = select(func.count())
     query = query.select_from(model)
     query = _apply_parcel_filter(query, model, parcel_filter)
@@ -124,24 +140,33 @@ def _count_distinct(
     return int(session.execute(query).scalar_one())
 
 
-def _successful_fetch_ids(session: Session, parcel_filter: Optional[set[str]]) -> set[int]:
+def _successful_fetch_ids(
+    session: Session, parcel_filter: Optional[set[str]]
+) -> set[int]:
     query = select(Fetch.id).where(Fetch.status_code == 200)
     query = _apply_parcel_filter(query, Fetch, parcel_filter)
     return set(session.execute(query).scalars())
 
 
-def _fetch_ids_with_rows(session: Session, model, parcel_filter: Optional[set[str]]) -> set[int]:
+def _fetch_ids_with_rows(
+    session: Session, model, parcel_filter: Optional[set[str]]
+) -> set[int]:
     query = select(model.fetch_id).distinct()
     query = _apply_parcel_filter(query, model, parcel_filter)
     return set(session.execute(query).scalars())
 
 
-def _source_parcel_year_keys(session: Session, parcel_filter: Optional[set[str]]) -> set[tuple[str, int]]:
+def _source_parcel_year_keys(
+    session: Session, parcel_filter: Optional[set[str]]
+) -> set[tuple[str, int]]:
     keys: set[tuple[str, int]] = set()
     for model in (AssessmentRecord, TaxRecord, PaymentRecord):
         query = select(model.parcel_id, model.year).where(model.year.is_not(None))
         query = _apply_parcel_filter(query, model, parcel_filter)
-        keys.update(session.execute(query).all())
+        for parcel_id, year in session.execute(query).all():
+            if parcel_id is None or year is None:
+                continue
+            keys.add((str(parcel_id), int(year)))
     return keys
 
 
