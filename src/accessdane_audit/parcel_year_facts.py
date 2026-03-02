@@ -22,8 +22,11 @@ from .models import (
 @dataclass(frozen=True)
 class PaymentRollupCandidate:
     fetch_id: int
-    usable_rows: list[tuple[date, Decimal]]
+    usable_rows: tuple[tuple[date, Decimal], ...]
     has_placeholder: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "usable_rows", tuple(self.usable_rows))
 
 
 @dataclass(frozen=True)
@@ -243,22 +246,22 @@ def _choose_payment(
 
     candidates: list[PaymentRollupCandidate] = []
     for fetch_id, fetch_rows in rows_by_fetch.items():
-        usable_rows: list[tuple[date, Decimal]] = []
+        usable_payment_rows: list[tuple[date, Decimal]] = []
         for row in fetch_rows:
             payment_date = _parse_date(row.data.get("Date of Payment"))
             amount = _parse_money(row.data.get("Amount"))
             if payment_date is not None and amount is not None:
-                usable_rows.append((payment_date, amount))
+                usable_payment_rows.append((payment_date, amount))
         has_placeholder = any(
             str(row.data.get("Date of Payment") or "").strip() == "No payments found."
             for row in fetch_rows
         )
-        if not usable_rows and not has_placeholder:
+        if not usable_payment_rows and not has_placeholder:
             continue
         candidates.append(
             PaymentRollupCandidate(
                 fetch_id=fetch_id,
-                usable_rows=usable_rows,
+                usable_rows=tuple(usable_payment_rows),
                 has_placeholder=has_placeholder,
             )
         )
@@ -275,13 +278,13 @@ def _choose_payment(
         ),
     )
 
-    usable_rows = chosen.usable_rows
-    if usable_rows:
-        dates = [payment_date for payment_date, _ in usable_rows]
-        amounts = [amount for _, amount in usable_rows]
+    selected_rows = chosen.usable_rows
+    if selected_rows:
+        dates = [payment_date for payment_date, _ in selected_rows]
+        amounts = [amount for _, amount in selected_rows]
         return PaymentRollup(
             payment_fetch_id=chosen.fetch_id,
-            payment_event_count=len(usable_rows),
+            payment_event_count=len(selected_rows),
             payment_total_amount=sum(amounts, Decimal("0.00")),
             payment_first_date=min(dates),
             payment_last_date=max(dates),

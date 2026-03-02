@@ -9,7 +9,10 @@ from sqlalchemy import select
 from accessdane_audit.cli import _store_parsed
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import Fetch, Parcel, ParcelYearFact
-from accessdane_audit.parcel_year_facts import rebuild_parcel_year_facts
+from accessdane_audit.parcel_year_facts import (
+    PaymentRollupCandidate,
+    rebuild_parcel_year_facts,
+)
 from accessdane_audit.parse import parse_page
 
 
@@ -67,6 +70,20 @@ def test_rebuild_parcel_year_facts_prefers_detail_assessment_and_rolls_up_paymen
     assert row.payment_last_date == date(2024, 6, 24)
     assert row.payment_has_placeholder_row is False
     assert row.current_owner_name is None
+
+
+def test_payment_rollup_candidate_stores_usable_rows_as_immutable_tuple() -> None:
+    usable_rows = [(date(2024, 1, 31), Decimal("100.00"))]
+
+    candidate = PaymentRollupCandidate(
+        fetch_id=1,
+        usable_rows=usable_rows,
+        has_placeholder=False,
+    )
+    usable_rows.append((date(2024, 6, 24), Decimal("200.00")))
+
+    assert candidate.usable_rows == ((date(2024, 1, 31), Decimal("100.00")),)
+    assert isinstance(candidate.usable_rows, tuple)
 
 
 def test_rebuild_parcel_year_facts_preserves_owner_names_and_placeholder_payments(
