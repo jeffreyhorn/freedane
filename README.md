@@ -109,7 +109,7 @@ Operational notes:
 - `run-all --skip-anomalies` skips the final anomaly JSON step for faster parser iteration.
 - `parse` supports `--resume-after-fetch-id` and `--limit` so long reparses can resume in smaller chunks.
 - `run-all --parse-only` supports `--parse-resume-after-fetch-id` and `--parse-limit` for the same chunked parse-stage control.
-- both parse paths now print a final parse summary with selected, succeeded, failed, and skipped fetch counts.
+- Both parse paths now print a final parse summary with selected, succeeded, failed, and skipped fetch counts.
 
 To reparse and replace existing rows for each fetch:
 

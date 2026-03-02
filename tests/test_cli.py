@@ -444,6 +444,90 @@ def test_run_all_parse_limit_scopes_downstream_steps_to_parsed_subset(
     assert second_rows == []
 
 
+def test_run_all_parse_resume_after_fetch_id_scopes_downstream_steps(
+    load_raw_html,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "run_all_parse_resume.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    first_parcel_id = "061001391511"
+    second_parcel_id = "061002275801"
+    first_raw_path = tmp_path / f"{first_parcel_id}.html"
+    second_raw_path = tmp_path / f"{second_parcel_id}.html"
+    first_raw_path.write_text(load_raw_html(first_parcel_id), encoding="utf-8")
+    second_raw_path.write_text(load_raw_html(second_parcel_id), encoding="utf-8")
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id=first_parcel_id), Parcel(id=second_parcel_id)])
+        first_fetch = Fetch(
+            parcel_id=first_parcel_id,
+            url=f"https://example.test/{first_parcel_id}",
+            status_code=200,
+            raw_path=str(first_raw_path),
+        )
+        second_fetch = Fetch(
+            parcel_id=second_parcel_id,
+            url=f"https://example.test/{second_parcel_id}",
+            status_code=200,
+            raw_path=str(second_raw_path),
+        )
+        session.add_all([first_fetch, second_fetch])
+        session.flush()
+        first_fetch_id = first_fetch.id
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "run-all",
+            "--parse-only",
+            "--reparse",
+            "--parse-resume-after-fetch-id",
+            str(first_fetch_id),
+            "--build-parcel-year-facts",
+            "--skip-anomalies",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "Parse summary: selected=1 succeeded=1 failed=0 skipped_missing_raw_path=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        first_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == first_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
+        second_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == second_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+    assert first_rows == []
+    assert second_rows
+
+
 def test_clean_stringifies_non_string_scalars() -> None:
     assert cli._clean(6) == "6"
     assert cli._clean(3.5) == "3.5"

@@ -542,7 +542,7 @@ def run_all_cmd(
                 )
 
     with session_scope(settings.database_url) as session:
-        parsed_scope_ids: list[str] = []
+        parsed_scope_ids: Optional[list[str]] = None
         if parse_only and parse_ids:
             parsed_scope_ids = _collect_ids([], parse_ids)
         work_items = _collect_parse_work_items(
@@ -550,7 +550,7 @@ def run_all_cmd(
             parcel_id=None,
             unparsed=not reparse,
             reparse=reparse,
-            parcel_ids=parsed_scope_ids or None,
+            parcel_ids=parsed_scope_ids,
             resume_after_fetch_id=parse_resume_after_fetch_id,
             limit=parse_limit if parse_limit > 0 else None,
         )
@@ -560,7 +560,7 @@ def run_all_cmd(
             dict.fromkeys(item.parcel_id for item in work_items)
         )
 
-    _run_parse_work_items(
+    parse_summary = _run_parse_work_items(
         settings.database_url,
         work_items,
         reparse=reparse,
@@ -571,22 +571,29 @@ def run_all_cmd(
     )
 
     if build_parcel_year_facts:
-        with session_scope(settings.database_url) as session:
-            fact_rows = rebuild_parcel_year_facts(
-                session,
-                parcel_ids=run_scope_parcel_ids,
-            )
-        typer.echo(f"parcel_year_facts rows built: {fact_rows}")
+        if run_scope_parcel_ids == [] and parse_summary.selected_fetches == 0:
+            typer.echo("parcel_year_facts rows built: 0")
+        else:
+            with session_scope(settings.database_url) as session:
+                fact_rows = rebuild_parcel_year_facts(
+                    session,
+                    parcel_ids=run_scope_parcel_ids,
+                )
+            typer.echo(f"parcel_year_facts rows built: {fact_rows}")
 
     if not skip_anomalies:
-        with session_scope(settings.database_url) as session:
-            anomalies = detect_anomalies(session, parcel_ids=run_scope_parcel_ids)
-            anomalies_out.parent.mkdir(parents=True, exist_ok=True)
-            anomalies_out.write_text(
-                json.dumps([asdict(item) for item in anomalies], indent=2),
-                encoding="utf-8",
-            )
-            typer.echo(f"Anomalies: {len(anomalies)} -> {anomalies_out}")
+        anomalies_out.parent.mkdir(parents=True, exist_ok=True)
+        if run_scope_parcel_ids == [] and parse_summary.selected_fetches == 0:
+            anomalies_out.write_text("[]", encoding="utf-8")
+            typer.echo(f"Anomalies: 0 -> {anomalies_out}")
+        else:
+            with session_scope(settings.database_url) as session:
+                anomalies = detect_anomalies(session, parcel_ids=run_scope_parcel_ids)
+                anomalies_out.write_text(
+                    json.dumps([asdict(item) for item in anomalies], indent=2),
+                    encoding="utf-8",
+                )
+                typer.echo(f"Anomalies: {len(anomalies)} -> {anomalies_out}")
 
 
 @app.command("fetch")
@@ -660,7 +667,7 @@ def parse_cmd(
             limit=limit if limit > 0 else None,
         )
 
-    _run_parse_work_items(
+    parse_summary = _run_parse_work_items(
         settings.database_url,
         work_items,
         reparse=reparse,
@@ -669,6 +676,8 @@ def parse_cmd(
         debug_limit=debug_limit,
         debug_only_empty=debug_only_empty,
     )
+    if parse_summary.selected_fetches == 0:
+        return
 
 
 def _collect_parse_work_items(
@@ -688,7 +697,7 @@ def _collect_parse_work_items(
     )
     if parcel_id:
         query = query.where(Fetch.parcel_id == parcel_id)
-    if parcel_ids:
+    if parcel_ids is not None:
         query = query.where(Fetch.parcel_id.in_(parcel_ids))
     if unparsed and not reparse:
         query = query.where(Fetch.parsed_at.is_(None))
