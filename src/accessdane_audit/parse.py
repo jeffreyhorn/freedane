@@ -6,6 +6,8 @@ from typing import Any, cast
 
 from bs4 import BeautifulSoup, Tag
 
+from .html_utils import html_attr_text
+
 
 @dataclass
 class ParsedPage:
@@ -170,7 +172,7 @@ def _parse_valuation_breakout(soup: BeautifulSoup) -> list[dict[str, str]]:
 def _parse_tax_summary_tables(soup: BeautifulSoup) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for table in soup.select(".taxDetailTable table[data-tableyear]"):
-        year_label = _attr_text(table.get("data-tableyear"))
+        year_label = html_attr_text(table.get("data-tableyear"))
         record: dict[str, object] = {"source": "summary"}
         year = _parse_year(year_label)
         if year:
@@ -212,7 +214,7 @@ def _parse_tax_details_modals(soup: BeautifulSoup) -> list[dict[str, str]]:
         table = modal.select_one("table.taxInfoTable")
         if not table:
             continue
-        year = _parse_year(_attr_text(modal.get("id", "")))
+        year = _parse_year(html_attr_text(modal.get("id", "")))
         section = ""
         for row in table.find_all("tr"):
             cells = row.find_all(["td", "th"])
@@ -445,7 +447,7 @@ def _parse_tax_detail_payments(soup: BeautifulSoup) -> list[dict[str, object]]:
         table = modal.select_one("table.taxInfoTable")
         if not table:
             continue
-        year = _parse_year(_attr_text(modal.get("id", "")))
+        year = _parse_year(html_attr_text(modal.get("id", "")))
         rows = table.find_all("tr")
         headers: list[str] = []
         in_payments = False
@@ -528,20 +530,11 @@ def _extract_parcel_number(soup: BeautifulSoup) -> str | None:
 
 def _extract_parcel_id(soup: BeautifulSoup) -> str | None:
     for anchor in soup.find_all("a"):
-        href = _attr_text(anchor.get("href"))
+        href = html_attr_text(anchor.get("href"))
         match = re.search(r"/(\d{10,14})", href)
         if match:
             return match.group(1)
     return None
-
-
-def _attr_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = [item for item in value if isinstance(item, str)]
-        return " ".join(parts)
-    return ""
 
 
 def _class_names(value: object) -> list[str]:

@@ -273,3 +273,9 @@ def test_parse_reparse_commits_successful_fetches_even_if_a_later_fetch_hits_db_
     assert fetches[failing_parcel_id].parsed_at is None
     assert fetches[succeeding_parcel_id].parse_error is None
     assert fetches[succeeding_parcel_id].parsed_at is not None
+
+
+def test_clean_stringifies_non_string_scalars() -> None:
+    assert cli._clean(6) == "6"
+    assert cli._clean(3.5) == "3.5"
+    assert cli._clean(None) is None

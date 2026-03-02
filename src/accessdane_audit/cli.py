@@ -18,6 +18,7 @@ from .anomaly import detect_anomalies
 from .config import load_settings
 from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
+from .html_utils import html_attr_text
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -772,7 +773,9 @@ def rebuild_parcel_characteristics_cmd(
     if ids or ids_file is not None:
         parcel_ids = _collect_ids(ids, ids_file)
     summary = rebuild_parcel_characteristics(
-        settings.database_url, parcel_ids=parcel_ids
+        settings.database_url,
+        parcel_ids=parcel_ids,
+        raw_dir=settings.raw_dir,
     )
     typer.echo(f"Selected parcels: {summary.selected_parcels}")
     typer.echo(f"Eligible fetches scanned: {summary.eligible_fetches_scanned}")
@@ -788,10 +791,16 @@ def rebuild_parcel_characteristics(
     database_url: str,
     *,
     parcel_ids: Optional[list[str]] = None,
+    raw_dir: Optional[Path] = None,
 ) -> ParcelCharacteristicRebuildSummary:
     target_parcel_ids = _select_parcel_ids_for_parcel_characteristics_rebuild(
         database_url,
         parcel_ids=parcel_ids,
+    )
+    resolved_raw_dir = (
+        raw_dir.expanduser().resolve()
+        if raw_dir is not None
+        else load_settings().raw_dir.expanduser().resolve()
     )
     eligible_fetches_scanned = 0
     rows_deleted = 0
@@ -803,7 +812,11 @@ def rebuild_parcel_characteristics(
     for parcel_id in target_parcel_ids:
         session = SessionFactory()
         try:
-            result = _rebuild_parcel_characteristics_for_parcel(session, parcel_id)
+            result = _rebuild_parcel_characteristics_for_parcel(
+                session,
+                parcel_id,
+                raw_dir=resolved_raw_dir,
+            )
             eligible_fetches_scanned += result.eligible_fetches_scanned
             skipped_fetches += result.skipped_fetches
             if result.parcel_failed:
@@ -877,6 +890,8 @@ def _select_parcel_ids_for_parcel_characteristics_rebuild(
 def _rebuild_parcel_characteristics_for_parcel(
     session,
     parcel_id: str,
+    *,
+    raw_dir: Path,
 ) -> _ParcelCharacteristicRebuildResult:
     fetches = (
         session.execute(
@@ -915,8 +930,8 @@ def _rebuild_parcel_characteristics_for_parcel(
     for fetch in fetches:
         if not fetch.raw_path:
             continue
-        raw_path = Path(fetch.raw_path)
-        if not raw_path.exists():
+        raw_path = _resolve_raw_path(fetch.raw_path, raw_dir=raw_dir)
+        if raw_path is None:
             skipped_fetches += 1
             continue
         try:
@@ -1250,8 +1265,10 @@ def _parse_optional_int(value: Optional[str]) -> Optional[int]:
 
 
 def _clean(value: object) -> Optional[str]:
-    if not isinstance(value, str):
+    if value is None:
         return None
+    if not isinstance(value, str):
+        value = str(value)
     value = value.strip()
     return value or None
 
@@ -1430,7 +1447,7 @@ def _parse_parcel_history_entry(
 
 
 def _extract_related_parcel_id(anchor) -> Optional[str]:
-    href = _html_attr_text(anchor.get("href"))
+    href = html_attr_text(anchor.get("href"))
     match = re.search(r"/(\d{10,14})\b", href)
     if match:
         return match.group(1)
@@ -1770,7 +1787,7 @@ def _has_named_link(soup: BeautifulSoup, label: str) -> Optional[bool]:
         text = " ".join(anchor.get_text(" ", strip=True).split())
         if text == label:
             return True
-        href = _html_attr_text(anchor.get("href")).lower()
+        href = html_attr_text(anchor.get("href")).lower()
         if any(token in href for token in href_tokens.get(label, ())):
             return True
     return False
@@ -2059,16 +2076,24 @@ def _clean_characteristic_text(value: object) -> Optional[str]:
     return value
 
 
-def _html_attr_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return " ".join(item for item in value if isinstance(item, str))
-    return ""
-
-
 def _parse_money(value: object) -> Optional[Decimal]:
     return _parse_decimal(value, 2)
+
+
+def _resolve_raw_path(raw_path_value: str, *, raw_dir: Path) -> Optional[Path]:
+    raw_path = Path(raw_path_value)
+    candidates = (
+        [raw_path] if raw_path.is_absolute() else [raw_path, raw_dir / raw_path]
+    )
+    for candidate_path in candidates:
+        try:
+            candidate = candidate_path.resolve()
+            candidate.relative_to(raw_dir)
+        except (OSError, ValueError):
+            continue
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _parse_decimal(value: object, scale: int) -> Optional[Decimal]:

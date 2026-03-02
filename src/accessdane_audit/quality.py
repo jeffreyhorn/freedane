@@ -14,6 +14,9 @@ from .models import AssessmentRecord, Fetch, ParcelSummary, PaymentRecord, TaxRe
 
 ASSESSMENT_STALE_YEAR_THRESHOLD = 4
 ASSESSMENT_EXPECTED_CARRY_FORWARD_RUN_LENGTH = 5
+UNPARSED_SUCCESSFUL_FETCH_MESSAGE = (
+    "Successful fetch has neither parse results nor parse error."
+)
 
 
 @dataclass
@@ -361,9 +364,7 @@ def _check_fetch_parse_consistency(
             issues.append(
                 QualityIssue(
                     code="unparsed_successful_fetch",
-                    message=(
-                        "Successful fetch has neither parse results nor parse " "error."
-                    ),
+                    message=UNPARSED_SUCCESSFUL_FETCH_MESSAGE,
                     parcel_id=fetch.parcel_id,
                     fetch_id=fetch.id,
                 )

@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .config import Settings
+from .html_utils import html_attr_text
 
 PARCEL_NUMBER_RE = re.compile(r"\b\d{4}-\d{3}-\d{4}-\d\b")
 PARCEL_ID_RE = re.compile(r"\b\d{10,14}\b")
@@ -59,7 +60,7 @@ def parse_search_results(html: str) -> tuple[list[str], bool]:
     for anchor in soup.find_all("a"):
         candidate = _extract_parcel_id(
             anchor.get_text(" ", strip=True),
-            _attr_text(anchor.get("href")),
+            html_attr_text(anchor.get("href")) or None,
         )
         if candidate and candidate not in seen:
             parcel_ids.append(candidate)
@@ -81,12 +82,3 @@ def _extract_parcel_id(text: str, href: Optional[str]) -> Optional[str]:
 
 def _digits_only(value: str) -> str:
     return re.sub(r"\D", "", value)
-
-
-def _attr_text(value: object) -> Optional[str]:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = [item for item in value if isinstance(item, str)]
-        return " ".join(parts) or None
-    return None
