@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from sqlalchemy import select
@@ -17,7 +17,9 @@ class Anomaly:
     message: str
 
 
-def detect_anomalies(session: Session, parcel_ids: Optional[Iterable[str]] = None) -> list[Anomaly]:
+def detect_anomalies(
+    session: Session, parcel_ids: Optional[Iterable[str]] = None
+) -> list[Anomaly]:
     anomalies: list[Anomaly] = []
 
     parcel_filter = None
@@ -32,7 +34,9 @@ def detect_anomalies(session: Session, parcel_ids: Optional[Iterable[str]] = Non
     for parcel_id in sorted(all_parcels):
         if not assessments.get(parcel_id):
             anomalies.append(
-                Anomaly(parcel_id, "missing_assessment", "No assessment records parsed.")
+                Anomaly(
+                    parcel_id, "missing_assessment", "No assessment records parsed."
+                )
             )
         if not taxes.get(parcel_id):
             anomalies.append(

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
-import time
 from typing import Optional
 
 import httpx

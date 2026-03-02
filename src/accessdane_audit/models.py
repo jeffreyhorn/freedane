@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     String,
     func,
@@ -40,9 +40,7 @@ class Fetch(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parcel_id: Mapped[str] = mapped_column(
-        String, ForeignKey("parcels.id"), index=True
-    )
+    parcel_id: Mapped[str] = mapped_column(String, ForeignKey("parcels.id"), index=True)
     url: Mapped[str] = mapped_column(String)
     status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(
@@ -61,20 +59,22 @@ class AssessmentRecord(Base):
     __tablename__ = "assessments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parcel_id: Mapped[str] = mapped_column(
-        String, ForeignKey("parcels.id"), index=True
-    )
-    fetch_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("fetches.id"), index=True
-    )
+    parcel_id: Mapped[str] = mapped_column(String, ForeignKey("parcels.id"), index=True)
+    fetch_id: Mapped[int] = mapped_column(Integer, ForeignKey("fetches.id"), index=True)
     year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    valuation_classification: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    valuation_classification: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
     assessment_acres: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 3), nullable=True
     )
     land_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
-    improved_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
-    total_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    improved_value: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    total_value: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
     average_assessment_ratio: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(8, 4), nullable=True
     )
@@ -92,12 +92,8 @@ class TaxRecord(Base):
     __tablename__ = "taxes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parcel_id: Mapped[str] = mapped_column(
-        String, ForeignKey("parcels.id"), index=True
-    )
-    fetch_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("fetches.id"), index=True
-    )
+    parcel_id: Mapped[str] = mapped_column(String, ForeignKey("parcels.id"), index=True)
+    fetch_id: Mapped[int] = mapped_column(Integer, ForeignKey("fetches.id"), index=True)
     year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
@@ -109,12 +105,8 @@ class PaymentRecord(Base):
     __tablename__ = "payments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parcel_id: Mapped[str] = mapped_column(
-        String, ForeignKey("parcels.id"), index=True
-    )
-    fetch_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("fetches.id"), index=True
-    )
+    parcel_id: Mapped[str] = mapped_column(String, ForeignKey("parcels.id"), index=True)
+    fetch_id: Mapped[int] = mapped_column(Integer, ForeignKey("fetches.id"), index=True)
     year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     data: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
@@ -129,9 +121,7 @@ class ParcelSummary(Base):
     parcel_id: Mapped[str] = mapped_column(
         String, ForeignKey("parcels.id"), unique=True, index=True
     )
-    fetch_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("fetches.id"), index=True
-    )
+    fetch_id: Mapped[int] = mapped_column(Integer, ForeignKey("fetches.id"), index=True)
     municipality_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     parcel_description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     owner_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -168,10 +158,16 @@ class ParcelYearFact(Base):
     )
 
     municipality_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    current_parcel_description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    current_parcel_description: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
     current_owner_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    current_primary_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    current_billing_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    current_primary_address: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    current_billing_address: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
 
     assessment_valuation_classification: Mapped[Optional[str]] = mapped_column(
         String, nullable=True
@@ -194,7 +190,9 @@ class ParcelYearFact(Base):
     assessment_estimated_fair_market_value: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(14, 2), nullable=True
     )
-    assessment_valuation_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    assessment_valuation_date: Mapped[Optional[date]] = mapped_column(
+        Date, nullable=True
+    )
 
     tax_total_assessed_value: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(14, 2), nullable=True
@@ -206,7 +204,9 @@ class ParcelYearFact(Base):
         Numeric(14, 2), nullable=True
     )
     tax_taxes: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
-    tax_specials: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
+    tax_specials: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
     tax_first_dollar_credit: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(14, 2), nullable=True
     )
@@ -251,8 +251,12 @@ class ParcelCharacteristic(Base):
         Integer, ForeignKey("fetches.id"), nullable=True
     )
 
-    formatted_parcel_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    state_municipality_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    formatted_parcel_number: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    state_municipality_code: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
     township: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     range: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     section: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -262,7 +266,9 @@ class ParcelCharacteristic(Base):
     has_google_map_link: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     has_bing_map_link: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
-    current_assessment_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    current_assessment_year: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
     current_valuation_classification: Mapped[Optional[str]] = mapped_column(
         String, nullable=True
     )
@@ -282,13 +288,17 @@ class ParcelCharacteristic(Base):
     current_payment_history_available: Mapped[Optional[bool]] = mapped_column(
         Boolean, nullable=True
     )
-    tax_jurisdiction_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tax_jurisdiction_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
 
     is_exempt_style_page: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     has_empty_valuation_breakout: Mapped[Optional[bool]] = mapped_column(
         Boolean, nullable=True
     )
-    has_empty_tax_section: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    has_empty_tax_section: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True
+    )
 
     built_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

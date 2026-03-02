@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -9,7 +9,6 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .config import Settings
-
 
 PARCEL_NUMBER_RE = re.compile(r"\b\d{4}-\d{3}-\d{4}-\d\b")
 PARCEL_ID_RE = re.compile(r"\b\d{10,14}\b")
@@ -46,7 +45,9 @@ def search_trs(
         response = client.get(url, params=params)
         html = response.text or ""
     parcel_ids, truncated = parse_search_results(html)
-    return SearchResult(parcel_ids=parcel_ids, truncated=truncated, url=str(response.url))
+    return SearchResult(
+        parcel_ids=parcel_ids, truncated=truncated, url=str(response.url)
+    )
 
 
 def parse_search_results(html: str) -> tuple[list[str], bool]:
@@ -56,7 +57,10 @@ def parse_search_results(html: str) -> tuple[list[str], bool]:
     parcel_ids: list[str] = []
     seen: set[str] = set()
     for anchor in soup.find_all("a"):
-        candidate = _extract_parcel_id(anchor.get_text(" ", strip=True), anchor.get("href"))
+        candidate = _extract_parcel_id(
+            anchor.get_text(" ", strip=True),
+            _attr_text(anchor.get("href")),
+        )
         if candidate and candidate not in seen:
             parcel_ids.append(candidate)
             seen.add(candidate)
@@ -77,3 +81,12 @@ def _extract_parcel_id(text: str, href: Optional[str]) -> Optional[str]:
 
 def _digits_only(value: str) -> str:
     return re.sub(r"\D", "", value)
+
+
+def _attr_text(value: object) -> Optional[str]:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [item for item in value if isinstance(item, str)]
+        return " ".join(parts) or None
+    return None

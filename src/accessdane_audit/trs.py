@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
-
 DEFAULT_SPLIT_PARTS = ("NE", "NW", "SE", "SW")
 
 
@@ -59,7 +58,5 @@ def enumerate_trs(
                     )
                 )
         else:
-            blocks.append(
-                TRSBlock(township=township, range=range_, section=section)
-            )
+            blocks.append(TRSBlock(township=township, range=range_, section=section))
     return blocks

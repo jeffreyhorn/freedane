@@ -24,7 +24,6 @@ from accessdane_audit.models import (
 )
 from accessdane_audit.parse import parse_page
 
-
 FULL_SAMPLE_PARCEL_ID = "061003330128"
 SPARSE_SAMPLE_PARCEL_ID = "061001391511"
 OWNER_NAMES_SAMPLE_PARCEL_ID = "061003253271"
@@ -40,7 +39,9 @@ EXEMPT_STYLE_SAMPLE_PARCEL_ID = "061002191411"
 PARENT_ONLY_LINEAGE_SAMPLE_PARCEL_ID = "061002318311"
 
 
-def test_parse_page_extracts_expected_sections_from_full_raw_fixture(load_raw_html) -> None:
+def test_parse_page_extracts_expected_sections_from_full_raw_fixture(
+    load_raw_html,
+) -> None:
     parsed = parse_page(load_raw_html(FULL_SAMPLE_PARCEL_ID))
 
     assert len(parsed.assessment) == 27
@@ -83,7 +84,9 @@ def test_parse_page_can_exclude_tax_detail_payments(load_raw_html) -> None:
     with_tax_detail_payments = parse_page(html)
     without_tax_detail_payments = parse_page(html, include_tax_detail_payments=False)
 
-    assert len(with_tax_detail_payments.tax) == len(without_tax_detail_payments.tax) == 50
+    assert (
+        len(with_tax_detail_payments.tax) == len(without_tax_detail_payments.tax) == 50
+    )
     assert len(with_tax_detail_payments.payments) == 277
     assert len(without_tax_detail_payments.payments) == 52
 
@@ -491,7 +494,9 @@ def test_parse_page_handles_commercial_fixture_with_long_no_payment_history(
         1 for row in parsed.payments if row.get("source") == "tax_detail_payments"
     )
     summary_no_payments_count = sum(
-        1 for row in parsed.payments if row.get("Date of Payment") == "No payments found."
+        1
+        for row in parsed.payments
+        if row.get("Date of Payment") == "No payments found."
     )
     assert detail_payment_count == 68
     assert summary_no_payments_count == 10
@@ -543,7 +548,11 @@ def test_store_parsed_persists_owner_name_from_owner_names_variant(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed)
@@ -569,7 +578,11 @@ def test_store_parsed_persists_typed_assessment_fields(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed)
@@ -624,7 +637,11 @@ def test_store_parsed_persists_initial_parcel_characteristics_fields(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -666,7 +683,11 @@ def test_store_parsed_marks_explicit_empty_tax_pages_in_parcel_characteristics(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -697,7 +718,11 @@ def test_store_parsed_persists_vacant_land_characteristics_fields(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -731,7 +756,11 @@ def test_store_parsed_persists_condo_characteristics_fields(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -765,7 +794,11 @@ def test_store_parsed_marks_school_district_empty_pages_as_exempt_style(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -811,8 +844,12 @@ def test_store_parsed_keeps_more_complete_characteristics_snapshot(
         session.add_all([older_fetch, newer_fetch])
         session.flush()
 
-        _store_parsed(session, older_fetch, parse_page(richer_html), raw_html=richer_html)
-        _store_parsed(session, newer_fetch, parse_page(sparser_html), raw_html=sparser_html)
+        _store_parsed(
+            session, older_fetch, parse_page(richer_html), raw_html=richer_html
+        )
+        _store_parsed(
+            session, newer_fetch, parse_page(sparser_html), raw_html=sparser_html
+        )
 
         older_fetch_id = older_fetch.id
 
@@ -838,7 +875,11 @@ def test_store_parsed_persists_mixed_class_residential_characteristics(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -906,7 +947,7 @@ def test_build_parcel_characteristic_candidate_uses_sparse_detail_fallbacks() ->
     candidate = _build_parcel_characteristic_candidate(fetch, parsed, raw_html=raw_html)
 
     assert candidate is not None
-    fields = candidate["fields"]
+    fields = candidate.fields
     assert fields["formatted_parcel_number"] == "154/0610-021-4001-1"
     assert fields["state_municipality_code"] == "154"
     assert fields["township"] == "06"
@@ -931,7 +972,11 @@ def test_store_parsed_persists_parcel_lineage_links_from_history_modals(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -983,7 +1028,11 @@ def test_store_parsed_persists_parent_only_lineage_links_without_children(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed, raw_html=raw_html)
@@ -1120,7 +1169,11 @@ def test_store_parsed_persists_tax_and_summary_payment_rows_without_tax_detail_p
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed)

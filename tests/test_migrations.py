@@ -55,7 +55,9 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         }.issubset(tables)
 
         with engine.connect() as conn:
-            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            revision = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
         assert revision == HEAD_REVISION
 
         fetch_indexes = {
@@ -78,21 +80,15 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             index["name"]: tuple(index["column_names"])
             for index in inspector.get_indexes("parcel_characteristics")
         }
-        assert parcel_characteristic_indexes["ix_parcel_characteristics_source_fetch_id"] == (
-            "source_fetch_id",
-        )
-        assert (
-            parcel_characteristic_indexes[
-                "ix_parcel_characteristics_current_valuation_classification"
-            ]
-            == ("current_valuation_classification",)
-        )
-        assert (
-            parcel_characteristic_indexes[
-                "ix_parcel_characteristics_state_municipality_code"
-            ]
-            == ("state_municipality_code",)
-        )
+        assert parcel_characteristic_indexes[
+            "ix_parcel_characteristics_source_fetch_id"
+        ] == ("source_fetch_id",)
+        assert parcel_characteristic_indexes[
+            "ix_parcel_characteristics_current_valuation_classification"
+        ] == ("current_valuation_classification",)
+        assert parcel_characteristic_indexes[
+            "ix_parcel_characteristics_state_municipality_code"
+        ] == ("state_municipality_code",)
         parcel_lineage_indexes = {
             index["name"]: tuple(index["column_names"])
             for index in inspector.get_indexes("parcel_lineage_links")
@@ -107,7 +103,9 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         engine.dispose()
 
 
-def test_init_db_stamps_compatible_legacy_schema_before_upgrading(tmp_path: Path) -> None:
+def test_init_db_stamps_compatible_legacy_schema_before_upgrading(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "legacy.sqlite"
     database_url = _db_url(db_path)
 
@@ -120,7 +118,9 @@ def test_init_db_stamps_compatible_legacy_schema_before_upgrading(tmp_path: Path
         inspector = inspect(engine)
         assert "alembic_version" in set(inspector.get_table_names())
         with engine.connect() as conn:
-            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            revision = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
         assert revision == HEAD_REVISION
         fetch_indexes = {
             index["name"]: tuple(index["column_names"])
@@ -166,7 +166,9 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
         assert "parcel_characteristics" in set(inspector.get_table_names())
         assert "parcel_lineage_links" in set(inspector.get_table_names())
         with engine.connect() as conn:
-            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            revision = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
         assert revision == HEAD_REVISION
     finally:
         engine.dispose()

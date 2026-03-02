@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
-import re
 from typing import Iterable, Optional
 
 from sqlalchemy import func, select
@@ -166,7 +166,10 @@ def _check_suspicious_assessment_dates(
             issues.append(
                 QualityIssue(
                     code="stale_assessment_date",
-                    message="Assessment valuation date is more than four years older than the parcel-year.",
+                    message=(
+                        "Assessment valuation date is more than four years "
+                        "older than the parcel-year."
+                    ),
                     parcel_id=record.parcel_id,
                     fetch_id=record.fetch_id,
                     year=record.year,
@@ -202,6 +205,8 @@ def _expected_carry_forward_record_ids(records: Iterable[AssessmentRecord]) -> s
     for group in grouped.values():
         records_by_year: dict[int, list[AssessmentRecord]] = defaultdict(list)
         for record in group:
+            if record.year is None:
+                continue
             records_by_year[record.year].append(record)
         years = sorted(records_by_year)
         if not years:
@@ -222,7 +227,9 @@ def _expected_carry_forward_record_ids(records: Iterable[AssessmentRecord]) -> s
         if len(current_run) >= ASSESSMENT_EXPECTED_CARRY_FORWARD_RUN_LENGTH:
             for run_year in current_run:
                 carried_forward_ids.update(
-                    record.id for record in records_by_year[run_year] if record.id is not None
+                    record.id
+                    for record in records_by_year[run_year]
+                    if record.id is not None
                 )
 
     return carried_forward_ids
@@ -236,7 +243,9 @@ def _check_impossible_numeric_values(
 
     assessment_query = select(AssessmentRecord)
     if parcel_filter:
-        assessment_query = assessment_query.where(AssessmentRecord.parcel_id.in_(parcel_filter))
+        assessment_query = assessment_query.where(
+            AssessmentRecord.parcel_id.in_(parcel_filter)
+        )
     for record in session.execute(assessment_query).scalars():
         for field_name, value in (
             ("assessment_acres", record.assessment_acres),
@@ -279,30 +288,30 @@ def _check_impossible_numeric_values(
     tax_query = select(TaxRecord)
     if parcel_filter:
         tax_query = tax_query.where(TaxRecord.parcel_id.in_(parcel_filter))
-    for record in session.execute(tax_query).scalars():
-        if _has_negative_amount(record.data):
+    for tax_record in session.execute(tax_query).scalars():
+        if _has_negative_amount(tax_record.data):
             issues.append(
                 QualityIssue(
                     code="negative_tax_amount",
                     message="Tax record contains a negative amount.",
-                    parcel_id=record.parcel_id,
-                    fetch_id=record.fetch_id,
-                    year=record.year,
+                    parcel_id=tax_record.parcel_id,
+                    fetch_id=tax_record.fetch_id,
+                    year=tax_record.year,
                 )
             )
 
     payment_query = select(PaymentRecord)
     if parcel_filter:
         payment_query = payment_query.where(PaymentRecord.parcel_id.in_(parcel_filter))
-    for record in session.execute(payment_query).scalars():
-        if _has_negative_amount(record.data):
+    for payment_record in session.execute(payment_query).scalars():
+        if _has_negative_amount(payment_record.data):
             issues.append(
                 QualityIssue(
                     code="negative_payment_amount",
                     message="Payment record contains a negative amount.",
-                    parcel_id=record.parcel_id,
-                    fetch_id=record.fetch_id,
-                    year=record.year,
+                    parcel_id=payment_record.parcel_id,
+                    fetch_id=payment_record.fetch_id,
+                    year=payment_record.year,
                 )
             )
 
@@ -344,11 +353,17 @@ def _check_fetch_parse_consistency(
                     fetch_id=fetch.id,
                 )
             )
-        if fetch.status_code == 200 and fetch.parsed_at is None and fetch.parse_error is None:
+        if (
+            fetch.status_code == 200
+            and fetch.parsed_at is None
+            and fetch.parse_error is None
+        ):
             issues.append(
                 QualityIssue(
                     code="unparsed_successful_fetch",
-                    message="Successful fetch has neither parse results nor parse error.",
+                    message=(
+                        "Successful fetch has neither parse results nor parse " "error."
+                    ),
                     parcel_id=fetch.parcel_id,
                     fetch_id=fetch.id,
                 )
@@ -363,11 +378,17 @@ def _check_fetch_parse_consistency(
                     details={"status_code": fetch.status_code},
                 )
             )
-        if fetch.parsed_at is not None and fetch.parse_error is None and parsed_record_count == 0:
+        if (
+            fetch.parsed_at is not None
+            and fetch.parse_error is None
+            and parsed_record_count == 0
+        ):
             issues.append(
                 QualityIssue(
                     code="parsed_without_records",
-                    message="Fetch was marked parsed but no parsed records were stored.",
+                    message=(
+                        "Fetch was marked parsed but no parsed records were " "stored."
+                    ),
                     parcel_id=fetch.parcel_id,
                     fetch_id=fetch.id,
                 )
@@ -375,7 +396,10 @@ def _check_fetch_parse_consistency(
 
     return QualityCheckResult(
         code="fetch_parse_consistency",
-        description="Detect missing raw files, unparsed successful fetches, and parse/result mismatches.",
+        description=(
+            "Detect missing raw files, unparsed successful fetches, and "
+            "parse/result mismatches."
+        ),
         issues=issues,
     )
 
@@ -388,7 +412,11 @@ def _counts_by_fetch_id(
     query = select(model.fetch_id, func.count(model.id)).group_by(model.fetch_id)
     if parcel_filter:
         query = query.where(model.parcel_id.in_(parcel_filter))
-    return dict(session.execute(query).all())
+    return {
+        int(fetch_id): int(row_count)
+        for fetch_id, row_count in session.execute(query).all()
+        if fetch_id is not None
+    }
 
 
 def _summary_fetch_ids(

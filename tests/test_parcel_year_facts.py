@@ -22,7 +22,11 @@ def _seed_and_build_fact_rows(
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=parcel_id))
-        fetch = Fetch(parcel_id=parcel_id, url=f"https://example.test/{parcel_id}", status_code=200)
+        fetch = Fetch(
+            parcel_id=parcel_id,
+            url=f"https://example.test/{parcel_id}",
+            status_code=200,
+        )
         session.add(fetch)
         session.flush()
         _store_parsed(session, fetch, parsed)
@@ -40,7 +44,9 @@ def test_rebuild_parcel_year_facts_prefers_detail_assessment_and_rolls_up_paymen
     parcel_id = "061003330128"
 
     init_db(database_url)
-    row_count = _seed_and_build_fact_rows(database_url, parcel_id, load_raw_html(parcel_id))
+    row_count = _seed_and_build_fact_rows(
+        database_url, parcel_id, load_raw_html(parcel_id)
+    )
 
     with session_scope(database_url) as session:
         row = session.execute(
@@ -103,7 +109,9 @@ def test_rebuild_parcel_year_facts_can_limit_rebuild_to_selected_parcels(
     second_parcel_id = "061001391511"
 
     init_db(database_url)
-    _seed_and_build_fact_rows(database_url, first_parcel_id, load_raw_html(first_parcel_id))
+    _seed_and_build_fact_rows(
+        database_url, first_parcel_id, load_raw_html(first_parcel_id)
+    )
 
     with session_scope(database_url) as session:
         session.add(Parcel(id=second_parcel_id))

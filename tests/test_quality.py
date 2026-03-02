@@ -10,11 +10,19 @@ from typer.testing import CliRunner
 
 from accessdane_audit import cli
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import AssessmentRecord, Fetch, Parcel, PaymentRecord, TaxRecord
+from accessdane_audit.models import (
+    AssessmentRecord,
+    Fetch,
+    Parcel,
+    PaymentRecord,
+    TaxRecord,
+)
 from accessdane_audit.quality import quality_report_to_dict, run_data_quality_checks
 
 
-def test_run_data_quality_checks_flags_expected_issue_categories(tmp_path: Path) -> None:
+def test_run_data_quality_checks_flags_expected_issue_categories(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "quality.sqlite"
     database_url = f"sqlite:///{db_path}"
     now = datetime.now(timezone.utc)
@@ -22,7 +30,9 @@ def test_run_data_quality_checks_flags_expected_issue_categories(tmp_path: Path)
     init_db(database_url)
 
     with session_scope(database_url) as session:
-        fetch_missing_raw = Fetch(parcel_id="p1", url="https://example.test/p1", status_code=200)
+        fetch_missing_raw = Fetch(
+            parcel_id="p1", url="https://example.test/p1", status_code=200
+        )
         fetch_parsed_empty = Fetch(
             parcel_id="p2",
             url="https://example.test/p2",
@@ -90,7 +100,11 @@ def test_run_data_quality_checks_flags_expected_issue_categories(tmp_path: Path)
                 parcel_id="p4",
                 fetch_id=fetch_bad_values.id,
                 year=2025,
-                data={"Tax Year": "2025", "Date of Payment": "01/15/2025", "Amount": "-$2.00"},
+                data={
+                    "Tax Year": "2025",
+                    "Date of Payment": "01/15/2025",
+                    "Amount": "-$2.00",
+                },
             )
         )
 
@@ -123,7 +137,9 @@ def test_run_data_quality_checks_flags_expected_issue_categories(tmp_path: Path)
     assert "parsed_non_200_fetch" in consistency_issue_codes
 
 
-def test_check_data_quality_cli_emits_json_and_can_fail_on_issues(tmp_path: Path, monkeypatch) -> None:
+def test_check_data_quality_cli_emits_json_and_can_fail_on_issues(
+    tmp_path: Path, monkeypatch
+) -> None:
     db_path = tmp_path / "quality_cli.sqlite"
     database_url = f"sqlite:///{db_path}"
 
@@ -131,7 +147,9 @@ def test_check_data_quality_cli_emits_json_and_can_fail_on_issues(tmp_path: Path
 
     with session_scope(database_url) as session:
         session.add(Parcel(id="p1"))
-        session.add(Fetch(parcel_id="p1", url="https://example.test/p1", status_code=200))
+        session.add(
+            Fetch(parcel_id="p1", url="https://example.test/p1", status_code=200)
+        )
 
     monkeypatch.setattr(
         cli,
@@ -149,7 +167,7 @@ def test_check_data_quality_cli_emits_json_and_can_fail_on_issues(tmp_path: Path
     assert checks["fetch_parse_consistency"]["issue_count"] >= 1
 
 
-def test_run_data_quality_checks_allows_typical_carry_forward_but_flags_truly_stale_dates(
+def test_run_data_quality_checks_suppresses_carry_forward_but_flags_stale_dates(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "quality_stale_dates.sqlite"

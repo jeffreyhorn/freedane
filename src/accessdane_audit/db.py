@@ -80,11 +80,13 @@ def init_db(database_url: str) -> None:
         command.stamp(config, BASELINE_REVISION)
     elif schema_state == "incompatible":
         raise RuntimeError(
-            "Found a pre-Alembic database that does not match the expected legacy schema. "
+            "Found a pre-Alembic database that does not match the expected "
+            "legacy schema. "
             "Back up the database and migrate it manually before running init-db."
         )
     if schema_state == "legacy":
-        # After stamping the baseline, continue upgrading so future revisions are applied.
+        # After stamping the baseline, continue upgrading so future
+        # revisions are applied.
         command.upgrade(config, "head")
         return
     command.upgrade(config, "head")

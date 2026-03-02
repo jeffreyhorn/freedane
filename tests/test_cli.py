@@ -52,11 +52,15 @@ def test_run_all_can_optionally_build_parcel_year_facts(
     assert result.exit_code == 0, result.stdout
 
     with session_scope(database_url) as session:
-        rows = session.execute(
-            select(ParcelYearFact)
-            .where(ParcelYearFact.parcel_id == parcel_id)
-            .order_by(ParcelYearFact.year.desc())
-        ).scalars().all()
+        rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
 
     assert [row.year for row in rows] == [2025, 2024, 2023, 2022, 2021]
 
@@ -97,7 +101,8 @@ def test_run_all_scopes_downstream_steps_when_parse_ids_are_provided(
         session.add_all([other_fetch, scoped_fetch])
         session.flush()
 
-        # Seed parsed rows for the non-scoped parcel so a global downstream rebuild would touch it.
+        # Seed parsed rows for the non-scoped parcel so a global downstream
+        # rebuild would touch it.
         parsed = cli.parse_page(load_raw_html(other_parcel_id))
         cli._store_parsed(session, other_fetch, parsed)
         other_fetch.parsed_at = datetime.now(timezone.utc)
@@ -126,16 +131,24 @@ def test_run_all_scopes_downstream_steps_when_parse_ids_are_provided(
     assert result.exit_code == 0, result.stdout
 
     with session_scope(database_url) as session:
-        scoped_rows = session.execute(
-            select(ParcelYearFact)
-            .where(ParcelYearFact.parcel_id == scoped_parcel_id)
-            .order_by(ParcelYearFact.year.desc())
-        ).scalars().all()
-        other_rows = session.execute(
-            select(ParcelYearFact)
-            .where(ParcelYearFact.parcel_id == other_parcel_id)
-            .order_by(ParcelYearFact.year.desc())
-        ).scalars().all()
+        scoped_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == scoped_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
+        other_rows = (
+            session.execute(
+                select(ParcelYearFact)
+                .where(ParcelYearFact.parcel_id == other_parcel_id)
+                .order_by(ParcelYearFact.year.desc())
+            )
+            .scalars()
+            .all()
+        )
 
     assert [row.year for row in scoped_rows] == [2025, 2024, 2023, 2022, 2021]
     assert other_rows == []
@@ -204,7 +217,9 @@ def test_parse_reparse_commits_successful_fetches_even_if_a_later_fetch_hits_db_
     failing_raw_path = tmp_path / f"{failing_parcel_id}.html"
     succeeding_raw_path = tmp_path / f"{succeeding_parcel_id}.html"
     failing_raw_path.write_text(load_raw_html(failing_parcel_id), encoding="utf-8")
-    succeeding_raw_path.write_text(load_raw_html(succeeding_parcel_id), encoding="utf-8")
+    succeeding_raw_path.write_text(
+        load_raw_html(succeeding_parcel_id), encoding="utf-8"
+    )
 
     init_db(database_url)
 
@@ -252,7 +267,9 @@ def test_parse_reparse_commits_successful_fetches_even_if_a_later_fetch_hits_db_
             for fetch in session.execute(select(Fetch).order_by(Fetch.id)).scalars()
         }
 
-    assert "parcel_characteristics_missing" in (fetches[failing_parcel_id].parse_error or "")
+    assert "parcel_characteristics_missing" in (
+        fetches[failing_parcel_id].parse_error or ""
+    )
     assert fetches[failing_parcel_id].parsed_at is None
     assert fetches[succeeding_parcel_id].parse_error is None
     assert fetches[succeeding_parcel_id].parsed_at is not None
