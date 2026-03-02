@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+
+data/accessdane.sqlite
+data/raw/
+data/*.json
+data/day11_smoke_ids.txt
+data/parcel_ids.txt
+data/trs_blocks.csv

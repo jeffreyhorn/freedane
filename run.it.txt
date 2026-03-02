@@ -1,0 +1,40 @@
+ 1) Confirm Postgres is targeted
+
+  cat .env
+
+  Make sure DATABASE_URL points to Postgres (it does now).
+
+  2) Generate TRS blocks
+  Use splits as needed:
+
+  accessdane enumerate-trs --trs 06/10 --sections 1-36 --split-quarters --split-quarter-quarters --out data/trs_blocks.csv
+
+  For a small test run, add --cap 100.
+
+  3) Resolve TRS → parcel IDs
+
+  accessdane search-trs-csv --trs-csv data/trs_blocks.csv --auto-split --out data/parcel_ids.txt
+
+  Again, add --cap 200 for a smaller run.
+
+  4) Fetch parcel pages (store raw HTML)
+
+  accessdane fetch --ids data/parcel_ids.txt
+
+  Or for a test subset:
+
+  accessdane fetch --ids data/parcel_ids.txt --limit 50
+
+  5) Parse into tables
+
+  accessdane parse --unparsed
+
+  If you want to skip tax-detail payments:
+
+  accessdane parse --unparsed --skip-tax-detail-payments
+
+  6) Run anomaly detection
+
+  accessdane anomalies --out data/anomalies.json
+
+  Optional: If you want to throttle, set ACCESSDANE_RETRIES, ACCESSDANE_BACKOFF, or adjust ACCESSDANE_TIMEOUT in .env.
