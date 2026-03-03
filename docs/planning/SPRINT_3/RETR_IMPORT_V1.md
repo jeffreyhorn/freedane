@@ -117,6 +117,17 @@ These fields should exist physically in v1.
 - `loaded_at`
 - `updated_at`
 
+Timestamp convention for this document:
+
+- timestamp columns should be timezone-aware timestamps stored in UTC
+- model them as `DateTime(timezone=True)` in SQLAlchemy
+- use DB-side defaults where the timestamp is generated as part of insert/update
+  behavior
+- `loaded_at` should be set once when the row is first inserted
+- `updated_at`
+  - should use DB-side update behavior so it refreshes automatically on row
+    modification
+
 #### Stable Source Identity Fields
 
 These are imported even when they remain nullable because they are the closest thing to a source-side transaction identity.
@@ -539,6 +550,8 @@ Importer behavior for that case:
 - recompute and replace all normalized and derived values (including
   `import_status`) from the current importer logic and the row's `raw_row`
 - replace `raw_row` and `import_error` from the latest parse of the source file
+- preserve file-level metadata such as `source_file_name` and `source_headers`
+  as first-seen audit values
 - preserve `loaded_at` as the original first-seen timestamp
 - refresh `updated_at`
 - keep the same `id`
