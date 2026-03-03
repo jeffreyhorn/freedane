@@ -236,7 +236,8 @@ On the current local McFarland corpus, the full parse-only rebuild path can take
 Each check includes `code`, `description`, `passed`, `issue_count`, and `issues`.
 Use it to catch concrete integrity failures before relying on downstream analysis.
 
-`profile-data` returns a JSON object with `scope`, `counts`, `missing_sections`, and `coverage`.
+`profile-data` returns a JSON object with `scope`, `counts`, `missing_sections`, `coverage`, and `tax_detail_field_presence`.
+`counts` and `coverage` now include `parcel_characteristics` / lineage completeness, while `tax_detail_field_presence` shows how often key structured fields are populated on `source == "detail"` tax rows.
 Use it to measure how complete the current local dataset is, not as a correctness gate.
 
 The AccessDane `Summary Report` / `Custom Report` endpoints were evaluated during Sprint 2 and are intentionally not part of the fetch pipeline right now.
