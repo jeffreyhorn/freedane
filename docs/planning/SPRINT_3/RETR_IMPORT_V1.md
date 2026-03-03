@@ -58,6 +58,15 @@ The file-level metadata that must be captured on every imported row:
 - `source_row_number`
 - `loaded_at`
 
+Definitions:
+
+- `source_row_number` is the 1-based CSV data-row ordinal after the header row.
+- The header row is not counted.
+- Blank data rows that the CSV reader yields should still consume a row number, even if they are later marked `rejected`.
+- `source_row_number` refers to the Nth parsed CSV record after the header, not the physical text-line number in the file.
+- `source_file_sha256` is the SHA-256 of the raw file bytes exactly as read from disk.
+- Do not decode first, normalize newlines, or otherwise transform the bytes before hashing.
+
 Reasoning:
 
 - There is no separate load-tracking table in v1.
@@ -449,10 +458,8 @@ V1 critical date:
 
 `consideration_amount` should cause a row-level rejection when:
 
-- the source value is blank or missing
-- the importer therefore cannot populate the required v1 `consideration_amount`, or
-- the source value is non-empty
-- the importer cannot parse it as a decimal amount
+- the source value is blank or missing, so the required v1 `consideration_amount` cannot be populated
+- the source value is present but cannot be parsed as a decimal amount
 
 Important distinction:
 
@@ -463,6 +470,8 @@ Important distinction:
 
 For normalized boolean flags (`arms_length_indicator_norm`, `usable_sale_indicator_norm`):
 
+- trim surrounding whitespace before comparison
+- compare case-insensitively after normalization
 - accept `Y`, `Yes`, `True`, `1` as true
 - accept `N`, `No`, `False`, `0` as false
 - preserve the original token in the corresponding `_raw` field
