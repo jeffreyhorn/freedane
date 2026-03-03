@@ -60,10 +60,11 @@ The file-level metadata that must be captured on every imported row:
 
 Definitions:
 
-- `source_row_number` is the 1-based CSV data-row ordinal after the header row.
+- `source_row_number` is the 1-based CSV data-row ordinal after the header row, so the first data row is `1`.
 - The header row is not counted.
-- Blank data rows that the CSV reader yields should still consume a row number, even if they are later marked `rejected`.
 - `source_row_number` refers to the Nth parsed CSV record after the header, not the physical text-line number in the file.
+- A fully blank physical line that produces no CSV record does not consume a row number.
+- A parsed CSV record whose cells are all blank still consumes a row number, even if that row is later marked `rejected`.
 - `source_file_sha256` is the SHA-256 of the raw file bytes exactly as read from disk.
 - Do not decode first, normalize newlines, or otherwise transform the bytes before hashing.
 
@@ -258,7 +259,7 @@ The matcher should be able to persist multiple candidate links for one transacti
   - integer, nullable
 - `is_primary`
   - boolean, defaults false
-- `review_status`
+- `match_review_status`
   - enum-like string:
     - `auto_accepted`
     - `needs_review`
@@ -277,10 +278,15 @@ v1 should enforce uniqueness on:
 
 - (`sales_transaction_id`, `parcel_id`, `match_method`)
 
+Additional invariant:
+
+- at most one row per `sales_transaction_id` may have `is_primary = true`
+
 Reasoning:
 
 - the same matching pass should not create duplicate candidate rows
 - multiple different methods can still point at the same parcel
+- downstream code should be able to rely on a single primary match when one exists
 
 ## `sales_exclusions`
 
@@ -556,8 +562,9 @@ Recommended initial indexes:
 - `sales_transactions.property_address_norm`
 - `sales_transactions.import_status`
 - unique `sales_parcel_matches(sales_transaction_id, parcel_id, match_method)`
+- partial unique `sales_parcel_matches(sales_transaction_id)` where `is_primary = true`
 - `sales_parcel_matches.parcel_id`
-- `sales_parcel_matches.review_status`
+- `sales_parcel_matches.match_review_status`
 - unique `sales_exclusions(sales_transaction_id, exclusion_code)`
 
 ## Open Questions Deferred Past v1
@@ -566,7 +573,7 @@ Recommended initial indexes:
 - Whether a durable source-side unique transaction key exists in all useful RETR exports.
 - Whether duplicate transactions across overlapping exports should be merged automatically.
 - Whether deed/reference fields should be split into a separate source-details JSON column.
-- Whether `review_status` should eventually move into a separate analyst-workflow table.
+- Whether transaction-level `review_status` and match-level `match_review_status` should eventually move into separate analyst-workflow tables.
 
 ## Acceptance For This Design
 
