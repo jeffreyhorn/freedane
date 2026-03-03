@@ -9,6 +9,7 @@ from typing import Iterable, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from .extraction_signals import is_placeholder_payment_row
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -253,8 +254,7 @@ def _choose_payment(
             if payment_date is not None and amount is not None:
                 usable_payment_rows.append((payment_date, amount))
         has_placeholder = any(
-            str(row.data.get("Date of Payment") or "").strip() == "No payments found."
-            for row in fetch_rows
+            is_placeholder_payment_row(row.data) for row in fetch_rows
         )
         if not usable_payment_rows and not has_placeholder:
             continue

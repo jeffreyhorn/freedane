@@ -10,6 +10,10 @@ from typing import Iterable, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .extraction_signals import (
+    VALID_LINEAGE_RELATIONSHIP_TYPES,
+    is_placeholder_payment_row,
+)
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -23,8 +27,6 @@ from .models import (
 
 ASSESSMENT_STALE_YEAR_THRESHOLD = 4
 ASSESSMENT_EXPECTED_CARRY_FORWARD_RUN_LENGTH = 5
-VALID_LINEAGE_RELATIONSHIP_TYPES = {"parent", "child"}
-PAYMENT_HISTORY_PLACEHOLDER = "No payments found."
 UNPARSED_SUCCESSFUL_FETCH_MESSAGE = (
     "Successful fetch has neither parse results nor parse error."
 )
@@ -614,7 +616,40 @@ def _check_payment_history_semantics(
     if parcel_filter:
         fact_query = fact_query.where(ParcelYearFact.parcel_id.in_(parcel_filter))
     for fact in session.execute(fact_query).scalars():
-        if fact.payment_has_placeholder_row is not True:
+        signals = (
+            payment_signals_by_fetch.get(fact.payment_fetch_id)
+            if fact.payment_fetch_id is not None
+            else None
+        )
+        derived_has_placeholder = signals.has_placeholder_row if signals else None
+        if (
+            derived_has_placeholder is not None
+            and fact.payment_has_placeholder_row is not derived_has_placeholder
+        ):
+            issues.append(
+                QualityIssue(
+                    code="payment_placeholder_flag_mismatch",
+                    message=(
+                        "Parcel year facts placeholder-payment flag does not "
+                        "match the stored payment rows."
+                    ),
+                    parcel_id=fact.parcel_id,
+                    fetch_id=fact.payment_fetch_id,
+                    year=fact.year,
+                    details={
+                        "expected_payment_has_placeholder_row": (
+                            derived_has_placeholder
+                        ),
+                        "actual_payment_has_placeholder_row": (
+                            fact.payment_has_placeholder_row
+                        ),
+                    },
+                )
+            )
+        has_placeholder_signal = (
+            derived_has_placeholder is True or fact.payment_has_placeholder_row is True
+        )
+        if has_placeholder_signal is not True:
             continue
         if (
             (fact.payment_event_count or 0) > 0
@@ -693,27 +728,11 @@ def _payment_history_signals_by_fetch_id(
         if str(row.data.get("source") or "") == "tax_detail_payments":
             continue
         signals = signals_by_fetch.setdefault(row.fetch_id, _PaymentHistorySignals())
-        if _payment_row_is_placeholder(row.data):
+        if is_placeholder_payment_row(row.data):
             signals.has_placeholder_row = True
         else:
             signals.has_non_placeholder_row = True
     return signals_by_fetch
-
-
-def _payment_row_is_placeholder(data: dict) -> bool:
-    date_value = _clean_payment_text(
-        data.get("Date of Payment") or data.get("Date Paid") or data.get("col_2")
-    )
-    return date_value == PAYMENT_HISTORY_PLACEHOLDER
-
-
-def _clean_payment_text(value: object) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    value = value.strip()
-    if not value or value.upper() in {"N/A", "NA"}:
-        return None
-    return value
 
 
 def _has_negative_amount(data: dict) -> bool:

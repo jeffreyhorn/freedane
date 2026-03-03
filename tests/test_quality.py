@@ -455,6 +455,7 @@ def test_run_data_quality_checks_flags_new_extraction_layer_issues(
         issue["code"] for issue in checks["payment_history_semantics"]["issues"]
     }
     assert "payment_history_flag_mismatch" in payment_issue_codes
+    assert "payment_placeholder_flag_mismatch" in payment_issue_codes
     assert "placeholder_payment_rollup_conflict" in payment_issue_codes
 
 
@@ -497,16 +498,38 @@ def test_run_data_quality_checks_treats_col_2_placeholder_rows_as_placeholders(
                 },
             )
         )
+        session.add(
+            ParcelYearFact(
+                parcel_id="p1",
+                year=2025,
+                payment_fetch_id=fetch.id,
+                payment_event_count=1,
+                payment_total_amount=Decimal("1.00"),
+                payment_first_date=date(2025, 1, 15),
+                payment_last_date=date(2025, 1, 15),
+                payment_has_placeholder_row=False,
+            )
+        )
 
     with session_scope(database_url) as session:
         payload = quality_report_to_dict(run_data_quality_checks(session))
 
     checks = {check["code"]: check for check in payload["checks"]}
-    issues = checks["payment_history_semantics"]["issues"]
+    issues_by_code = {
+        issue["code"]: issue for issue in checks["payment_history_semantics"]["issues"]
+    }
 
-    assert [issue["code"] for issue in issues] == ["payment_history_flag_mismatch"]
-    assert issues[0]["parcel_id"] == "p1"
-    assert issues[0]["details"] == {
+    assert set(issues_by_code) == {
+        "payment_history_flag_mismatch",
+        "payment_placeholder_flag_mismatch",
+        "placeholder_payment_rollup_conflict",
+    }
+    assert issues_by_code["payment_history_flag_mismatch"]["parcel_id"] == "p1"
+    assert issues_by_code["payment_history_flag_mismatch"]["details"] == {
         "expected_current_payment_history_available": False,
         "actual_current_payment_history_available": True,
+    }
+    assert issues_by_code["payment_placeholder_flag_mismatch"]["details"] == {
+        "expected_payment_has_placeholder_row": True,
+        "actual_payment_has_placeholder_row": False,
     }

@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from accessdane_audit.cli import _store_parsed
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import Fetch, Parcel, ParcelYearFact
+from accessdane_audit.models import Fetch, Parcel, ParcelYearFact, PaymentRecord
 from accessdane_audit.parcel_year_facts import (
     PaymentRollupCandidate,
     rebuild_parcel_year_facts,
@@ -155,3 +155,52 @@ def test_rebuild_parcel_year_facts_can_limit_rebuild_to_selected_parcels(
     assert row_count == 5
     assert sum(1 for parcel_id, _ in rows if parcel_id == first_parcel_id) == 27
     assert sum(1 for parcel_id, _ in rows if parcel_id == second_parcel_id) == 5
+
+
+def test_rebuild_parcel_year_facts_treats_col_2_placeholder_rows_as_placeholders(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "parcel_year_facts_placeholder_col2.sqlite"
+    database_url = f"sqlite:///{db_path}"
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="p1"))
+        fetch = Fetch(
+            parcel_id="p1",
+            url="https://example.test/p1",
+            status_code=200,
+        )
+        session.add(fetch)
+        session.flush()
+        session.add(
+            PaymentRecord(
+                parcel_id="p1",
+                fetch_id=fetch.id,
+                year=2025,
+                data={
+                    "col_1": "2025",
+                    "col_2": "No payments found.",
+                    "Amount": "",
+                },
+            )
+        )
+
+    with session_scope(database_url) as session:
+        row_count = rebuild_parcel_year_facts(session)
+
+    with session_scope(database_url) as session:
+        row = session.execute(
+            select(ParcelYearFact).where(
+                ParcelYearFact.parcel_id == "p1",
+                ParcelYearFact.year == 2025,
+            )
+        ).scalar_one()
+
+    assert row_count == 1
+    assert row.payment_event_count == 0
+    assert row.payment_total_amount is None
+    assert row.payment_first_date is None
+    assert row.payment_last_date is None
+    assert row.payment_has_placeholder_row is True
