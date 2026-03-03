@@ -228,7 +228,7 @@ Use `--resume-after-fetch-id` with `parse` or `--parse-resume-after-fetch-id` wi
 Use `--limit` or `--parse-limit` to break a full-corpus reparse into bounded chunks.
 For a quick scoped smoke run on a small parcel subset, prefer `parse`, `build-parcel-year-facts --ids`, `check-data-quality --ids`, and `profile-data --ids` directly.
 If you do use `run-all` for scoped parser iteration, `--parse-ids` now keeps `build-parcel-year-facts` and anomaly generation scoped to the same parcel subset.
-`run-all` also keeps downstream rebuilds scoped to the actual parse-stage subset when `--parse-limit` or `--parse-resume-after-fetch-id` is used.
+`run-all --parse-only` also keeps downstream rebuilds scoped to the actual parse-stage subset when `--parse-limit` or `--parse-resume-after-fetch-id` is used.
 Use `--skip-anomalies` when you want `run-all` to stop after parsing (and optional fact rebuild) without writing anomaly output.
 On the current local McFarland corpus, the full parse-only rebuild path can take materially longer than a quick smoke test because it processes thousands of stored fetches.
 
