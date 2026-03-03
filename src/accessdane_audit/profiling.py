@@ -10,10 +10,20 @@ from .models import (
     AssessmentRecord,
     Fetch,
     Parcel,
+    ParcelCharacteristic,
+    ParcelLineageLink,
     ParcelSummary,
     ParcelYearFact,
     PaymentRecord,
     TaxRecord,
+)
+
+PROFILED_TAX_DETAIL_FIELDS = (
+    "tax_value_rows",
+    "tax_rate_rows",
+    "tax_jurisdiction_rows",
+    "tax_amount_summary",
+    "installment_rows",
 )
 
 
@@ -53,6 +63,14 @@ def build_data_profile(
     parcel_year_fact_parcel_count = _count_distinct(
         session, ParcelYearFact, "parcel_id", parcel_filter
     )
+    parcel_characteristic_count = _count_rows(
+        session, ParcelCharacteristic, parcel_filter
+    )
+    parcel_lineage_link_count = _count_rows(session, ParcelLineageLink, parcel_filter)
+    parcel_lineage_parcel_count = _count_distinct(
+        session, ParcelLineageLink, "parcel_id", parcel_filter
+    )
+    tax_detail_field_presence = _build_tax_detail_field_presence(session, parcel_filter)
 
     assessment_fetch_ids = _fetch_ids_with_rows(
         session, AssessmentRecord, parcel_filter
@@ -87,6 +105,10 @@ def build_data_profile(
             "parcel_summaries": parcel_summary_count,
             "parcel_year_facts": parcel_year_fact_count,
             "parcel_year_fact_parcels": parcel_year_fact_parcel_count,
+            "parcel_characteristics": parcel_characteristic_count,
+            "parcel_lineage_links": parcel_lineage_link_count,
+            "parcel_lineage_parcels": parcel_lineage_parcel_count,
+            "detail_tax_records": tax_detail_field_presence["detail_tax_records"],
             "source_parcel_years": source_parcel_year_count,
         },
         "missing_sections": {
@@ -95,6 +117,9 @@ def build_data_profile(
             "payment_fetches": missing_payment_fetch_count,
             "current_parcel_summary_parcels": max(
                 parcel_count - parcel_summary_count, 0
+            ),
+            "current_parcel_characteristic_parcels": max(
+                parcel_count - parcel_characteristic_count, 0
             ),
         },
         "coverage": {
@@ -113,7 +138,14 @@ def build_data_profile(
                 parcel_year_fact_count,
                 source_parcel_year_count,
             ),
+            "parcel_characteristic_parcel_rate": _ratio(
+                parcel_characteristic_count, parcel_count
+            ),
+            "parcel_lineage_parcel_rate": _ratio(
+                parcel_lineage_parcel_count, parcel_count
+            ),
         },
+        "tax_detail_field_presence": tax_detail_field_presence,
     }
 
 
@@ -170,6 +202,33 @@ def _source_parcel_year_keys(
     return keys
 
 
+def _build_tax_detail_field_presence(
+    session: Session, parcel_filter: Optional[set[str]]
+) -> dict[str, object]:
+    populated_counts = {field_name: 0 for field_name in PROFILED_TAX_DETAIL_FIELDS}
+    detail_record_count = 0
+    query = select(TaxRecord.data).where(
+        TaxRecord.data["source"].as_string() == "detail"
+    )
+    query = _apply_parcel_filter(query, TaxRecord, parcel_filter)
+    for data in session.execute(query).scalars():
+        if not isinstance(data, dict):
+            continue
+        detail_record_count += 1
+        for field_name in PROFILED_TAX_DETAIL_FIELDS:
+            if _has_populated_profile_value(data.get(field_name)):
+                populated_counts[field_name] += 1
+
+    payload: dict[str, object] = {"detail_tax_records": detail_record_count}
+    for field_name in PROFILED_TAX_DETAIL_FIELDS:
+        populated_count = populated_counts[field_name]
+        payload[field_name] = {
+            "count": populated_count,
+            "rate": _ratio(populated_count, detail_record_count),
+        }
+    return payload
+
+
 def _apply_parcel_filter(query, model, parcel_filter: Optional[set[str]]):
     if parcel_filter:
         if hasattr(model, "parcel_id"):
@@ -184,3 +243,11 @@ def _ratio(numerator: int, denominator: int) -> Optional[float]:
     if denominator <= 0:
         return None
     return round(numerator / denominator, 4)
+
+
+def _has_populated_profile_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, dict, str)):
+        return bool(value)
+    return True
