@@ -207,12 +207,12 @@ def _build_tax_detail_field_presence(
 ) -> dict[str, object]:
     populated_counts = {field_name: 0 for field_name in PROFILED_TAX_DETAIL_FIELDS}
     detail_record_count = 0
-    query = select(TaxRecord.data)
+    query = select(TaxRecord.data).where(
+        TaxRecord.data["source"].as_string() == "detail"
+    )
     query = _apply_parcel_filter(query, TaxRecord, parcel_filter)
     for data in session.execute(query).scalars():
         if not isinstance(data, dict):
-            continue
-        if str(data.get("source") or "") != "detail":
             continue
         detail_record_count += 1
         for field_name in PROFILED_TAX_DETAIL_FIELDS:

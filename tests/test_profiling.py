@@ -60,28 +60,31 @@ def test_build_data_profile_reports_counts_and_coverage_for_seeded_parcel(
     assert payload["counts"]["parcel_summaries"] == 1
     assert payload["counts"]["parcel_year_facts"] == 27
     assert payload["counts"]["parcel_year_fact_parcels"] == 1
-    assert "parcel_characteristics" in payload["counts"]
-    assert payload["counts"]["detail_tax_records"] > 0
+    assert payload["counts"]["parcel_characteristics"] == 0
+    assert payload["counts"]["parcel_lineage_links"] == 0
+    assert payload["counts"]["parcel_lineage_parcels"] == 0
+    assert payload["counts"]["detail_tax_records"] == 25
     assert payload["counts"]["source_parcel_years"] == 27
     assert payload["missing_sections"]["assessment_fetches"] == 0
     assert payload["missing_sections"]["tax_fetches"] == 0
     assert payload["missing_sections"]["payment_fetches"] == 0
     assert payload["missing_sections"]["current_parcel_summary_parcels"] == 0
-    assert "current_parcel_characteristic_parcels" in payload["missing_sections"]
+    assert payload["missing_sections"]["current_parcel_characteristic_parcels"] == 1
     assert payload["coverage"]["successful_fetch_rate"] == 1.0
     assert payload["coverage"]["parsed_successful_fetch_rate"] == 1.0
     assert payload["coverage"]["parse_error_successful_fetch_rate"] == 0.0
     assert payload["coverage"]["parcel_summary_parcel_rate"] == 1.0
     assert payload["coverage"]["parcel_year_fact_parcel_rate"] == 1.0
     assert payload["coverage"]["parcel_year_fact_source_year_rate"] == 1.0
-    assert "parcel_characteristic_parcel_rate" in payload["coverage"]
-    assert set(payload["tax_detail_field_presence"]) == {
-        "detail_tax_records",
-        "tax_value_rows",
-        "tax_rate_rows",
-        "tax_jurisdiction_rows",
-        "tax_amount_summary",
-        "installment_rows",
+    assert payload["coverage"]["parcel_characteristic_parcel_rate"] == 0.0
+    assert payload["coverage"]["parcel_lineage_parcel_rate"] == 0.0
+    assert payload["tax_detail_field_presence"] == {
+        "detail_tax_records": 25,
+        "tax_value_rows": {"count": 25, "rate": 1.0},
+        "tax_rate_rows": {"count": 25, "rate": 1.0},
+        "tax_jurisdiction_rows": {"count": 25, "rate": 1.0},
+        "tax_amount_summary": {"count": 25, "rate": 1.0},
+        "installment_rows": {"count": 25, "rate": 1.0},
     }
 
 
