@@ -183,16 +183,30 @@ These support exclusion logic and human follow-up without requiring another tabl
 The table schema should allow most business fields to remain nullable.
 The importer should require only the audit fields and enough raw row content to preserve traceability.
 
+The `loaded` / `rejected` decision should follow one rule set, not two phases with different acceptance criteria.
+
 Rows should be accepted as `loaded` when:
 
 - CSV parsing succeeds
 - file-level required metadata is available
 - the row contains at least one non-empty field after trimming
+- all v1-critical fields required for downstream use are present
+- all present v1-critical fields parse successfully
+
+V1-critical values for `loaded` rows are:
+
+- `transfer_date`
+- `consideration_amount`
+- at least one identifying input:
+  - `official_parcel_number_raw`, or
+  - `property_address_raw`, or
+  - `legal_description_raw`
 
 Rows should be marked `rejected` when:
 
 - the row is structurally unreadable
 - all relevant cells are empty
+- any v1-critical field is missing when required for `loaded`
 - a required normalization step for a v1-critical field fails in a way that makes the row unusable
 
 Important v1 rule:
@@ -415,6 +429,10 @@ The goal is stable matching input, not full postal standardization.
 - If a date field is present but unparseable:
   - keep the raw value only in `raw_row`
   - mark the row `rejected` if that date is required for downstream use in v1
+- If `transfer_date` is blank or missing:
+  - keep the raw row
+  - mark the row `rejected`
+  - set `import_error` to a transfer-date-required message
 
 V1 critical date:
 
@@ -431,8 +449,15 @@ V1 critical date:
 
 `consideration_amount` should cause a row-level rejection when:
 
+- the source value is blank or missing
+- the importer therefore cannot populate the required v1 `consideration_amount`, or
 - the source value is non-empty
 - the importer cannot parse it as a decimal amount
+
+Important distinction:
+
+- a literal exported zero should load as `0.00`
+- a blank consideration value should not be treated as zero
 
 ### Booleans
 
@@ -463,15 +488,6 @@ The importer should insert a `sales_transactions` row with `import_status = "rej
 - the row is blank
 - a v1-critical field has invalid syntax
 - normalization detects a structural issue that makes the row unusable
-
-Required v1-critical values for `loaded` rows:
-
-- `transfer_date`
-- `consideration_amount`
-- at least one identifying input:
-  - `official_parcel_number_raw`, or
-  - `property_address_raw`, or
-  - `legal_description_raw`
 
 If a row fails one of those requirements:
 
