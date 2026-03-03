@@ -93,9 +93,6 @@ class ParseSummary:
     succeeded_fetches: int
     failed_fetches: int
     skipped_missing_raw_path: int
-    total_assessments: int
-    total_tax: int
-    total_payments: int
 
 
 class AssessmentFields(TypedDict):
@@ -818,9 +815,6 @@ def _run_parse_work_items(
         succeeded_fetches=succeeded_fetches,
         failed_fetches=failed_fetches,
         skipped_missing_raw_path=skipped_missing_raw_path,
-        total_assessments=total_assessments,
-        total_tax=total_tax,
-        total_payments=total_payments,
     )
     typer.echo(
         "Parse summary: "
