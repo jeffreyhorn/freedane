@@ -396,6 +396,17 @@ The importer should reject the entire file before inserting rows if:
 - no recognizable headers for the core RETR export shape are found
 - duplicate header names make row parsing ambiguous
 
+Header-alias resolution should be deterministic:
+
+- At most one physical header may be bound to a given canonical v1 field.
+- If multiple different headers in the same file map to the same canonical v1
+  field, the importer should choose a single winner by preferring the alias that
+  appears first in the documented alias list for that canonical field.
+- Lower-precedence alias columns for that canonical field should be ignored for
+  v1 mapping.
+- If the same physical header name appears more than once, that remains a
+  duplicate-header file-level failure.
+
 This is a file-level setup error, not a row-level data-quality issue.
 
 ## Normalization Rules
@@ -525,7 +536,10 @@ V1 should enforce a uniqueness constraint on:
 Importer behavior for that case:
 
 - upsert the existing row instead of creating a duplicate
-- replace normalized values, `raw_row`, and `import_error`
+- recompute and replace all normalized and derived values (including
+  `import_status`) from the current importer logic and the row's `raw_row`
+- replace `raw_row` and `import_error` from the latest parse of the source file
+- preserve `loaded_at` as the original first-seen timestamp
 - refresh `updated_at`
 - keep the same `id`
 
@@ -533,6 +547,8 @@ Reasoning:
 
 - this makes repeated local imports safe
 - it supports importer fixes without requiring manual cleanup
+- it allows deterministic transitions between `loaded` and `rejected` when the
+  importer changes, while preserving `loaded_at` as a first-seen audit field
 
 ### Different File, Same Real-World Transaction
 
