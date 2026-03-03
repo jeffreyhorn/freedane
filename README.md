@@ -234,6 +234,7 @@ On the current local McFarland corpus, the full parse-only rebuild path can take
 
 `check-data-quality` returns a JSON object with top-level `passed` and a `checks` list.
 Each check includes `code`, `description`, `passed`, `issue_count`, and `issues`.
+It now also checks the new extraction-layer consistency rules, including exempt-style classification flags, lineage link sanity, and placeholder payment-history mismatches.
 Use it to catch concrete integrity failures before relying on downstream analysis.
 
 `profile-data` returns a JSON object with `scope`, `counts`, `missing_sections`, `coverage`, and `tax_detail_field_presence`.

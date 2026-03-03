@@ -18,6 +18,10 @@ from .anomaly import detect_anomalies
 from .config import load_settings
 from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
+from .extraction_signals import (
+    LINEAGE_MODAL_BY_RELATIONSHIP_TYPE,
+    is_placeholder_payment_row,
+)
 from .html_utils import html_attr_text
 from .models import (
     AssessmentRecord,
@@ -1729,10 +1733,7 @@ def _upsert_parcel_lineage_links(
 def _extract_parcel_lineage_links(html: str) -> list[dict[str, Optional[str]]]:
     soup = BeautifulSoup(html, "lxml")
     deduped: dict[tuple[str, str], dict[str, Optional[str]]] = {}
-    for relationship_type, modal_id in (
-        ("parent", "modalParcelHistoryParents"),
-        ("child", "modalParcelHistoryChildren"),
-    ):
+    for relationship_type, modal_id in LINEAGE_MODAL_BY_RELATIONSHIP_TYPE:
         modal = soup.find(id=modal_id)
         if not modal:
             continue
@@ -2212,12 +2213,7 @@ def _detect_payment_history_available(parsed, page_text: str) -> Optional[bool]:
 
 
 def _payment_row_is_placeholder(row: dict[str, object]) -> bool:
-    date_value = _clean_characteristic_text(
-        row.get("Date of Payment") or row.get("Date Paid") or row.get("col_2")
-    )
-    if date_value == "No payments found.":
-        return True
-    return False
+    return is_placeholder_payment_row(row)
 
 
 def _count_tax_jurisdictions(soup: BeautifulSoup) -> Optional[int]:
