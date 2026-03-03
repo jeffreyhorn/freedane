@@ -205,7 +205,8 @@ def _source_parcel_year_keys(
 def _build_tax_detail_field_presence(
     session: Session, parcel_filter: Optional[set[str]]
 ) -> dict[str, object]:
-    detail_records: list[dict] = []
+    populated_counts = {field_name: 0 for field_name in PROFILED_TAX_DETAIL_FIELDS}
+    detail_record_count = 0
     query = select(TaxRecord.data)
     query = _apply_parcel_filter(query, TaxRecord, parcel_filter)
     for data in session.execute(query).scalars():
@@ -213,16 +214,14 @@ def _build_tax_detail_field_presence(
             continue
         if str(data.get("source") or "") != "detail":
             continue
-        detail_records.append(data)
+        detail_record_count += 1
+        for field_name in PROFILED_TAX_DETAIL_FIELDS:
+            if _has_populated_profile_value(data.get(field_name)):
+                populated_counts[field_name] += 1
 
-    detail_record_count = len(detail_records)
     payload: dict[str, object] = {"detail_tax_records": detail_record_count}
     for field_name in PROFILED_TAX_DETAIL_FIELDS:
-        populated_count = sum(
-            1
-            for record in detail_records
-            if _has_populated_profile_value(record.get(field_name))
-        )
+        populated_count = populated_counts[field_name]
         payload[field_name] = {
             "count": populated_count,
             "rate": _ratio(populated_count, detail_record_count),
