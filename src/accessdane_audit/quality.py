@@ -701,10 +701,19 @@ def _payment_history_signals_by_fetch_id(
 
 
 def _payment_row_is_placeholder(data: dict) -> bool:
-    return (
-        str(data.get("Date of Payment") or data.get("Date Paid") or "").strip()
-        == PAYMENT_HISTORY_PLACEHOLDER
+    date_value = _clean_payment_text(
+        data.get("Date of Payment") or data.get("Date Paid") or data.get("col_2")
     )
+    return date_value == PAYMENT_HISTORY_PLACEHOLDER
+
+
+def _clean_payment_text(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or value.upper() in {"N/A", "NA"}:
+        return None
+    return value
 
 
 def _has_negative_amount(data: dict) -> bool:

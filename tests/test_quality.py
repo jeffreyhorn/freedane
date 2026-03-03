@@ -456,3 +456,57 @@ def test_run_data_quality_checks_flags_new_extraction_layer_issues(
     }
     assert "payment_history_flag_mismatch" in payment_issue_codes
     assert "placeholder_payment_rollup_conflict" in payment_issue_codes
+
+
+def test_run_data_quality_checks_treats_col_2_placeholder_rows_as_placeholders(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "quality_placeholder_col2.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    now = datetime.now(timezone.utc)
+
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="p1"))
+        fetch = Fetch(
+            parcel_id="p1",
+            url="https://example.test/p1",
+            status_code=200,
+            raw_path="/tmp/p1.html",
+            parsed_at=now,
+        )
+        session.add(fetch)
+        session.flush()
+        session.add(
+            ParcelCharacteristic(
+                parcel_id="p1",
+                source_fetch_id=fetch.id,
+                current_payment_history_available=True,
+            )
+        )
+        session.add(
+            PaymentRecord(
+                parcel_id="p1",
+                fetch_id=fetch.id,
+                year=2025,
+                data={
+                    "col_1": "2025",
+                    "col_2": "No payments found.",
+                    "Amount": "",
+                },
+            )
+        )
+
+    with session_scope(database_url) as session:
+        payload = quality_report_to_dict(run_data_quality_checks(session))
+
+    checks = {check["code"]: check for check in payload["checks"]}
+    issues = checks["payment_history_semantics"]["issues"]
+
+    assert [issue["code"] for issue in issues] == ["payment_history_flag_mismatch"]
+    assert issues[0]["parcel_id"] == "p1"
+    assert issues[0]["details"] == {
+        "expected_current_payment_history_available": False,
+        "actual_current_payment_history_available": True,
+    }
