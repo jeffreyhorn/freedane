@@ -87,6 +87,14 @@ class _ParcelLineageLinkRebuildResult:
     error_message: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class ParseSummary:
+    selected_fetches: int
+    succeeded_fetches: int
+    failed_fetches: int
+    skipped_missing_raw_path: int
+
+
 class AssessmentFields(TypedDict):
     valuation_classification: Optional[str]
     assessment_acres: Optional[Decimal]
@@ -407,6 +415,14 @@ def run_all_cmd(
         "--parse-only",
         help="Skip TRS search and fetch; only parse existing fetches",
     ),
+    parse_limit: int = typer.Option(
+        0, "--parse-limit", help="Cap parse-stage fetches (0 = no cap)"
+    ),
+    parse_resume_after_fetch_id: Optional[int] = typer.Option(
+        None,
+        "--parse-resume-after-fetch-id",
+        help="Skip parse-stage fetches through this fetch id, then continue",
+    ),
     skip_tax_detail_payments: bool = typer.Option(
         False,
         "--skip-tax-detail-payments",
@@ -523,76 +539,62 @@ def run_all_cmd(
                 )
 
     with session_scope(settings.database_url) as session:
-        query = select(Fetch).where(Fetch.status_code == 200)
-        parsed_scope_ids: list[str] = []
+        parsed_scope_ids: Optional[list[str]] = None
         if parse_only and parse_ids:
             parsed_scope_ids = _collect_ids([], parse_ids)
-            if parsed_scope_ids:
-                query = query.where(Fetch.parcel_id.in_(parsed_scope_ids))
-                run_scope_parcel_ids = parsed_scope_ids
-        if not reparse:
-            query = query.where(Fetch.parsed_at.is_(None))
-        fetches = session.execute(query).scalars().all()
-        typer.echo(f"Parsing {len(fetches)} fetched pages...")
-        total_tax = 0
-        total_payments = 0
-        total_assessments = 0
-        debug_printed = 0
-        for idx, fetch in enumerate(fetches, start=1):
-            if idx % 50 == 1 or idx == len(fetches):
-                typer.echo(f"Parse {idx}/{len(fetches)}: {fetch.parcel_id}")
-            if not fetch.raw_path:
-                continue
-            try:
-                html = Path(fetch.raw_path).read_text(encoding="utf-8")
-                parsed = parse_page(
-                    html, include_tax_detail_payments=not skip_tax_detail_payments
-                )
-                total_tax += len(parsed.tax)
-                total_payments += len(parsed.payments)
-                total_assessments += len(parsed.assessment)
-                if debug_parse:
-                    is_empty = (len(parsed.tax) == 0) or (len(parsed.payments) == 0)
-                    if (
-                        not debug_only_empty or is_empty
-                    ) and debug_printed < debug_limit:
-                        typer.echo(
-                            f"Debug parse {fetch.parcel_id}: "
-                            f"assessment={len(parsed.assessment)} "
-                            f"tax={len(parsed.tax)} payments={len(parsed.payments)}"
-                        )
-                        debug_printed += 1
-                if reparse:
-                    _delete_parsed(session, fetch.id, fetch.parcel_id)
-                _store_parsed(session, fetch, parsed, raw_html=html)
-                fetch.parsed_at = datetime.now(timezone.utc)
-                fetch.parse_error = None
-            except Exception as exc:
-                fetch.parse_error = str(exc)
-        if debug_parse:
-            typer.echo(
-                "Debug totals: "
-                f"assessment={total_assessments} "
-                f"tax={total_tax} payments={total_payments}"
-            )
+        work_items = _collect_parse_work_items(
+            session,
+            parcel_id=None,
+            unparsed=not reparse,
+            reparse=reparse,
+            parcel_ids=parsed_scope_ids,
+            resume_after_fetch_id=parse_resume_after_fetch_id,
+            limit=parse_limit if parse_limit > 0 else None,
+        )
+
+    if parse_only and (
+        parsed_scope_ids is not None
+        or parse_resume_after_fetch_id is not None
+        or parse_limit > 0
+    ):
+        run_scope_parcel_ids = list(
+            dict.fromkeys(item.parcel_id for item in work_items)
+        )
+
+    parse_summary = _run_parse_work_items(
+        settings.database_url,
+        work_items,
+        reparse=reparse,
+        skip_tax_detail_payments=skip_tax_detail_payments,
+        debug_parse=debug_parse,
+        debug_limit=debug_limit,
+        debug_only_empty=debug_only_empty,
+    )
 
     if build_parcel_year_facts:
-        with session_scope(settings.database_url) as session:
-            fact_rows = rebuild_parcel_year_facts(
-                session,
-                parcel_ids=run_scope_parcel_ids,
-            )
-        typer.echo(f"parcel_year_facts rows built: {fact_rows}")
+        if run_scope_parcel_ids == [] and parse_summary.selected_fetches == 0:
+            typer.echo("parcel_year_facts rows built: 0")
+        else:
+            with session_scope(settings.database_url) as session:
+                fact_rows = rebuild_parcel_year_facts(
+                    session,
+                    parcel_ids=run_scope_parcel_ids,
+                )
+            typer.echo(f"parcel_year_facts rows built: {fact_rows}")
 
     if not skip_anomalies:
-        with session_scope(settings.database_url) as session:
-            anomalies = detect_anomalies(session, parcel_ids=run_scope_parcel_ids)
-            anomalies_out.parent.mkdir(parents=True, exist_ok=True)
-            anomalies_out.write_text(
-                json.dumps([asdict(item) for item in anomalies], indent=2),
-                encoding="utf-8",
-            )
-            typer.echo(f"Anomalies: {len(anomalies)} -> {anomalies_out}")
+        anomalies_out.parent.mkdir(parents=True, exist_ok=True)
+        if run_scope_parcel_ids == [] and parse_summary.selected_fetches == 0:
+            anomalies_out.write_text("[]", encoding="utf-8")
+            typer.echo(f"Anomalies: 0 -> {anomalies_out}")
+        else:
+            with session_scope(settings.database_url) as session:
+                anomalies = detect_anomalies(session, parcel_ids=run_scope_parcel_ids)
+                anomalies_out.write_text(
+                    json.dumps([asdict(item) for item in anomalies], indent=2),
+                    encoding="utf-8",
+                )
+                typer.echo(f"Anomalies: {len(anomalies)} -> {anomalies_out}")
 
 
 @app.command("fetch")
@@ -648,6 +650,12 @@ def parse_cmd(
         "--skip-tax-detail-payments",
         help="Skip per-year payment tables inside TaxDetails modals",
     ),
+    resume_after_fetch_id: Optional[int] = typer.Option(
+        None,
+        "--resume-after-fetch-id",
+        help="Skip fetches through this fetch id, then continue",
+    ),
+    limit: int = typer.Option(0, "--limit", help="Max fetches to parse (0 = no cap)"),
 ) -> None:
     settings = load_settings()
     with session_scope(settings.database_url) as session:
@@ -656,46 +664,21 @@ def parse_cmd(
             parcel_id=parcel_id,
             unparsed=unparsed,
             reparse=reparse,
+            resume_after_fetch_id=resume_after_fetch_id,
+            limit=limit if limit > 0 else None,
         )
 
-    total_tax = 0
-    total_payments = 0
-    total_assessments = 0
-    debug_printed = 0
-    for work_item in work_items:
-        if not work_item.raw_path:
-            continue
-        try:
-            html = Path(work_item.raw_path).read_text(encoding="utf-8")
-            parsed = parse_page(
-                html, include_tax_detail_payments=not skip_tax_detail_payments
-            )
-            total_tax += len(parsed.tax)
-            total_payments += len(parsed.payments)
-            total_assessments += len(parsed.assessment)
-            if debug_parse:
-                is_empty = (len(parsed.tax) == 0) or (len(parsed.payments) == 0)
-                if (not debug_only_empty or is_empty) and debug_printed < debug_limit:
-                    typer.echo(
-                        f"Debug parse {work_item.parcel_id}: "
-                        f"assessment={len(parsed.assessment)} "
-                        f"tax={len(parsed.tax)} payments={len(parsed.payments)}"
-                    )
-                    debug_printed += 1
-            _persist_parsed_fetch(
-                settings.database_url,
-                work_item,
-                parsed,
-                html,
-                reparse=reparse,
-            )
-        except Exception as exc:
-            _record_parse_error(settings.database_url, work_item.fetch_id, str(exc))
-    if debug_parse:
-        typer.echo(
-            "Debug totals: "
-            f"assessment={total_assessments} tax={total_tax} payments={total_payments}"
-        )
+    parse_summary = _run_parse_work_items(
+        settings.database_url,
+        work_items,
+        reparse=reparse,
+        skip_tax_detail_payments=skip_tax_detail_payments,
+        debug_parse=debug_parse,
+        debug_limit=debug_limit,
+        debug_only_empty=debug_only_empty,
+    )
+    if parse_summary.selected_fetches == 0:
+        typer.echo("No matching fetches selected for parsing.")
 
 
 def _collect_parse_work_items(
@@ -704,6 +687,9 @@ def _collect_parse_work_items(
     parcel_id: Optional[str],
     unparsed: bool,
     reparse: bool,
+    parcel_ids: Optional[list[str]] = None,
+    resume_after_fetch_id: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> list[ParseWorkItem]:
     query = (
         select(Fetch.id, Fetch.parcel_id, Fetch.raw_path)
@@ -712,8 +698,14 @@ def _collect_parse_work_items(
     )
     if parcel_id:
         query = query.where(Fetch.parcel_id == parcel_id)
+    if parcel_ids is not None:
+        query = query.where(Fetch.parcel_id.in_(parcel_ids))
     if unparsed and not reparse:
         query = query.where(Fetch.parsed_at.is_(None))
+    if resume_after_fetch_id is not None:
+        query = query.where(Fetch.id > resume_after_fetch_id)
+    if limit is not None:
+        query = query.limit(limit)
     rows = session.execute(query).all()
     return [
         ParseWorkItem(
@@ -750,6 +742,88 @@ def _record_parse_error(database_url: str, fetch_id: int, error: str) -> None:
         if fetch is None:
             return
         fetch.parse_error = error
+
+
+def _run_parse_work_items(
+    database_url: str,
+    work_items: Sequence[ParseWorkItem],
+    *,
+    reparse: bool,
+    skip_tax_detail_payments: bool,
+    debug_parse: bool,
+    debug_limit: int,
+    debug_only_empty: bool,
+) -> ParseSummary:
+    typer.echo(f"Parsing {len(work_items)} fetched pages...")
+    total_tax = 0
+    total_payments = 0
+    total_assessments = 0
+    succeeded_fetches = 0
+    failed_fetches = 0
+    skipped_missing_raw_path = 0
+    debug_printed = 0
+
+    for idx, work_item in enumerate(work_items, start=1):
+        if idx % 50 == 1 or idx == len(work_items):
+            typer.echo(f"Parse {idx}/{len(work_items)}: {work_item.parcel_id}")
+        if not work_item.raw_path:
+            skipped_missing_raw_path += 1
+            continue
+        try:
+            html = Path(work_item.raw_path).read_text(encoding="utf-8")
+            parsed = parse_page(
+                html, include_tax_detail_payments=not skip_tax_detail_payments
+            )
+            if debug_parse:
+                is_empty = (len(parsed.tax) == 0) or (len(parsed.payments) == 0)
+                if (not debug_only_empty or is_empty) and debug_printed < debug_limit:
+                    typer.echo(
+                        f"Debug parse {work_item.parcel_id}: "
+                        f"assessment={len(parsed.assessment)} "
+                        f"tax={len(parsed.tax)} payments={len(parsed.payments)}"
+                    )
+                    debug_printed += 1
+            _persist_parsed_fetch(
+                database_url,
+                work_item,
+                parsed,
+                html,
+                reparse=reparse,
+            )
+            total_tax += len(parsed.tax)
+            total_payments += len(parsed.payments)
+            total_assessments += len(parsed.assessment)
+            succeeded_fetches += 1
+        except Exception as exc:
+            failed_fetches += 1
+            _record_parse_error(database_url, work_item.fetch_id, str(exc))
+            typer.echo(
+                f"Failed to parse fetch_id={work_item.fetch_id} "
+                f"parcel_id={work_item.parcel_id} "
+                f"({type(exc).__name__}: {exc})",
+                err=True,
+            )
+
+    if debug_parse:
+        typer.echo(
+            "Debug totals: "
+            f"assessment={total_assessments} tax={total_tax} payments={total_payments}"
+        )
+
+    summary = ParseSummary(
+        selected_fetches=len(work_items),
+        succeeded_fetches=succeeded_fetches,
+        failed_fetches=failed_fetches,
+        skipped_missing_raw_path=skipped_missing_raw_path,
+    )
+    typer.echo(
+        "Parse summary: "
+        f"selected={summary.selected_fetches} "
+        f"succeeded={summary.succeeded_fetches} "
+        f"failed={summary.failed_fetches} "
+        f"skipped_missing_raw_path={summary.skipped_missing_raw_path}"
+    )
+    return summary
 
 
 @app.command("anomalies")
