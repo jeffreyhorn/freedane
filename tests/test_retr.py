@@ -182,6 +182,67 @@ def test_match_sales_creates_exact_parcel_number_matches(
     assert matches[0].matcher_version == "sprint3_day12_v1"
 
 
+def test_match_sales_applies_parcel_number_crosswalk_for_transposed_prefix_digits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_crosswalk.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_crosswalk.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,154/060102337591,5627 Osborn Drive\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="061002337591"),
+                ParcelCharacteristic(
+                    parcel_id="061002337591",
+                    formatted_parcel_number="154/0610-023-3759-1",
+                ),
+                ParcelSummary(
+                    parcel_id="061002337591",
+                    fetch_id=1,
+                    primary_address="No parcel address available.",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "061002337591"
+    assert matches[0].match_method == "parcel_number_crosswalk"
+    assert str(matches[0].confidence_score) == "0.9500"
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "154061002337591"
+
+
 def test_match_sales_falls_back_to_normalized_address_matching(
     tmp_path: Path,
     monkeypatch,

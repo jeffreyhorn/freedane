@@ -93,11 +93,13 @@ _PARCEL_DESCRIPTION_LEADING_LOT_PATTERN = re.compile(
 )
 MATCHER_VERSION = "sprint3_day12_v1"
 EXACT_PARCEL_NUMBER_MATCH_METHOD = "exact_parcel_number"
+PARCEL_NUMBER_CROSSWALK_MATCH_METHOD = "parcel_number_crosswalk"
 NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
 NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD = "normalized_legal_description"
 AUTO_ACCEPTED_MATCH_REVIEW_STATUS = "auto_accepted"
 NEEDS_REVIEW_MATCH_REVIEW_STATUS = "needs_review"
 EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
+PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
 
@@ -718,6 +720,19 @@ def _derive_sales_parcel_matches(
             confidence_score=EXACT_MATCH_CONFIDENCE,
         )
 
+    for crosswalk_value in _parcel_number_crosswalk_candidates(
+        transaction.official_parcel_number_raw
+    ):
+        crosswalk_candidates = parcel_number_index.get(crosswalk_value)
+        if not crosswalk_candidates:
+            continue
+        return _build_sales_match_specs(
+            crosswalk_candidates,
+            match_method=PARCEL_NUMBER_CROSSWALK_MATCH_METHOD,
+            matched_value=crosswalk_value,
+            confidence_score=PARCEL_NUMBER_CROSSWALK_CONFIDENCE,
+        )
+
     address_match_value = transaction.property_address_norm
     address_candidates = None
     if address_match_value is not None:
@@ -957,6 +972,27 @@ def _normalize_address(value: Optional[str]) -> Optional[str]:
     normalized = _SPACE_RE.sub(" ", normalized).strip()
     normalized = _strip_trailing_city_state_zip(normalized)
     return normalized
+
+
+def _parcel_number_crosswalk_candidates(value: Optional[str]) -> tuple[str, ...]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None or "/" not in collapsed:
+        return ()
+
+    prefix, suffix = collapsed.split("/", 1)
+    suffix_digits = "".join(char for char in suffix if char.isdigit())
+    if len(suffix_digits) != 12:
+        return ()
+
+    # Some RETR exports transpose the first two 2-digit segments after the slash,
+    # e.g. 0601... instead of the parcel-side 0610... representation.
+    swapped = prefix + suffix_digits[:2] + suffix_digits[3] + suffix_digits[2]
+    swapped += suffix_digits[4:]
+
+    normalized = _normalize_parcel_number(f"{prefix}/{swapped[len(prefix):]}")
+    if normalized is None:
+        return ()
+    return (normalized,)
 
 
 def _normalize_sales_legal_description(value: Optional[str]) -> Optional[str]:
