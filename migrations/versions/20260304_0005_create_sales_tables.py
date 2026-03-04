@@ -139,7 +139,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
-        "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method",
+        "ux_sales_parcel_matches_txn_parcel_method",
         "sales_parcel_matches",
         ["sales_transaction_id", "parcel_id", "match_method"],
         unique=True,
@@ -219,7 +219,7 @@ def downgrade() -> None:
         table_name="sales_parcel_matches",
     )
     op.drop_index(
-        "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method",
+        "ux_sales_parcel_matches_txn_parcel_method",
         table_name="sales_parcel_matches",
     )
     op.drop_table("sales_parcel_matches")

@@ -129,7 +129,7 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             for index in inspector.get_indexes("sales_parcel_matches")
         }
         assert sales_parcel_match_indexes[
-            "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method"
+            "ux_sales_parcel_matches_txn_parcel_method"
         ] == ("sales_transaction_id", "parcel_id", "match_method")
         assert sales_parcel_match_indexes[
             "ux_sales_parcel_matches_primary_per_transaction"

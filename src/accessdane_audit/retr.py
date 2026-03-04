@@ -82,6 +82,7 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "property_address_raw": (
         "Property Address",
         "Property Address 1",
+        "Physical Address",
         "Address",
         "Site Address",
     ),
@@ -916,7 +917,7 @@ def _parse_optional_date(
 
 
 def _parse_date(value: str) -> Optional[date]:
-    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:

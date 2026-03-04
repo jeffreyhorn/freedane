@@ -75,6 +75,50 @@ def test_ingest_retr_imports_and_normalizes_loaded_rows(
     assert row.usable_sale_indicator_norm is False
 
 
+def test_ingest_retr_accepts_real_export_date_format_and_physical_address_alias(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_real_export_shape.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "retr_real_export_shape.csv"
+    csv_path.write_text(
+        (
+            "Conveyance Date,Recorded Date,Sale Price,Parcel Number,Physical "
+            "Address\n"
+            "03-01-2021,03-02-2021,$0.00,06-10-0139-151-1,4519 and 4521 Field Ave\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.import_error is None
+    assert row.transfer_date.isoformat() == "2021-03-01"
+    assert row.recording_date.isoformat() == "2021-03-02"
+    assert str(row.consideration_amount) == "0.00"
+    assert row.property_address_raw == "4519 and 4521 Field Ave"
+    assert row.property_address_norm == "4519 AND 4521 FIELD AVE"
+
+
 def test_match_sales_creates_exact_parcel_number_matches(
     tmp_path: Path,
     monkeypatch,
