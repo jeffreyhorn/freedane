@@ -13,7 +13,13 @@ from typing import Iterable, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session, load_only
 
-from .models import SalesExclusion, SalesTransaction
+from .models import (
+    ParcelCharacteristic,
+    ParcelSummary,
+    SalesExclusion,
+    SalesParcelMatch,
+    SalesTransaction,
+)
 
 RETR_SOURCE_SYSTEM = "wisconsin_dor_retr"
 _EXTRA_COLUMNS_KEY = "_extra_columns"
@@ -41,6 +47,13 @@ _GOVERNMENT_TRANSFER_PHRASES = (
 _CORRECTIVE_DEED_PATTERN = re.compile(
     r"(?<![a-z-])(?:corrective deed|correction deed)\b"
 )
+MATCHER_VERSION = "sprint3_day12_v1"
+EXACT_PARCEL_NUMBER_MATCH_METHOD = "exact_parcel_number"
+NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
+AUTO_ACCEPTED_MATCH_REVIEW_STATUS = "auto_accepted"
+NEEDS_REVIEW_MATCH_REVIEW_STATUS = "needs_review"
+EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
+ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -105,6 +118,26 @@ class SalesExclusionSpec:
     exclusion_code: str
     exclusion_reason: str
     excluded_by_rule: str
+
+
+@dataclass(frozen=True)
+class SalesMatchSummary:
+    selected_transactions: int
+    matched_transactions: int
+    rows_written: int
+    rows_deleted: int
+
+
+@dataclass(frozen=True)
+class SalesMatchSpec:
+    parcel_id: str
+    match_method: str
+    confidence_score: Decimal
+    match_rank: int
+    is_primary: bool
+    match_review_status: str
+    matched_value: str
+    matcher_version: str = MATCHER_VERSION
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
@@ -200,6 +233,52 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
         rejected_rows=rejected_rows,
         inserted_rows=inserted_rows,
         updated_rows=updated_rows,
+    )
+
+
+def match_sales_transactions(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]] = None,
+) -> SalesMatchSummary:
+    parcel_number_index = _build_parcel_number_match_index(session)
+    address_index = _build_address_match_index(session)
+
+    query = select(SalesTransaction).where(SalesTransaction.import_status == "loaded")
+    if sales_transaction_ids is not None:
+        query = query.where(SalesTransaction.id.in_(list(sales_transaction_ids)))
+
+    transactions = session.execute(query.order_by(SalesTransaction.id)).scalars().all()
+    existing_matches = _load_existing_sales_parcel_matches(session, transactions)
+
+    matched_transactions = 0
+    rows_written = 0
+    rows_deleted = 0
+
+    for transaction in transactions:
+        desired_matches = _derive_sales_parcel_matches(
+            transaction,
+            parcel_number_index=parcel_number_index,
+            address_index=address_index,
+        )
+        rows_written += len(desired_matches)
+        if desired_matches:
+            matched_transactions += 1
+
+        transaction_existing_matches = existing_matches.get(transaction.id, {})
+        deleted = _sync_sales_parcel_matches(
+            session,
+            transaction=transaction,
+            desired_matches=desired_matches,
+            existing_matches=transaction_existing_matches,
+        )
+        rows_deleted += deleted
+
+    return SalesMatchSummary(
+        selected_transactions=len(transactions),
+        matched_transactions=matched_transactions,
+        rows_written=rows_written,
+        rows_deleted=rows_deleted,
     )
 
 
@@ -494,6 +573,171 @@ def _sync_sales_exclusions(
         if exclusion_code in current_exclusions:
             continue
         existing.is_active = False
+
+
+def _build_parcel_number_match_index(session: Session) -> dict[str, tuple[str, ...]]:
+    parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
+    for parcel_id, formatted_parcel_number in session.execute(
+        select(
+            ParcelCharacteristic.parcel_id,
+            ParcelCharacteristic.formatted_parcel_number,
+        )
+    ).all():
+        normalized = _normalize_parcel_number(formatted_parcel_number)
+        if normalized is None:
+            continue
+        parcel_ids_by_norm[normalized].add(parcel_id)
+
+    return {
+        normalized: tuple(sorted(parcel_ids))
+        for normalized, parcel_ids in parcel_ids_by_norm.items()
+    }
+
+
+def _build_address_match_index(session: Session) -> dict[str, tuple[str, ...]]:
+    parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
+    for parcel_id, primary_address in session.execute(
+        select(ParcelSummary.parcel_id, ParcelSummary.primary_address)
+    ).all():
+        normalized = _normalize_address(primary_address)
+        if normalized is None:
+            continue
+        parcel_ids_by_norm[normalized].add(parcel_id)
+
+    return {
+        normalized: tuple(sorted(parcel_ids))
+        for normalized, parcel_ids in parcel_ids_by_norm.items()
+    }
+
+
+def _load_existing_sales_parcel_matches(
+    session: Session,
+    transactions: Iterable[SalesTransaction],
+) -> dict[int, dict[tuple[str, str], SalesParcelMatch]]:
+    transaction_ids = [transaction.id for transaction in transactions]
+    if not transaction_ids:
+        return {}
+
+    matches_by_transaction: dict[int, dict[tuple[str, str], SalesParcelMatch]] = (
+        defaultdict(dict)
+    )
+    for row in session.execute(
+        select(SalesParcelMatch).where(
+            SalesParcelMatch.sales_transaction_id.in_(transaction_ids)
+        )
+    ).scalars():
+        key = (row.parcel_id, row.match_method)
+        matches_by_transaction[row.sales_transaction_id][key] = row
+
+    return dict(matches_by_transaction)
+
+
+def _derive_sales_parcel_matches(
+    transaction: SalesTransaction,
+    *,
+    parcel_number_index: dict[str, tuple[str, ...]],
+    address_index: dict[str, tuple[str, ...]],
+) -> list[SalesMatchSpec]:
+    exact_match_value = transaction.official_parcel_number_norm
+    exact_candidates = None
+    if exact_match_value is not None:
+        exact_candidates = parcel_number_index.get(exact_match_value)
+    if exact_candidates:
+        return _build_sales_match_specs(
+            exact_candidates,
+            match_method=EXACT_PARCEL_NUMBER_MATCH_METHOD,
+            matched_value=exact_match_value,
+            confidence_score=EXACT_MATCH_CONFIDENCE,
+        )
+
+    address_match_value = transaction.property_address_norm
+    address_candidates = None
+    if address_match_value is not None:
+        address_candidates = address_index.get(address_match_value)
+    if address_candidates:
+        return _build_sales_match_specs(
+            address_candidates,
+            match_method=NORMALIZED_ADDRESS_MATCH_METHOD,
+            matched_value=address_match_value,
+            confidence_score=ADDRESS_MATCH_CONFIDENCE,
+        )
+
+    return []
+
+
+def _build_sales_match_specs(
+    parcel_ids: tuple[str, ...],
+    *,
+    match_method: str,
+    matched_value: Optional[str],
+    confidence_score: Decimal,
+) -> list[SalesMatchSpec]:
+    if matched_value is None:
+        return []
+
+    is_auto_accepted = len(parcel_ids) == 1
+    return [
+        SalesMatchSpec(
+            parcel_id=parcel_id,
+            match_method=match_method,
+            confidence_score=confidence_score,
+            match_rank=index,
+            is_primary=is_auto_accepted and index == 1,
+            match_review_status=(
+                AUTO_ACCEPTED_MATCH_REVIEW_STATUS
+                if is_auto_accepted
+                else NEEDS_REVIEW_MATCH_REVIEW_STATUS
+            ),
+            matched_value=matched_value,
+        )
+        for index, parcel_id in enumerate(parcel_ids, start=1)
+    ]
+
+
+def _sync_sales_parcel_matches(
+    session: Session,
+    *,
+    transaction: SalesTransaction,
+    desired_matches: list[SalesMatchSpec],
+    existing_matches: dict[tuple[str, str], SalesParcelMatch],
+) -> int:
+    desired_by_key = {
+        (match.parcel_id, match.match_method): match for match in desired_matches
+    }
+
+    for key, desired in desired_by_key.items():
+        existing = existing_matches.get(key)
+        if existing is None:
+            session.add(
+                SalesParcelMatch(
+                    sales_transaction_id=transaction.id,
+                    parcel_id=desired.parcel_id,
+                    match_method=desired.match_method,
+                    confidence_score=desired.confidence_score,
+                    match_rank=desired.match_rank,
+                    is_primary=desired.is_primary,
+                    match_review_status=desired.match_review_status,
+                    matched_value=desired.matched_value,
+                    matcher_version=desired.matcher_version,
+                )
+            )
+            continue
+
+        existing.confidence_score = desired.confidence_score
+        existing.match_rank = desired.match_rank
+        existing.is_primary = desired.is_primary
+        existing.match_review_status = desired.match_review_status
+        existing.matched_value = desired.matched_value
+        existing.matcher_version = desired.matcher_version
+
+    deleted_rows = 0
+    for key, existing in existing_matches.items():
+        if key in desired_by_key:
+            continue
+        session.delete(existing)
+        deleted_rows += 1
+
+    return deleted_rows
 
 
 def _derive_sales_exclusions(values: dict[str, object]) -> list[SalesExclusionSpec]:

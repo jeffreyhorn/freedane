@@ -9,7 +9,14 @@ from typer.testing import CliRunner
 from accessdane_audit import cli
 from accessdane_audit import retr as retr_module
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import SalesExclusion, SalesTransaction
+from accessdane_audit.models import (
+    Parcel,
+    ParcelCharacteristic,
+    ParcelSummary,
+    SalesExclusion,
+    SalesParcelMatch,
+    SalesTransaction,
+)
 
 
 def test_ingest_retr_imports_and_normalizes_loaded_rows(
@@ -66,6 +73,165 @@ def test_ingest_retr_imports_and_normalizes_loaded_rows(
     assert row.arms_length_indicator_norm is True
     assert row.usable_sale_indicator_raw == "0"
     assert row.usable_sale_indicator_norm is False
+
+
+def test_match_sales_creates_exact_parcel_number_matches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_exact.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_exact.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,06-10-0139-151-1,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                ParcelCharacteristic(
+                    parcel_id="0601001391511",
+                    formatted_parcel_number="06-10-0139-151-1",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="999 Wrong Ave",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "0601001391511"
+    assert matches[0].match_method == "exact_parcel_number"
+    assert str(matches[0].confidence_score) == "1.0000"
+    assert matches[0].match_rank == 1
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "061001391511"
+    assert matches[0].matcher_version == "sprint3_day12_v1"
+
+
+def test_match_sales_falls_back_to_normalized_address_matching(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address\n"
+            '01/15/2025,100000," 123 Main St., Apt #2 "\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-123"),
+                ParcelSummary(
+                    parcel_id="parcel-123",
+                    fetch_id=1,
+                    primary_address="123 Main St Apt 2",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-123"
+    assert matches[0].match_method == "normalized_address"
+    assert str(matches[0].confidence_score) == "0.9000"
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "123 MAIN ST APT 2"
+
+
+def test_match_sales_leaves_non_matching_transactions_unmatched(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_none.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_none.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,06-10-0139-151-1,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert matches == []
 
 
 def test_ingest_retr_records_rejected_rows_and_reuses_existing_same_file_rows(
