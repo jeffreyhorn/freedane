@@ -239,6 +239,61 @@ def test_match_sales_falls_back_to_normalized_address_matching(
     assert matches[0].matched_value == "123 MAIN ST APT 2"
 
 
+def test_match_sales_strips_city_state_zip_from_retr_addresses(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_suffix.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_suffix.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"5218 Lewis Ln., McFarland, WI 53558"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-5218"),
+                ParcelSummary(
+                    parcel_id="parcel-5218",
+                    fetch_id=1,
+                    primary_address="5218 Lewis Ln",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "5218 LEWIS LN"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-5218"
+    assert matches[0].match_method == "normalized_address"
+
+
 def test_match_sales_leaves_non_matching_transactions_unmatched(
     tmp_path: Path,
     monkeypatch,

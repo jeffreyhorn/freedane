@@ -28,6 +28,32 @@ _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"[,.;:/#-]+")
 _TRUE_TOKENS = {"y", "yes", "true", "1"}
 _FALSE_TOKENS = {"n", "no", "false", "0"}
+_STREET_SUFFIX_TOKENS = {
+    "ALY",
+    "AVE",
+    "AVENUE",
+    "BLVD",
+    "CIR",
+    "CIRCLE",
+    "COURT",
+    "CT",
+    "DR",
+    "DRIVE",
+    "HWY",
+    "LANE",
+    "LN",
+    "PKWY",
+    "PL",
+    "PLACE",
+    "RD",
+    "ROAD",
+    "ST",
+    "STREET",
+    "TER",
+    "TERRACE",
+    "TRL",
+    "WAY",
+}
 _FAMILY_TRANSFER_PHRASES = (
     "family transfer",
     "intra family",
@@ -873,7 +899,40 @@ def _normalize_address(value: Optional[str]) -> Optional[str]:
     if collapsed is None:
         return None
     normalized = _ADDRESS_PUNCTUATION_RE.sub(" ", collapsed.upper())
-    return _SPACE_RE.sub(" ", normalized).strip()
+    normalized = _SPACE_RE.sub(" ", normalized).strip()
+    normalized = _strip_trailing_city_state_zip(normalized)
+    return normalized
+
+
+def _strip_trailing_city_state_zip(normalized: str) -> str:
+    tokens = normalized.split()
+    if len(tokens) < 4 or tokens[-2] != "WI" or not _is_zip_token(tokens[-1]):
+        return normalized
+
+    street_and_city_tokens = tokens[:-2]
+    last_suffix_index = None
+    for index, token in enumerate(street_and_city_tokens):
+        if token in _STREET_SUFFIX_TOKENS:
+            last_suffix_index = index
+
+    if last_suffix_index is None:
+        return normalized
+
+    end_index = last_suffix_index
+    if last_suffix_index + 1 < len(street_and_city_tokens):
+        next_token = street_and_city_tokens[last_suffix_index + 1]
+        if len(next_token) <= 2:
+            end_index = last_suffix_index + 1
+
+    return " ".join(street_and_city_tokens[: end_index + 1])
+
+
+def _is_zip_token(token: str) -> bool:
+    if len(token) == 5 and token.isdigit():
+        return True
+    if len(token) == 10 and token[5] == "-":
+        return token[:5].isdigit() and token[6:].isdigit()
+    return False
 
 
 def _normalize_boolean(value: Optional[str]) -> Optional[bool]:
