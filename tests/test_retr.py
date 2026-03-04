@@ -299,3 +299,38 @@ def test_ingest_retr_rejects_non_empty_unparseable_optional_recording_date(
     assert row.import_status == "rejected"
     assert row.import_error == "recording_date could not be parsed."
     assert row.recording_date is None
+
+
+def test_ingest_retr_treats_whitespace_only_rows_as_blank(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_whitespace_blank.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "whitespace_blank.csv"
+    csv_path.write_text(
+        ("Transfer Date,Consideration,Property Address\n" "   ,   ,   \n"),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=0 rejected=1 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+
+    assert row.import_status == "rejected"
+    assert row.import_error == "Row is blank."

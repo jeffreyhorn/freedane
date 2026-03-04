@@ -373,8 +373,10 @@ def _row_is_blank(raw_row: dict[str, object]) -> bool:
             if isinstance(value, list) and any(_trimmed_text(item) for item in value):
                 return False
             continue
-        if isinstance(value, str) and _trimmed_text(value):
-            return False
+        if isinstance(value, str):
+            if _trimmed_text(value):
+                return False
+            continue
         if value not in (None, ""):
             return False
     return True
