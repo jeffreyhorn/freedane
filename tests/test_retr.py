@@ -7,6 +7,7 @@ from sqlalchemy import select
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import retr as retr_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import SalesTransaction
 
@@ -222,6 +223,47 @@ def test_ingest_retr_rejects_files_without_recognizable_retr_headers(
     assert result.exit_code != 0
     assert "CSV file does not contain recognizable RETR" in result.stderr
     assert "headers." in result.stderr
+
+
+def test_ingest_retr_rejects_malformed_csv_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_malformed.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "malformed.csv"
+    csv_path.write_text(
+        "Transfer Date,Consideration,Property Address\n01/15/2025,100000,123 Main St\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    class MalformedDictReader:
+        fieldnames = ["Transfer Date", "Consideration", "Property Address"]
+
+        def __iter__(self) -> "MalformedDictReader":
+            return self
+
+        def __next__(self) -> dict[str, str]:
+            raise retr_module.csv.Error("unexpected end of data")
+
+    monkeypatch.setattr(
+        retr_module.csv,
+        "DictReader",
+        lambda *args, **kwargs: MalformedDictReader(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code != 0
+    assert "CSV file is malformed: unexpected end of data" in result.stderr
 
 
 def test_ingest_retr_marks_rows_with_extra_columns_as_rejected(

@@ -147,6 +147,8 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
         raise RetrImportFileError(
             "CSV file is not valid UTF-8 and could not be decoded."
         ) from exc
+    except csv.Error as exc:
+        raise RetrImportFileError(f"CSV file is malformed: {exc}") from exc
 
     return RetrImportSummary(
         total_rows=total_rows,
