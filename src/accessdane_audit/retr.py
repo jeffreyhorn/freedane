@@ -1274,7 +1274,7 @@ def _parcel_number_crosswalk_candidates(value: Optional[str]) -> tuple[str, ...]
     if len(suffix_digits) != 12:
         return ()
 
-    # Some RETR exports transpose the first two 2-digit segments after the slash,
+    # Some RETR exports swap the 3rd and 4th digits after the slash,
     # e.g. 0601... instead of the parcel-side 0610... representation.
     swapped = prefix + suffix_digits[:2] + suffix_digits[3] + suffix_digits[2]
     swapped += suffix_digits[4:]
@@ -1414,11 +1414,7 @@ def _strip_trailing_city_state_zip(normalized: str) -> str:
 
 
 def _is_zip_token(token: str) -> bool:
-    if len(token) == 5 and token.isdigit():
-        return True
-    if len(token) == 10 and token[5] == "-":
-        return token[:5].isdigit() and token[6:].isdigit()
-    return False
+    return len(token) == 5 and token.isdigit()
 
 
 def _find_unit_suffix_end(tokens: list[str], start_index: int) -> Optional[int]:
