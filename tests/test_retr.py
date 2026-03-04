@@ -11,6 +11,7 @@ from accessdane_audit import cli
 from accessdane_audit import retr as retr_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
+    Fetch,
     Parcel,
     ParcelCharacteristic,
     ParcelSummary,
@@ -146,6 +147,11 @@ def test_match_sales_creates_exact_parcel_number_matches(
         session.add_all(
             [
                 Parcel(id="0601001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
                 ParcelCharacteristic(
                     parcel_id="0601001391511",
                     formatted_parcel_number="06-10-0139-151-1",
@@ -215,6 +221,11 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
         session.add_all(
             [
                 Parcel(id="parcel-a"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-a",
+                    url="https://example.test/parcel/parcel-a",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-a",
                     fetch_id=1,
@@ -241,6 +252,11 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
         session.add_all(
             [
                 Parcel(id="parcel-b"),
+                Fetch(
+                    id=2,
+                    parcel_id="parcel-b",
+                    url="https://example.test/parcel/parcel-b",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-b",
                     fetch_id=2,
@@ -303,6 +319,11 @@ def test_match_sales_applies_parcel_number_crosswalk_for_transposed_prefix_digit
         session.add_all(
             [
                 Parcel(id="061002337591"),
+                Fetch(
+                    id=1,
+                    parcel_id="061002337591",
+                    url="https://example.test/parcel/061002337591",
+                ),
                 ParcelCharacteristic(
                     parcel_id="061002337591",
                     formatted_parcel_number="154/0610-023-3759-1",
@@ -364,6 +385,11 @@ def test_match_sales_falls_back_to_normalized_address_matching(
         session.add_all(
             [
                 Parcel(id="parcel-123"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-123",
+                    url="https://example.test/parcel/parcel-123",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-123",
                     fetch_id=1,
@@ -421,6 +447,11 @@ def test_match_sales_normalizes_address_suffix_variants(
         session.add_all(
             [
                 Parcel(id="parcel-5006"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-5006",
+                    url="https://example.test/parcel/parcel-5006",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-5006",
                     fetch_id=1,
@@ -476,6 +507,11 @@ def test_match_sales_strips_city_state_zip_from_retr_addresses(
         session.add_all(
             [
                 Parcel(id="parcel-5218"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-5218",
+                    url="https://example.test/parcel/parcel-5218",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-5218",
                     fetch_id=1,
@@ -531,6 +567,11 @@ def test_match_sales_strips_city_state_zip_before_parkway_normalization(
         session.add_all(
             [
                 Parcel(id="parcel-parkway"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-parkway",
+                    url="https://example.test/parcel/parcel-parkway",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-parkway",
                     fetch_id=1,
@@ -586,6 +627,11 @@ def test_match_sales_preserves_unit_tokens_when_stripping_zip_plus_four(
         session.add_all(
             [
                 Parcel(id="parcel-unit-zip4"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-unit-zip4",
+                    url="https://example.test/parcel/parcel-unit-zip4",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-unit-zip4",
                     fetch_id=1,
@@ -643,6 +689,11 @@ def test_match_sales_falls_back_to_lot_block_legal_description(
         session.add_all(
             [
                 Parcel(id="parcel-legal"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-legal",
+                    url="https://example.test/parcel/parcel-legal",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-legal",
                     fetch_id=1,
@@ -705,6 +756,11 @@ def test_match_sales_skips_partial_lot_legal_descriptions(
         session.add_all(
             [
                 Parcel(id="parcel-partial"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-partial",
+                    url="https://example.test/parcel/parcel-partial",
+                ),
                 ParcelSummary(
                     parcel_id="parcel-partial",
                     fetch_id=1,

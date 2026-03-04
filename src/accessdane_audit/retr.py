@@ -786,7 +786,10 @@ def _build_address_match_index(
             *(
                 or_(
                     upper_primary_address == prefix,
-                    upper_primary_address.like(f"{prefix} %"),
+                    upper_primary_address.startswith(
+                        f"{prefix} ",
+                        autoescape=True,
+                    ),
                 )
                 for prefix in prefix_batch
             )
@@ -883,8 +886,18 @@ def _iter_sales_transaction_batches(
     *,
     sales_transaction_ids: Optional[Iterable[int]],
 ) -> Iterator[list[SalesTransaction]]:
-    base_query = select(SalesTransaction).where(
-        SalesTransaction.import_status == "loaded"
+    base_query = (
+        select(SalesTransaction)
+        .where(SalesTransaction.import_status == "loaded")
+        .options(
+            load_only(
+                SalesTransaction.id,
+                SalesTransaction.official_parcel_number_raw,
+                SalesTransaction.official_parcel_number_norm,
+                SalesTransaction.property_address_norm,
+                SalesTransaction.legal_description_raw,
+            )
+        )
     )
     if sales_transaction_ids is not None:
         deduped_ids = sorted(set(sales_transaction_ids))
