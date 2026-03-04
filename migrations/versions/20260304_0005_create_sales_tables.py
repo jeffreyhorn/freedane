@@ -119,7 +119,7 @@ def upgrade() -> None:
         sa.Column(
             "is_primary",
             sa.Boolean(),
-            server_default=sa.text("0"),
+            server_default=sa.text("false"),
             nullable=False,
         ),
         sa.Column("match_review_status", sa.String(), nullable=False),
@@ -150,6 +150,7 @@ def upgrade() -> None:
         ["sales_transaction_id"],
         unique=True,
         sqlite_where=sa.text("is_primary = 1"),
+        postgresql_where=sa.text("is_primary = TRUE"),
     )
     op.create_index(
         "ix_sales_parcel_matches_parcel_id",
@@ -173,7 +174,7 @@ def upgrade() -> None:
         sa.Column(
             "is_active",
             sa.Boolean(),
-            server_default=sa.text("1"),
+            server_default=sa.text("true"),
             nullable=False,
         ),
         sa.Column("excluded_by_rule", sa.String(), nullable=True),

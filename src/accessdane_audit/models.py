@@ -433,6 +433,7 @@ class SalesParcelMatch(Base):
             "sales_transaction_id",
             unique=True,
             sqlite_where=text("is_primary = 1"),
+            postgresql_where=text("is_primary"),
         ),
         Index("ix_sales_parcel_matches_parcel_id", "parcel_id"),
         Index(
@@ -454,7 +455,7 @@ class SalesParcelMatch(Base):
     )
     match_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_primary: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("0")
+        Boolean, nullable=False, server_default=text("false")
     )
     match_review_status: Mapped[str] = mapped_column(String, nullable=False)
     matched_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -482,7 +483,7 @@ class SalesExclusion(Base):
     exclusion_code: Mapped[str] = mapped_column(String, nullable=False)
     exclusion_reason: Mapped[str] = mapped_column(Text, nullable=False)
     is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("1")
+        Boolean, nullable=False, server_default=text("true")
     )
     excluded_by_rule: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     excluded_at: Mapped[datetime] = mapped_column(
