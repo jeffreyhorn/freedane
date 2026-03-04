@@ -560,6 +560,61 @@ def test_match_sales_strips_city_state_zip_before_parkway_normalization(
     assert matches[0].match_method == "normalized_address"
 
 
+def test_match_sales_preserves_unit_tokens_when_stripping_zip_plus_four(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_unit_zip4.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_unit_zip4.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"123 Main St Apt 2 Madison WI 53711-1234"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-unit-zip4"),
+                ParcelSummary(
+                    parcel_id="parcel-unit-zip4",
+                    fetch_id=1,
+                    primary_address="123 MAIN ST APT 2",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "123 MAIN ST APT 2"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-unit-zip4"
+    assert matches[0].match_method == "normalized_address"
+
+
 def test_match_sales_falls_back_to_lot_block_legal_description(
     tmp_path: Path,
     monkeypatch,

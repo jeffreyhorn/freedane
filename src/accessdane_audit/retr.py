@@ -10,7 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, TypeVar
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, load_only
 
 from .models import (
@@ -124,7 +124,22 @@ PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
 _MATCH_BATCH_SIZE = 500
+_NARROWING_BATCH_SIZE = 100
 _T = TypeVar("_T")
+_UNIT_DESIGNATOR_TOKENS = {
+    "APT",
+    "APARTMENT",
+    "BLDG",
+    "BUILDING",
+    "FL",
+    "FLOOR",
+    "RM",
+    "ROOM",
+    "STE",
+    "SUITE",
+    "UNIT",
+}
+_UNIT_VALUE_TOKENS = {"FRONT", "LOWER", "REAR", "UPPER"}
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -754,13 +769,35 @@ def _build_address_match_index(
         return {}
 
     parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
-    for parcel_id, primary_address in session.execute(
+    prefix_tokens = sorted(
+        {key.split()[0] for key in allowed_keys if key.strip() and key.split()}
+    )
+    if not prefix_tokens:
+        return {}
+
+    base_query = (
         select(ParcelSummary.parcel_id, ParcelSummary.primary_address)
-    ):
-        normalized = _normalize_address(primary_address)
-        if normalized is None or normalized not in allowed_keys:
-            continue
-        parcel_ids_by_norm[normalized].add(parcel_id)
+        .where(ParcelSummary.primary_address.is_not(None))
+        .where(func.length(func.trim(ParcelSummary.primary_address)) > 0)
+    )
+    upper_primary_address = func.upper(ParcelSummary.primary_address)
+    for prefix_batch in _chunked(prefix_tokens, _NARROWING_BATCH_SIZE):
+        prefix_filter = or_(
+            *(
+                or_(
+                    upper_primary_address == prefix,
+                    upper_primary_address.like(f"{prefix} %"),
+                )
+                for prefix in prefix_batch
+            )
+        )
+        for parcel_id, primary_address in session.execute(
+            base_query.where(prefix_filter)
+        ):
+            normalized = _normalize_address(primary_address)
+            if normalized is None or normalized not in allowed_keys:
+                continue
+            parcel_ids_by_norm[normalized].add(parcel_id)
 
     return {
         normalized: tuple(sorted(parcel_ids))
@@ -777,13 +814,40 @@ def _build_legal_description_match_index(
         return {}
 
     parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
-    for parcel_id, parcel_description in session.execute(
+    lot_tokens = sorted(
+        {
+            component[len("LOT:") :]
+            for key in allowed_keys
+            for component in key.split("|")
+            if component.startswith("LOT:")
+        }
+    )
+
+    base_query = (
         select(ParcelSummary.parcel_id, ParcelSummary.parcel_description)
-    ):
-        normalized = _normalize_parcel_legal_description(parcel_description)
-        if normalized is None or normalized not in allowed_keys:
-            continue
-        parcel_ids_by_norm[normalized].add(parcel_id)
+        .where(ParcelSummary.parcel_description.is_not(None))
+        .where(func.length(func.trim(ParcelSummary.parcel_description)) > 0)
+    )
+    upper_parcel_description = func.upper(ParcelSummary.parcel_description)
+
+    if lot_tokens:
+        for lot_batch in _chunked(lot_tokens, _NARROWING_BATCH_SIZE):
+            lot_filter = or_(
+                *(upper_parcel_description.like(f"%LOT {lot}%") for lot in lot_batch)
+            )
+            for parcel_id, parcel_description in session.execute(
+                base_query.where(lot_filter)
+            ):
+                normalized = _normalize_parcel_legal_description(parcel_description)
+                if normalized is None or normalized not in allowed_keys:
+                    continue
+                parcel_ids_by_norm[normalized].add(parcel_id)
+    else:
+        for parcel_id, parcel_description in session.execute(base_query):
+            normalized = _normalize_parcel_legal_description(parcel_description)
+            if normalized is None or normalized not in allowed_keys:
+                continue
+            parcel_ids_by_norm[normalized].add(parcel_id)
 
     return {
         normalized: tuple(sorted(parcel_ids))
@@ -1312,6 +1376,10 @@ def _strip_trailing_city_state_zip(normalized: str) -> str:
         if len(next_token) <= 2:
             end_index = last_suffix_index + 1
 
+    unit_end = _find_unit_suffix_end(street_and_city_tokens, end_index + 1)
+    if unit_end is not None:
+        end_index = unit_end
+
     return " ".join(street_and_city_tokens[: end_index + 1])
 
 
@@ -1321,6 +1389,39 @@ def _is_zip_token(token: str) -> bool:
     if len(token) == 10 and token[5] == "-":
         return token[:5].isdigit() and token[6:].isdigit()
     return False
+
+
+def _find_unit_suffix_end(tokens: list[str], start_index: int) -> Optional[int]:
+    if start_index >= len(tokens):
+        return None
+
+    token = tokens[start_index]
+    if token in _UNIT_DESIGNATOR_TOKENS:
+        end_index = start_index
+        max_components = 2
+        for component_index in range(start_index + 1, len(tokens)):
+            candidate = tokens[component_index]
+            if not _is_unit_component_token(candidate):
+                break
+            end_index = component_index
+            max_components -= 1
+            if max_components == 0:
+                break
+        return end_index
+
+    for designator in ("APT", "UNIT", "STE", "SUITE"):
+        if token.startswith(designator) and len(token) > len(designator):
+            return start_index
+
+    return None
+
+
+def _is_unit_component_token(token: str) -> bool:
+    if token in _UNIT_VALUE_TOKENS:
+        return True
+    if any(char.isdigit() for char in token):
+        return True
+    return len(token) <= 2 and token.isalnum()
 
 
 def _normalize_boolean(value: Optional[str]) -> Optional[bool]:
