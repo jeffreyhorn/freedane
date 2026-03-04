@@ -294,6 +294,125 @@ def test_match_sales_strips_city_state_zip_from_retr_addresses(
     assert matches[0].match_method == "normalized_address"
 
 
+def test_match_sales_falls_back_to_lot_block_legal_description(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_legal.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_legal.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Legal Description\n"
+            '01/15/2025,100000,"Lot Twenty-three (23), Block Four (4), Sixth '
+            "Addition to Autumn Grove, in the Village of McFarland, Dane County, "
+            'Wisconsin."\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-legal"),
+                ParcelSummary(
+                    parcel_id="parcel-legal",
+                    fetch_id=1,
+                    parcel_description="AUTUMN GROVE BLOCK 4 LOT 23",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in import_result.stdout
+    )
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-legal"
+    assert matches[0].match_method == "normalized_legal_description"
+    assert str(matches[0].confidence_score) == "0.8000"
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "SUBDIVISION:AUTUMN GROVE|LOT:23|BLOCK:4"
+
+
+def test_match_sales_skips_partial_lot_legal_descriptions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_partial_lot.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_partial_lot.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Legal Description\n"
+            "01/15/2025,100000,\"That part of Lot 4, Block 4, Edward's Park, in "
+            'the Village of McFarland, Dane County, Wisconsin."\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-partial"),
+                ParcelSummary(
+                    parcel_id="parcel-partial",
+                    fetch_id=1,
+                    parcel_description="EDWARDS PARK BLOCK 4 LOT 4",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in import_result.stdout
+    )
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert matches == []
+
+
 def test_match_sales_leaves_non_matching_transactions_unmatched(
     tmp_path: Path,
     monkeypatch,

@@ -26,6 +26,7 @@ _EXTRA_COLUMNS_KEY = "_extra_columns"
 _SPACE_RE = re.compile(r"\s+")
 _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"[,.;:/#-]+")
+_LEGAL_TEXT_PUNCTUATION_RE = re.compile(r"[^A-Z0-9]+")
 _TRUE_TOKENS = {"y", "yes", "true", "1"}
 _FALSE_TOKENS = {"n", "no", "false", "0"}
 _STREET_SUFFIX_TOKENS = {
@@ -73,13 +74,32 @@ _GOVERNMENT_TRANSFER_PHRASES = (
 _CORRECTIVE_DEED_PATTERN = re.compile(
     r"(?<![a-z-])(?:corrective deed|correction deed)\b"
 )
+_LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN = re.compile(
+    r"^\s*LOT\s+"
+    r"(?:[A-Z][A-Z0-9 -]*?\((?P<lot_paren>\d+[A-Z]?)\)|(?P<lot>\d+[A-Z]?))"
+    r"(?:\s*,\s*BLOCK\s+"
+    r"(?:[A-Z][A-Z0-9 -]*?\((?P<block_paren>\d+[A-Z]?)\)|(?P<block>\d+[A-Z]?)))?"
+    r"\s*,\s*(?P<subdivision>[^,.;]+)",
+    re.IGNORECASE,
+)
+_PARCEL_DESCRIPTION_BLOCK_LOT_PATTERN = re.compile(
+    r"^(?P<subdivision>.+?)\s+BLOCK\s+(?P<block>\d+[A-Z]?)\s+LOT\s+(?P<lot>\d+[A-Z]?)$"
+)
+_PARCEL_DESCRIPTION_LOT_PATTERN = re.compile(
+    r"^(?P<subdivision>.+?)\s+LOT\s+(?P<lot>\d+[A-Z]?)$"
+)
+_PARCEL_DESCRIPTION_LEADING_LOT_PATTERN = re.compile(
+    r"^LOT\s+(?P<lot>\d+[A-Z]?)(?:\s+BLOCK\s+(?P<block>\d+[A-Z]?))?\s+(?P<subdivision>.+)$"
+)
 MATCHER_VERSION = "sprint3_day12_v1"
 EXACT_PARCEL_NUMBER_MATCH_METHOD = "exact_parcel_number"
 NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
+NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD = "normalized_legal_description"
 AUTO_ACCEPTED_MATCH_REVIEW_STATUS = "auto_accepted"
 NEEDS_REVIEW_MATCH_REVIEW_STATUS = "needs_review"
 EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
+LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -270,6 +290,7 @@ def match_sales_transactions(
 ) -> SalesMatchSummary:
     parcel_number_index = _build_parcel_number_match_index(session)
     address_index = _build_address_match_index(session)
+    legal_description_index = _build_legal_description_match_index(session)
 
     query = select(SalesTransaction).where(SalesTransaction.import_status == "loaded")
     if sales_transaction_ids is not None:
@@ -287,6 +308,7 @@ def match_sales_transactions(
             transaction,
             parcel_number_index=parcel_number_index,
             address_index=address_index,
+            legal_description_index=legal_description_index,
         )
         rows_written += len(desired_matches)
         if desired_matches:
@@ -637,6 +659,24 @@ def _build_address_match_index(session: Session) -> dict[str, tuple[str, ...]]:
     }
 
 
+def _build_legal_description_match_index(
+    session: Session,
+) -> dict[str, tuple[str, ...]]:
+    parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
+    for parcel_id, parcel_description in session.execute(
+        select(ParcelSummary.parcel_id, ParcelSummary.parcel_description)
+    ).all():
+        normalized = _normalize_parcel_legal_description(parcel_description)
+        if normalized is None:
+            continue
+        parcel_ids_by_norm[normalized].add(parcel_id)
+
+    return {
+        normalized: tuple(sorted(parcel_ids))
+        for normalized, parcel_ids in parcel_ids_by_norm.items()
+    }
+
+
 def _load_existing_sales_parcel_matches(
     session: Session,
     transactions: Iterable[SalesTransaction],
@@ -664,6 +704,7 @@ def _derive_sales_parcel_matches(
     *,
     parcel_number_index: dict[str, tuple[str, ...]],
     address_index: dict[str, tuple[str, ...]],
+    legal_description_index: dict[str, tuple[str, ...]],
 ) -> list[SalesMatchSpec]:
     exact_match_value = transaction.official_parcel_number_norm
     exact_candidates = None
@@ -687,6 +728,20 @@ def _derive_sales_parcel_matches(
             match_method=NORMALIZED_ADDRESS_MATCH_METHOD,
             matched_value=address_match_value,
             confidence_score=ADDRESS_MATCH_CONFIDENCE,
+        )
+
+    legal_match_value = _normalize_sales_legal_description(
+        transaction.legal_description_raw
+    )
+    legal_candidates = None
+    if legal_match_value is not None:
+        legal_candidates = legal_description_index.get(legal_match_value)
+    if legal_candidates:
+        return _build_sales_match_specs(
+            legal_candidates,
+            match_method=NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD,
+            matched_value=legal_match_value,
+            confidence_score=LEGAL_DESCRIPTION_MATCH_CONFIDENCE,
         )
 
     return []
@@ -901,6 +956,94 @@ def _normalize_address(value: Optional[str]) -> Optional[str]:
     normalized = _ADDRESS_PUNCTUATION_RE.sub(" ", collapsed.upper())
     normalized = _SPACE_RE.sub(" ", normalized).strip()
     normalized = _strip_trailing_city_state_zip(normalized)
+    return normalized
+
+
+def _normalize_sales_legal_description(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    match = _LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN.match(collapsed.upper())
+    if match is None:
+        return None
+
+    return _build_legal_description_match_key(
+        subdivision=match.group("subdivision"),
+        lot_value=match.group("lot_paren") or match.group("lot"),
+        block_value=match.group("block_paren") or match.group("block"),
+    )
+
+
+def _normalize_parcel_legal_description(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    normalized = _LEGAL_TEXT_PUNCTUATION_RE.sub(" ", collapsed.upper())
+    normalized = _SPACE_RE.sub(" ", normalized).strip()
+    if not normalized:
+        return None
+
+    for pattern in (
+        _PARCEL_DESCRIPTION_BLOCK_LOT_PATTERN,
+        _PARCEL_DESCRIPTION_LOT_PATTERN,
+        _PARCEL_DESCRIPTION_LEADING_LOT_PATTERN,
+    ):
+        match = pattern.match(normalized)
+        if match is None:
+            continue
+        return _build_legal_description_match_key(
+            subdivision=match.group("subdivision"),
+            lot_value=match.group("lot"),
+            block_value=match.groupdict().get("block"),
+        )
+
+    return None
+
+
+def _build_legal_description_match_key(
+    *,
+    subdivision: Optional[str],
+    lot_value: Optional[str],
+    block_value: Optional[str],
+) -> Optional[str]:
+    normalized_subdivision = _normalize_legal_subdivision(subdivision)
+    normalized_lot = _normalize_legal_component(lot_value)
+    normalized_block = _normalize_legal_component(block_value)
+    if normalized_subdivision is None or normalized_lot is None:
+        return None
+
+    components = [f"SUBDIVISION:{normalized_subdivision}", f"LOT:{normalized_lot}"]
+    if normalized_block is not None:
+        components.append(f"BLOCK:{normalized_block}")
+    return "|".join(components)
+
+
+def _normalize_legal_subdivision(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    normalized = _LEGAL_TEXT_PUNCTUATION_RE.sub(" ", collapsed.upper())
+    normalized = _SPACE_RE.sub(" ", normalized).strip()
+    if " ADDITION TO " in normalized:
+        normalized = normalized.split(" ADDITION TO ", 1)[1].strip()
+    if normalized.startswith("THE "):
+        normalized = normalized[4:].strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _normalize_legal_component(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    normalized = _LEGAL_TEXT_PUNCTUATION_RE.sub("", collapsed.upper())
+    if not normalized:
+        return None
     return normalized
 
 
