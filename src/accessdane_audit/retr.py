@@ -55,6 +55,25 @@ _STREET_SUFFIX_TOKENS = {
     "TRL",
     "WAY",
 }
+_ADDRESS_TOKEN_NORMALIZATION = {
+    "AVENUE": "AVE",
+    "AVNEUE": "AVE",
+    "BOULEVARD": "BLVD",
+    "CIRCLE": "CIR",
+    "COURT": "CT",
+    "DRIVE": "DR",
+    "EAST": "E",
+    "LANE": "LN",
+    "NORTH": "N",
+    "PLACE": "PL",
+    "PARKWAY": "PKWY",
+    "ROAD": "RD",
+    "SOUTH": "S",
+    "STREET": "ST",
+    "TERRACE": "TER",
+    "TRAIL": "TRL",
+    "WEST": "W",
+}
 _FAMILY_TRANSFER_PHRASES = (
     "family transfer",
     "intra family",
@@ -971,7 +990,13 @@ def _normalize_address(value: Optional[str]) -> Optional[str]:
     normalized = _ADDRESS_PUNCTUATION_RE.sub(" ", collapsed.upper())
     normalized = _SPACE_RE.sub(" ", normalized).strip()
     normalized = _strip_trailing_city_state_zip(normalized)
-    return normalized
+    return _normalize_address_tokens(normalized)
+
+
+def _normalize_address_tokens(normalized: str) -> str:
+    return " ".join(
+        _ADDRESS_TOKEN_NORMALIZATION.get(token, token) for token in normalized.split()
+    )
 
 
 def _parcel_number_crosswalk_candidates(value: Optional[str]) -> tuple[str, ...]:
