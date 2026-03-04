@@ -143,7 +143,7 @@ def test_ingest_retr_rejects_file_without_header_row(
     result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
 
     assert result.exit_code != 0
-    assert "CSV file is missing a header row." in result.output
+    assert "CSV file is missing a header row." in result.stderr
 
 
 def test_ingest_retr_rejects_duplicate_or_blank_header_names(
@@ -172,9 +172,9 @@ def test_ingest_retr_rejects_duplicate_or_blank_header_names(
     )
 
     assert duplicate_result.exit_code != 0
-    assert "CSV file contains duplicate header names:" in duplicate_result.output
-    assert "Transfer" in duplicate_result.output
-    assert "Date" in duplicate_result.output
+    assert "CSV file contains duplicate header names:" in duplicate_result.stderr
+    assert "Transfer" in duplicate_result.stderr
+    assert "Date" in duplicate_result.stderr
 
     blank_db_path = tmp_path / "retr_blank_header.sqlite"
     blank_database_url = f"sqlite:///{blank_db_path}"
@@ -197,7 +197,7 @@ def test_ingest_retr_rejects_duplicate_or_blank_header_names(
     )
 
     assert blank_result.exit_code != 0
-    assert "CSV file contains blank header names." in blank_result.output
+    assert "CSV file contains blank header names." in blank_result.stderr
 
 
 def test_ingest_retr_rejects_files_without_recognizable_retr_headers(
@@ -220,8 +220,8 @@ def test_ingest_retr_rejects_files_without_recognizable_retr_headers(
     result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
 
     assert result.exit_code != 0
-    assert "CSV file does not contain recognizable RETR" in result.output
-    assert "headers." in result.output
+    assert "CSV file does not contain recognizable RETR" in result.stderr
+    assert "headers." in result.stderr
 
 
 def test_ingest_retr_marks_rows_with_extra_columns_as_rejected(

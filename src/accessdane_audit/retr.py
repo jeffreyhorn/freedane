@@ -5,7 +5,7 @@ import hashlib
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
@@ -388,7 +388,6 @@ def _apply_sales_transaction_update(
         if key in {"source_file_name", "source_headers"}:
             continue
         setattr(transaction, key, value)
-    transaction.updated_at = datetime.now(timezone.utc)
 
 
 def _collapsed_text(value: Optional[str]) -> Optional[str]:
