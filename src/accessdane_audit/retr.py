@@ -3,17 +3,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, load_only
 
-from .models import SalesTransaction
+from .models import SalesExclusion, SalesTransaction
 
 RETR_SOURCE_SYSTEM = "wisconsin_dor_retr"
 _EXTRA_COLUMNS_KEY = "_extra_columns"
@@ -22,6 +22,26 @@ _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"[,.;:/#-]+")
 _TRUE_TOKENS = {"y", "yes", "true", "1"}
 _FALSE_TOKENS = {"n", "no", "false", "0"}
+_FAMILY_TRANSFER_PHRASES = (
+    "family transfer",
+    "intra family",
+    "intrafamily",
+)
+_GOVERNMENT_TRANSFER_PHRASES = (
+    "government transfer",
+    "county of ",
+    "city of ",
+    "village of ",
+    "town of ",
+    "state of ",
+    "department of ",
+    "school district",
+    "united states",
+)
+_CORRECTIVE_DEED_PHRASES = (
+    "corrective",
+    "correction deed",
+)
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -81,6 +101,13 @@ class RetrImportSummary:
     updated_rows: int
 
 
+@dataclass(frozen=True)
+class SalesExclusionSpec:
+    exclusion_code: str
+    exclusion_reason: str
+    excluded_by_rule: str
+
+
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
     file_sha256 = _hash_file(csv_path)
     existing_rows = {
@@ -96,6 +123,10 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
             .where(SalesTransaction.source_file_sha256 == file_sha256)
         ).scalars()
     }
+    existing_exclusions = _load_existing_sales_exclusions(
+        session,
+        existing_rows.values(),
+    )
 
     try:
         with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -131,11 +162,25 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
 
                 existing = existing_rows.get(source_row_number)
                 if existing is None:
-                    session.add(SalesTransaction(**values))
+                    transaction = SalesTransaction(**values)
+                    session.add(transaction)
                     inserted_rows += 1
+                    transaction_exclusions: dict[str, SalesExclusion] = {}
                 else:
-                    _apply_sales_transaction_update(existing, values)
+                    transaction = existing
+                    _apply_sales_transaction_update(transaction, values)
                     updated_rows += 1
+                    transaction_exclusions = existing_exclusions.get(
+                        transaction.id,
+                        {},
+                    )
+
+                _sync_sales_exclusions(
+                    session=session,
+                    transaction=transaction,
+                    values=values,
+                    existing_exclusions=transaction_exclusions,
+                )
 
                 if values["import_status"] == "loaded":
                     loaded_rows += 1
@@ -392,6 +437,160 @@ def _apply_sales_transaction_update(
         if key in {"source_file_name", "source_headers"}:
             continue
         setattr(transaction, key, value)
+
+
+def _load_existing_sales_exclusions(
+    session: Session,
+    transactions: Iterable[SalesTransaction],
+) -> dict[int, dict[str, SalesExclusion]]:
+    transaction_ids = [transaction.id for transaction in transactions]
+    if not transaction_ids:
+        return {}
+
+    exclusions_by_transaction: dict[int, dict[str, SalesExclusion]] = defaultdict(dict)
+    for exclusion in session.execute(
+        select(SalesExclusion).where(
+            SalesExclusion.sales_transaction_id.in_(transaction_ids)
+        )
+    ).scalars():
+        exclusions_by_transaction[exclusion.sales_transaction_id][
+            exclusion.exclusion_code
+        ] = exclusion
+
+    return dict(exclusions_by_transaction)
+
+
+def _sync_sales_exclusions(
+    *,
+    session: Session,
+    transaction: SalesTransaction,
+    values: dict[str, object],
+    existing_exclusions: dict[str, SalesExclusion],
+) -> None:
+    current_exclusions = {
+        spec.exclusion_code: spec for spec in _derive_sales_exclusions(values)
+    }
+
+    if transaction.id is None and current_exclusions:
+        session.flush([transaction])
+
+    for exclusion_code, exclusion_spec in current_exclusions.items():
+        existing = existing_exclusions.get(exclusion_code)
+        if existing is None:
+            existing = SalesExclusion(
+                sales_transaction_id=transaction.id,
+                exclusion_code=exclusion_spec.exclusion_code,
+                exclusion_reason=exclusion_spec.exclusion_reason,
+                excluded_by_rule=exclusion_spec.excluded_by_rule,
+            )
+            session.add(existing)
+            existing_exclusions[exclusion_code] = existing
+            continue
+
+        existing.exclusion_reason = exclusion_spec.exclusion_reason
+        existing.excluded_by_rule = exclusion_spec.excluded_by_rule
+        existing.is_active = True
+
+    for exclusion_code, existing in existing_exclusions.items():
+        if exclusion_code in current_exclusions:
+            continue
+        existing.is_active = False
+
+
+def _derive_sales_exclusions(values: dict[str, object]) -> list[SalesExclusionSpec]:
+    if values.get("import_status") != "loaded":
+        return []
+
+    specs: list[SalesExclusionSpec] = []
+    if values.get("arms_length_indicator_norm") is False:
+        specs.append(
+            SalesExclusionSpec(
+                exclusion_code="non_arms_length",
+                exclusion_reason="Excluded because the RETR arms-length indicator "
+                "is false.",
+                excluded_by_rule="v1_non_arms_length_indicator",
+            )
+        )
+
+    if values.get("usable_sale_indicator_norm") is False:
+        specs.append(
+            SalesExclusionSpec(
+                exclusion_code="non_usable_sale",
+                exclusion_reason="Excluded because the RETR usable-sale indicator "
+                "is false.",
+                excluded_by_rule="v1_usable_sale_indicator",
+            )
+        )
+
+    transfer_text = _exclusion_texts(
+        values,
+        "conveyance_type",
+        "deed_type",
+    )
+    if _contains_any_exclusion_phrase(transfer_text, _FAMILY_TRANSFER_PHRASES):
+        specs.append(
+            SalesExclusionSpec(
+                exclusion_code="family_transfer",
+                exclusion_reason="Excluded because conveyance or deed text indicates "
+                "a family transfer.",
+                excluded_by_rule="v1_family_transfer_keywords",
+            )
+        )
+
+    government_text = _exclusion_texts(
+        values,
+        "conveyance_type",
+        "deed_type",
+        "grantor_name",
+        "grantee_name",
+    )
+    if _contains_any_exclusion_phrase(
+        government_text,
+        _GOVERNMENT_TRANSFER_PHRASES,
+    ):
+        specs.append(
+            SalesExclusionSpec(
+                exclusion_code="government_transfer",
+                exclusion_reason="Excluded because source text indicates a "
+                "government transfer.",
+                excluded_by_rule="v1_government_transfer_keywords",
+            )
+        )
+
+    if _contains_any_exclusion_phrase(transfer_text, _CORRECTIVE_DEED_PHRASES):
+        specs.append(
+            SalesExclusionSpec(
+                exclusion_code="corrective_deed",
+                exclusion_reason="Excluded because conveyance or deed text indicates "
+                "a corrective deed.",
+                excluded_by_rule="v1_corrective_deed_keywords",
+            )
+        )
+
+    return specs
+
+
+def _exclusion_texts(
+    values: dict[str, object],
+    *field_names: str,
+) -> tuple[str, ...]:
+    text_values: list[str] = []
+    for field_name in field_names:
+        value = values.get(field_name)
+        if not isinstance(value, str):
+            continue
+        collapsed = _collapsed_text(value)
+        if collapsed is None:
+            continue
+        text_values.append(collapsed.lower())
+    return tuple(text_values)
+
+
+def _contains_any_exclusion_phrase(
+    text_values: tuple[str, ...],
+    phrases: tuple[str, ...],
+) -> bool:
+    return any(phrase in value for value in text_values for phrase in phrases)
 
 
 def _collapsed_text(value: Optional[str]) -> Optional[str]:

@@ -241,6 +241,9 @@ Use it to catch concrete integrity failures before relying on downstream analysi
 `counts` and `coverage` now include `parcel_characteristics` / lineage completeness, while `tax_detail_field_presence` shows how often key structured fields are populated on `source == "detail"` tax rows.
 Use it to measure how complete the current local dataset is, not as a correctness gate.
 
+`ingest-retr --file ...` keeps imported non-comparable transfers visible in `sales_transactions` and now writes active `sales_exclusions` rows for the initial v1 rules: non-arms-length, non-usable-sale, family-transfer, government-transfer, and corrective-deed signals.
+Those exclusions are synced on same-file re-imports so the importer updates existing exclusion rows instead of duplicating them.
+
 The AccessDane `Summary Report` / `Custom Report` endpoints were evaluated during Sprint 2 and are intentionally not part of the fetch pipeline right now.
 They currently resolve to a PDF print flow rather than a cleaner machine-readable data source, so the project continues to rely on the main parcel HTML pages.
 
