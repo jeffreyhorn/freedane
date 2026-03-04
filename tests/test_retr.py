@@ -334,3 +334,45 @@ def test_ingest_retr_treats_whitespace_only_rows_as_blank(
 
     assert row.import_status == "rejected"
     assert row.import_error == "Row is blank."
+
+
+def test_ingest_retr_rejects_rows_without_any_identifying_inputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_missing_identifiers.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "missing_identifiers.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address,Legal "
+            "Description\n"
+            "01/15/2025,100000, , , \n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=0 rejected=1 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+
+    assert row.import_status == "rejected"
+    assert row.import_error == (
+        "At least one identifying input is required: official parcel number, "
+        "property address, or legal description."
+    )
