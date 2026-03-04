@@ -38,9 +38,8 @@ _GOVERNMENT_TRANSFER_PHRASES = (
     "school district",
     "united states",
 )
-_CORRECTIVE_DEED_PHRASES = (
-    "corrective",
-    "correction deed",
+_CORRECTIVE_DEED_PATTERN = re.compile(
+    r"(?<![a-z-])(?:corrective deed|correction deed)\b"
 )
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -537,10 +536,8 @@ def _derive_sales_exclusions(values: dict[str, object]) -> list[SalesExclusionSp
             )
         )
 
-    government_text = _exclusion_texts(
+    government_text = transfer_text + _exclusion_texts(
         values,
-        "conveyance_type",
-        "deed_type",
         "grantor_name",
         "grantee_name",
     )
@@ -557,7 +554,7 @@ def _derive_sales_exclusions(values: dict[str, object]) -> list[SalesExclusionSp
             )
         )
 
-    if _contains_any_exclusion_phrase(transfer_text, _CORRECTIVE_DEED_PHRASES):
+    if _contains_corrective_deed_phrase(transfer_text):
         specs.append(
             SalesExclusionSpec(
                 exclusion_code="corrective_deed",
@@ -591,6 +588,10 @@ def _contains_any_exclusion_phrase(
     phrases: tuple[str, ...],
 ) -> bool:
     return any(phrase in value for value in text_values for phrase in phrases)
+
+
+def _contains_corrective_deed_phrase(text_values: tuple[str, ...]) -> bool:
+    return any(_CORRECTIVE_DEED_PATTERN.search(value) for value in text_values)
 
 
 def _collapsed_text(value: Optional[str]) -> Optional[str]:

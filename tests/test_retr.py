@@ -223,6 +223,43 @@ def test_ingest_retr_populates_initial_sales_exclusions(
     assert all(exclusion.is_active for exclusion in reloaded_exclusions)
 
 
+def test_ingest_retr_does_not_flag_non_corrective_deeds_as_corrective(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_non_corrective.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "retr_non_corrective.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address,Deed Type\n"
+            "01/15/2025,100000,123 Main St,Non-Corrective Deed\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        exclusions = session.execute(select(SalesExclusion)).scalars().all()
+
+    assert [exclusion.exclusion_code for exclusion in exclusions] == []
+
+
 def test_ingest_retr_deactivates_exclusions_that_no_longer_apply(
     tmp_path: Path,
     monkeypatch,
