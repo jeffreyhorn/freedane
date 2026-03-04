@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -159,13 +160,19 @@ def test_match_sales_creates_exact_parcel_number_matches(
 
     runner = CliRunner()
     import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
-    match_result = runner.invoke(cli.app, ["match-sales"])
+    first_match_result = runner.invoke(cli.app, ["match-sales"])
+    second_match_result = runner.invoke(cli.app, ["match-sales"])
 
     assert import_result.exit_code == 0, import_result.stdout
-    assert match_result.exit_code == 0, match_result.stdout
+    assert first_match_result.exit_code == 0, first_match_result.stdout
+    assert second_match_result.exit_code == 0, second_match_result.stdout
     assert (
         "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
-        in match_result.stdout
+        in first_match_result.stdout
+    )
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=0 rows_deleted=0"
+        in second_match_result.stdout
     )
 
     with session_scope(database_url) as session:
@@ -180,6 +187,94 @@ def test_match_sales_creates_exact_parcel_number_matches(
     assert matches[0].match_review_status == "auto_accepted"
     assert matches[0].matched_value == "061001391511"
     assert matches[0].matcher_version == "sprint3_day12_v1"
+
+
+def test_match_sales_updates_existing_matches_for_ambiguous_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_ambiguous.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_ambiguous.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address\n"
+            "01/15/2025,100000,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-a"),
+                ParcelSummary(
+                    parcel_id="parcel-a",
+                    fetch_id=1,
+                    primary_address="123 Main St",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    first_match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert first_match_result.exit_code == 0, first_match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in first_match_result.stdout
+    )
+
+    stale_timestamp = datetime(2000, 1, 1)
+    with session_scope(database_url) as session:
+        existing_match = session.execute(select(SalesParcelMatch)).scalar_one()
+        existing_match.matched_at = stale_timestamp
+        session.add_all(
+            [
+                Parcel(id="parcel-b"),
+                ParcelSummary(
+                    parcel_id="parcel-b",
+                    fetch_id=2,
+                    primary_address="123 Main St",
+                ),
+            ]
+        )
+
+    second_match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert second_match_result.exit_code == 0, second_match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=2 rows_deleted=0"
+        in second_match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = (
+            session.execute(
+                select(SalesParcelMatch).order_by(SalesParcelMatch.parcel_id)
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(matches) == 2
+    assert [match.parcel_id for match in matches] == ["parcel-a", "parcel-b"]
+    assert [match.match_rank for match in matches] == [1, 2]
+    assert [match.is_primary for match in matches] == [False, False]
+    assert [match.match_review_status for match in matches] == [
+        "needs_review",
+        "needs_review",
+    ]
+    assert matches[0].matched_at != stale_timestamp
 
 
 def test_match_sales_applies_parcel_number_crosswalk_for_transposed_prefix_digits(

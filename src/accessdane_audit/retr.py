@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, load_only
 
 from .models import (
@@ -121,6 +121,7 @@ EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
 PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
+_MATCH_BATCH_SIZE = 500
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -206,6 +207,13 @@ class SalesMatchSpec:
     match_review_status: str
     matched_value: str
     matcher_version: str = MATCHER_VERSION
+
+
+@dataclass(frozen=True)
+class SalesMatchSyncCounts:
+    inserted_rows: int
+    updated_rows: int
+    deleted_rows: int
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
@@ -313,39 +321,40 @@ def match_sales_transactions(
     address_index = _build_address_match_index(session)
     legal_description_index = _build_legal_description_match_index(session)
 
-    query = select(SalesTransaction).where(SalesTransaction.import_status == "loaded")
-    if sales_transaction_ids is not None:
-        query = query.where(SalesTransaction.id.in_(list(sales_transaction_ids)))
-
-    transactions = session.execute(query.order_by(SalesTransaction.id)).scalars().all()
-    existing_matches = _load_existing_sales_parcel_matches(session, transactions)
-
+    selected_transactions = 0
     matched_transactions = 0
     rows_written = 0
     rows_deleted = 0
 
-    for transaction in transactions:
-        desired_matches = _derive_sales_parcel_matches(
-            transaction,
-            parcel_number_index=parcel_number_index,
-            address_index=address_index,
-            legal_description_index=legal_description_index,
-        )
-        rows_written += len(desired_matches)
-        if desired_matches:
-            matched_transactions += 1
+    for transactions in _iter_sales_transaction_batches(
+        session,
+        sales_transaction_ids=sales_transaction_ids,
+    ):
+        selected_transactions += len(transactions)
+        existing_matches = _load_existing_sales_parcel_matches(session, transactions)
 
-        transaction_existing_matches = existing_matches.get(transaction.id, {})
-        deleted = _sync_sales_parcel_matches(
-            session,
-            transaction=transaction,
-            desired_matches=desired_matches,
-            existing_matches=transaction_existing_matches,
-        )
-        rows_deleted += deleted
+        for transaction in transactions:
+            desired_matches = _derive_sales_parcel_matches(
+                transaction,
+                parcel_number_index=parcel_number_index,
+                address_index=address_index,
+                legal_description_index=legal_description_index,
+            )
+            if desired_matches:
+                matched_transactions += 1
+
+            transaction_existing_matches = existing_matches.get(transaction.id, {})
+            sync_counts = _sync_sales_parcel_matches(
+                session,
+                transaction=transaction,
+                desired_matches=desired_matches,
+                existing_matches=transaction_existing_matches,
+            )
+            rows_written += sync_counts.inserted_rows + sync_counts.updated_rows
+            rows_deleted += sync_counts.deleted_rows
 
     return SalesMatchSummary(
-        selected_transactions=len(transactions),
+        selected_transactions=selected_transactions,
         matched_transactions=matched_transactions,
         rows_written=rows_written,
         rows_deleted=rows_deleted,
@@ -709,15 +718,53 @@ def _load_existing_sales_parcel_matches(
     matches_by_transaction: dict[int, dict[tuple[str, str], SalesParcelMatch]] = (
         defaultdict(dict)
     )
-    for row in session.execute(
-        select(SalesParcelMatch).where(
-            SalesParcelMatch.sales_transaction_id.in_(transaction_ids)
-        )
-    ).scalars():
-        key = (row.parcel_id, row.match_method)
-        matches_by_transaction[row.sales_transaction_id][key] = row
+    for transaction_id_batch in _chunked(transaction_ids, _MATCH_BATCH_SIZE):
+        for row in session.execute(
+            select(SalesParcelMatch).where(
+                SalesParcelMatch.sales_transaction_id.in_(transaction_id_batch)
+            )
+        ).scalars():
+            key = (row.parcel_id, row.match_method)
+            matches_by_transaction[row.sales_transaction_id][key] = row
 
     return dict(matches_by_transaction)
+
+
+def _iter_sales_transaction_batches(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]],
+) -> Iterator[list[SalesTransaction]]:
+    base_query = select(SalesTransaction).where(
+        SalesTransaction.import_status == "loaded"
+    )
+    if sales_transaction_ids is not None:
+        deduped_ids = sorted(set(sales_transaction_ids))
+        for transaction_id_batch in _chunked(deduped_ids, _MATCH_BATCH_SIZE):
+            transactions = list(
+                session.execute(
+                    base_query.where(
+                        SalesTransaction.id.in_(transaction_id_batch)
+                    ).order_by(SalesTransaction.id)
+                ).scalars()
+            )
+            if transactions:
+                yield transactions
+        return
+
+    last_seen_id = 0
+    while True:
+        transactions = list(
+            session.execute(
+                base_query.where(SalesTransaction.id > last_seen_id)
+                .order_by(SalesTransaction.id)
+                .limit(_MATCH_BATCH_SIZE)
+            ).scalars()
+        )
+        if not transactions:
+            return
+        yield transactions
+        last_seen_id = transactions[-1].id
 
 
 def _derive_sales_parcel_matches(
@@ -816,11 +863,13 @@ def _sync_sales_parcel_matches(
     transaction: SalesTransaction,
     desired_matches: list[SalesMatchSpec],
     existing_matches: dict[tuple[str, str], SalesParcelMatch],
-) -> int:
+) -> SalesMatchSyncCounts:
     desired_by_key = {
         (match.parcel_id, match.match_method): match for match in desired_matches
     }
 
+    inserted_rows = 0
+    updated_rows = 0
     for key, desired in desired_by_key.items():
         existing = existing_matches.get(key)
         if existing is None:
@@ -837,6 +886,10 @@ def _sync_sales_parcel_matches(
                     matcher_version=desired.matcher_version,
                 )
             )
+            inserted_rows += 1
+            continue
+
+        if not _sales_match_needs_update(existing, desired):
             continue
 
         existing.confidence_score = desired.confidence_score
@@ -845,6 +898,8 @@ def _sync_sales_parcel_matches(
         existing.match_review_status = desired.match_review_status
         existing.matched_value = desired.matched_value
         existing.matcher_version = desired.matcher_version
+        existing.matched_at = func.now()
+        updated_rows += 1
 
     deleted_rows = 0
     for key, existing in existing_matches.items():
@@ -853,7 +908,27 @@ def _sync_sales_parcel_matches(
         session.delete(existing)
         deleted_rows += 1
 
-    return deleted_rows
+    return SalesMatchSyncCounts(
+        inserted_rows=inserted_rows,
+        updated_rows=updated_rows,
+        deleted_rows=deleted_rows,
+    )
+
+
+def _sales_match_needs_update(
+    existing: SalesParcelMatch,
+    desired: SalesMatchSpec,
+) -> bool:
+    return any(
+        (
+            existing.confidence_score != desired.confidence_score,
+            existing.match_rank != desired.match_rank,
+            existing.is_primary != desired.is_primary,
+            existing.match_review_status != desired.match_review_status,
+            existing.matched_value != desired.matched_value,
+            existing.matcher_version != desired.matcher_version,
+        )
+    )
 
 
 def _derive_sales_exclusions(values: dict[str, object]) -> list[SalesExclusionSpec]:
@@ -952,6 +1027,11 @@ def _contains_any_exclusion_phrase(
 
 def _contains_corrective_deed_phrase(text_values: tuple[str, ...]) -> bool:
     return any(_CORRECTIVE_DEED_PATTERN.search(value) for value in text_values)
+
+
+def _chunked(values: list[int], size: int) -> Iterator[list[int]]:
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
 
 
 def _collapsed_text(value: Optional[str]) -> Optional[str]:
