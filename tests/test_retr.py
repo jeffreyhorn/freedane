@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -245,7 +245,7 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
         in first_match_result.stdout
     )
 
-    stale_timestamp = datetime(2000, 1, 1)
+    stale_timestamp = datetime(2000, 1, 1, tzinfo=timezone.utc)
     with session_scope(database_url) as session:
         existing_match = session.execute(select(SalesParcelMatch)).scalar_one()
         existing_match.matched_at = stale_timestamp
