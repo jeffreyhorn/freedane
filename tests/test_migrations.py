@@ -52,6 +52,9 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             "parcel_year_facts",
             "parcel_characteristics",
             "parcel_lineage_links",
+            "sales_transactions",
+            "sales_parcel_matches",
+            "sales_exclusions",
         }.issubset(tables)
 
         with engine.connect() as conn:
@@ -99,6 +102,61 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         assert parcel_lineage_indexes["ix_parcel_lineage_links_relationship_type"] == (
             "relationship_type",
         )
+        sales_transaction_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("sales_transactions")
+        }
+        assert sales_transaction_indexes[
+            "ix_sales_transactions_source_file_sha256"
+        ] == ("source_file_sha256",)
+        assert sales_transaction_indexes[
+            "ux_sales_transactions_source_file_sha256_source_row_number"
+        ] == ("source_file_sha256", "source_row_number")
+        assert sales_transaction_indexes["ix_sales_transactions_transfer_date"] == (
+            "transfer_date",
+        )
+        assert sales_transaction_indexes[
+            "ix_sales_transactions_official_parcel_number_norm"
+        ] == ("official_parcel_number_norm",)
+        assert sales_transaction_indexes[
+            "ix_sales_transactions_property_address_norm"
+        ] == ("property_address_norm",)
+        assert sales_transaction_indexes["ix_sales_transactions_import_status"] == (
+            "import_status",
+        )
+        sales_parcel_match_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("sales_parcel_matches")
+        }
+        assert sales_parcel_match_indexes[
+            "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method"
+        ] == ("sales_transaction_id", "parcel_id", "match_method")
+        assert sales_parcel_match_indexes[
+            "ux_sales_parcel_matches_primary_per_transaction"
+        ] == ("sales_transaction_id",)
+        assert sales_parcel_match_indexes["ix_sales_parcel_matches_parcel_id"] == (
+            "parcel_id",
+        )
+        assert sales_parcel_match_indexes[
+            "ix_sales_parcel_matches_match_review_status"
+        ] == ("match_review_status",)
+        sales_exclusion_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("sales_exclusions")
+        }
+        assert sales_exclusion_indexes[
+            "ux_sales_exclusions_sales_transaction_id_exclusion_code"
+        ] == ("sales_transaction_id", "exclusion_code")
+        with engine.connect() as conn:
+            partial_index_sql = conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'index' "
+                    "AND name = 'ux_sales_parcel_matches_primary_per_transaction'"
+                )
+            ).scalar_one()
+        assert partial_index_sql is not None
+        assert "WHERE is_primary = 1" in partial_index_sql
     finally:
         engine.dispose()
 
@@ -133,6 +191,9 @@ def test_init_db_stamps_compatible_legacy_schema_before_upgrading(
         assert "parcel_year_facts" in set(inspector.get_table_names())
         assert "parcel_characteristics" in set(inspector.get_table_names())
         assert "parcel_lineage_links" in set(inspector.get_table_names())
+        assert "sales_transactions" in set(inspector.get_table_names())
+        assert "sales_parcel_matches" in set(inspector.get_table_names())
+        assert "sales_exclusions" in set(inspector.get_table_names())
     finally:
         engine.dispose()
 
@@ -165,6 +226,9 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
         assert "parcel_year_facts" in set(inspector.get_table_names())
         assert "parcel_characteristics" in set(inspector.get_table_names())
         assert "parcel_lineage_links" in set(inspector.get_table_names())
+        assert "sales_transactions" in set(inspector.get_table_names())
+        assert "sales_parcel_matches" in set(inspector.get_table_names())
+        assert "sales_exclusions" in set(inspector.get_table_names())
         with engine.connect() as conn:
             revision = conn.execute(
                 text("SELECT version_num FROM alembic_version")

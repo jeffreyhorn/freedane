@@ -14,7 +14,9 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -327,3 +329,163 @@ class ParcelLineageLink(Base):
     built_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class SalesTransaction(Base):
+    __tablename__ = "sales_transactions"
+    __table_args__ = (
+        Index("ix_sales_transactions_source_file_sha256", "source_file_sha256"),
+        Index(
+            "ux_sales_transactions_source_file_sha256_source_row_number",
+            "source_file_sha256",
+            "source_row_number",
+            unique=True,
+        ),
+        Index("ix_sales_transactions_transfer_date", "transfer_date"),
+        Index(
+            "ix_sales_transactions_official_parcel_number_norm",
+            "official_parcel_number_norm",
+        ),
+        Index(
+            "ix_sales_transactions_property_address_norm",
+            "property_address_norm",
+        ),
+        Index("ix_sales_transactions_import_status", "import_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    source_system: Mapped[str] = mapped_column(String, nullable=False)
+    source_file_name: Mapped[str] = mapped_column(String, nullable=False)
+    source_file_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_headers: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    raw_row: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    import_status: Mapped[str] = mapped_column(String, nullable=False)
+    import_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    loaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    revenue_object_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    document_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    county_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    municipality_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    transfer_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    recording_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    consideration_amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    property_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    conveyance_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    deed_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    grantor_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    grantee_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    official_parcel_number_raw: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    official_parcel_number_norm: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    property_address_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    property_address_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    legal_description_raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    school_district_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    arms_length_indicator_raw: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    arms_length_indicator_norm: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True
+    )
+    usable_sale_indicator_raw: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    usable_sale_indicator_norm: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True
+    )
+    review_status: Mapped[str] = mapped_column(
+        String, nullable=False, server_default=text("'unreviewed'")
+    )
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SalesParcelMatch(Base):
+    __tablename__ = "sales_parcel_matches"
+    __table_args__ = (
+        Index(
+            "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method",
+            "sales_transaction_id",
+            "parcel_id",
+            "match_method",
+            unique=True,
+        ),
+        Index(
+            "ux_sales_parcel_matches_primary_per_transaction",
+            "sales_transaction_id",
+            unique=True,
+            sqlite_where=text("is_primary = 1"),
+        ),
+        Index("ix_sales_parcel_matches_parcel_id", "parcel_id"),
+        Index(
+            "ix_sales_parcel_matches_match_review_status",
+            "match_review_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sales_transaction_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sales_transactions.id"), nullable=False
+    )
+    parcel_id: Mapped[str] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=False
+    )
+    match_method: Mapped[str] = mapped_column(String, nullable=False)
+    confidence_score: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+    match_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0")
+    )
+    match_review_status: Mapped[str] = mapped_column(String, nullable=False)
+    matched_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    matcher_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    matched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SalesExclusion(Base):
+    __tablename__ = "sales_exclusions"
+    __table_args__ = (
+        Index(
+            "ux_sales_exclusions_sales_transaction_id_exclusion_code",
+            "sales_transaction_id",
+            "exclusion_code",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sales_transaction_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sales_transactions.id"), nullable=False
+    )
+    exclusion_code: Mapped[str] = mapped_column(String, nullable=False)
+    exclusion_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("1")
+    )
+    excluded_by_rule: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    excluded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
