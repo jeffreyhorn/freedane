@@ -44,6 +44,7 @@ _STREET_SUFFIX_TOKENS = {
     "LANE",
     "LN",
     "PKWY",
+    "PARKWAY",
     "PL",
     "PLACE",
     "RD",
@@ -53,6 +54,7 @@ _STREET_SUFFIX_TOKENS = {
     "TER",
     "TERRACE",
     "TRL",
+    "TRAIL",
     "WAY",
 }
 _ADDRESS_TOKEN_NORMALIZATION = {
@@ -216,6 +218,13 @@ class SalesMatchSyncCounts:
     deleted_rows: int
 
 
+@dataclass(frozen=True)
+class SalesMatchCandidateKeys:
+    parcel_number_keys: set[str]
+    address_keys: set[str]
+    legal_description_keys: set[str]
+
+
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
     file_sha256 = _hash_file(csv_path)
     existing_rows = {
@@ -317,9 +326,25 @@ def match_sales_transactions(
     *,
     sales_transaction_ids: Optional[Iterable[int]] = None,
 ) -> SalesMatchSummary:
-    parcel_number_index = _build_parcel_number_match_index(session)
-    address_index = _build_address_match_index(session)
-    legal_description_index = _build_legal_description_match_index(session)
+    scoped_transaction_ids = (
+        list(sales_transaction_ids) if sales_transaction_ids is not None else None
+    )
+    candidate_keys = _collect_sales_match_candidate_keys(
+        session,
+        sales_transaction_ids=scoped_transaction_ids,
+    )
+    parcel_number_index = _build_parcel_number_match_index(
+        session,
+        allowed_keys=candidate_keys.parcel_number_keys,
+    )
+    address_index = _build_address_match_index(
+        session,
+        allowed_keys=candidate_keys.address_keys,
+    )
+    legal_description_index = _build_legal_description_match_index(
+        session,
+        allowed_keys=candidate_keys.legal_description_keys,
+    )
 
     selected_transactions = 0
     matched_transactions = 0
@@ -328,7 +353,7 @@ def match_sales_transactions(
 
     for transactions in _iter_sales_transaction_batches(
         session,
-        sales_transaction_ids=sales_transaction_ids,
+        sales_transaction_ids=scoped_transaction_ids,
     ):
         selected_transactions += len(transactions)
         existing_matches = _load_existing_sales_parcel_matches(session, transactions)
@@ -358,6 +383,42 @@ def match_sales_transactions(
         matched_transactions=matched_transactions,
         rows_written=rows_written,
         rows_deleted=rows_deleted,
+    )
+
+
+def _collect_sales_match_candidate_keys(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]],
+) -> SalesMatchCandidateKeys:
+    parcel_number_keys: set[str] = set()
+    address_keys: set[str] = set()
+    legal_description_keys: set[str] = set()
+
+    for transactions in _iter_sales_transaction_batches(
+        session,
+        sales_transaction_ids=sales_transaction_ids,
+    ):
+        for transaction in transactions:
+            if transaction.official_parcel_number_norm is not None:
+                parcel_number_keys.add(transaction.official_parcel_number_norm)
+            parcel_number_keys.update(
+                _parcel_number_crosswalk_candidates(
+                    transaction.official_parcel_number_raw
+                )
+            )
+            if transaction.property_address_norm is not None:
+                address_keys.add(transaction.property_address_norm)
+            legal_match_value = _normalize_sales_legal_description(
+                transaction.legal_description_raw
+            )
+            if legal_match_value is not None:
+                legal_description_keys.add(legal_match_value)
+
+    return SalesMatchCandidateKeys(
+        parcel_number_keys=parcel_number_keys,
+        address_keys=address_keys,
+        legal_description_keys=legal_description_keys,
     )
 
 
@@ -654,16 +715,23 @@ def _sync_sales_exclusions(
         existing.is_active = False
 
 
-def _build_parcel_number_match_index(session: Session) -> dict[str, tuple[str, ...]]:
+def _build_parcel_number_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, tuple[str, ...]]:
+    if not allowed_keys:
+        return {}
+
     parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
     for parcel_id, formatted_parcel_number in session.execute(
         select(
             ParcelCharacteristic.parcel_id,
             ParcelCharacteristic.formatted_parcel_number,
         )
-    ).all():
+    ):
         normalized = _normalize_parcel_number(formatted_parcel_number)
-        if normalized is None:
+        if normalized is None or normalized not in allowed_keys:
             continue
         parcel_ids_by_norm[normalized].add(parcel_id)
 
@@ -673,13 +741,20 @@ def _build_parcel_number_match_index(session: Session) -> dict[str, tuple[str, .
     }
 
 
-def _build_address_match_index(session: Session) -> dict[str, tuple[str, ...]]:
+def _build_address_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, tuple[str, ...]]:
+    if not allowed_keys:
+        return {}
+
     parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
     for parcel_id, primary_address in session.execute(
         select(ParcelSummary.parcel_id, ParcelSummary.primary_address)
-    ).all():
+    ):
         normalized = _normalize_address(primary_address)
-        if normalized is None:
+        if normalized is None or normalized not in allowed_keys:
             continue
         parcel_ids_by_norm[normalized].add(parcel_id)
 
@@ -691,13 +766,18 @@ def _build_address_match_index(session: Session) -> dict[str, tuple[str, ...]]:
 
 def _build_legal_description_match_index(
     session: Session,
+    *,
+    allowed_keys: set[str],
 ) -> dict[str, tuple[str, ...]]:
+    if not allowed_keys:
+        return {}
+
     parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
     for parcel_id, parcel_description in session.execute(
         select(ParcelSummary.parcel_id, ParcelSummary.parcel_description)
-    ).all():
+    ):
         normalized = _normalize_parcel_legal_description(parcel_description)
-        if normalized is None:
+        if normalized is None or normalized not in allowed_keys:
             continue
         parcel_ids_by_norm[normalized].add(parcel_id)
 
