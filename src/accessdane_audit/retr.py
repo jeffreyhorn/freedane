@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from .models import SalesTransaction
 
@@ -86,9 +86,14 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
     existing_rows = {
         row.source_row_number: row
         for row in session.execute(
-            select(SalesTransaction).where(
-                SalesTransaction.source_file_sha256 == file_sha256
+            select(SalesTransaction)
+            .options(
+                load_only(
+                    SalesTransaction.id,
+                    SalesTransaction.source_row_number,
+                )
             )
+            .where(SalesTransaction.source_file_sha256 == file_sha256)
         ).scalars()
     }
 
