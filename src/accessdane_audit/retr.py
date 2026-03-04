@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -82,75 +82,66 @@ class RetrImportSummary:
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
+    file_sha256 = _hash_file(csv_path)
+    existing_rows = {
+        row.source_row_number: row
+        for row in session.execute(
+            select(SalesTransaction).where(
+                SalesTransaction.source_file_sha256 == file_sha256
+            )
+        ).scalars()
+    }
+
     try:
-        raw_bytes = csv_path.read_bytes()
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, restkey=_EXTRA_COLUMNS_KEY)
+            if reader.fieldnames is None:
+                raise RetrImportFileError("CSV file is missing a header row.")
+
+            fieldnames = list(reader.fieldnames)
+            _validate_headers(fieldnames)
+
+            header_binding = _resolve_header_binding(fieldnames)
+            if not any(header_binding.values()):
+                raise RetrImportFileError(
+                    "CSV file does not contain recognizable RETR headers."
+                )
+
+            total_rows = 0
+            loaded_rows = 0
+            rejected_rows = 0
+            inserted_rows = 0
+            updated_rows = 0
+
+            for source_row_number, row in enumerate(reader, start=1):
+                total_rows += 1
+                values = _build_sales_transaction_values(
+                    row=row,
+                    source_file_name=csv_path.name,
+                    source_file_sha256=file_sha256,
+                    source_row_number=source_row_number,
+                    source_headers=fieldnames,
+                    header_binding=header_binding,
+                )
+
+                existing = existing_rows.get(source_row_number)
+                if existing is None:
+                    session.add(SalesTransaction(**values))
+                    inserted_rows += 1
+                else:
+                    _apply_sales_transaction_update(existing, values)
+                    updated_rows += 1
+
+                if values["import_status"] == "loaded":
+                    loaded_rows += 1
+                else:
+                    rejected_rows += 1
     except OSError as exc:
         raise RetrImportFileError(f"Could not read CSV file: {exc}") from exc
-
-    file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-
-    try:
-        text = raw_bytes.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise RetrImportFileError(
             "CSV file is not valid UTF-8 and could not be decoded."
         ) from exc
-
-    reader = csv.DictReader(io.StringIO(text), restkey=_EXTRA_COLUMNS_KEY)
-    if reader.fieldnames is None:
-        raise RetrImportFileError("CSV file is missing a header row.")
-
-    fieldnames = list(reader.fieldnames)
-    duplicate_headers = sorted(
-        {header for header in fieldnames if header and fieldnames.count(header) > 1}
-    )
-    if duplicate_headers:
-        duplicate_text = ", ".join(duplicate_headers)
-        raise RetrImportFileError(
-            f"CSV file contains duplicate header names: {duplicate_text}"
-        )
-
-    header_binding = _resolve_header_binding(fieldnames)
-    if not any(header_binding.values()):
-        raise RetrImportFileError(
-            "CSV file does not contain recognizable RETR headers."
-        )
-
-    total_rows = 0
-    loaded_rows = 0
-    rejected_rows = 0
-    inserted_rows = 0
-    updated_rows = 0
-
-    for source_row_number, row in enumerate(reader, start=1):
-        total_rows += 1
-        values = _build_sales_transaction_values(
-            row=row,
-            source_file_name=csv_path.name,
-            source_file_sha256=file_sha256,
-            source_row_number=source_row_number,
-            source_headers=fieldnames,
-            header_binding=header_binding,
-        )
-
-        existing = session.execute(
-            select(SalesTransaction).where(
-                SalesTransaction.source_file_sha256 == file_sha256,
-                SalesTransaction.source_row_number == source_row_number,
-            )
-        ).scalar_one_or_none()
-
-        if existing is None:
-            session.add(SalesTransaction(**values))
-            inserted_rows += 1
-        else:
-            _apply_sales_transaction_update(existing, values)
-            updated_rows += 1
-
-        if values["import_status"] == "loaded":
-            loaded_rows += 1
-        else:
-            rejected_rows += 1
 
     return RetrImportSummary(
         total_rows=total_rows,
@@ -159,6 +150,32 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
         inserted_rows=inserted_rows,
         updated_rows=updated_rows,
     )
+
+
+def _hash_file(csv_path: Path) -> str:
+    try:
+        hasher = hashlib.sha256()
+        with csv_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8192), b""):
+                hasher.update(chunk)
+    except OSError as exc:
+        raise RetrImportFileError(f"Could not read CSV file: {exc}") from exc
+    return hasher.hexdigest()
+
+
+def _validate_headers(fieldnames: list[str]) -> None:
+    if any(not (header or "").strip() for header in fieldnames):
+        raise RetrImportFileError("CSV file contains blank header names.")
+
+    header_counts = Counter(fieldnames)
+    duplicate_headers = sorted(
+        header for header, count in header_counts.items() if count > 1
+    )
+    if duplicate_headers:
+        duplicate_text = ", ".join(duplicate_headers)
+        raise RetrImportFileError(
+            f"CSV file contains duplicate header names: {duplicate_text}"
+        )
 
 
 def _resolve_header_binding(fieldnames: list[str]) -> dict[str, Optional[str]]:

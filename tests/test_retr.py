@@ -121,3 +121,142 @@ def test_ingest_retr_records_rejected_rows_and_reuses_existing_same_file_rows(
     assert rows[0].id == first_row_id
     assert rows[0].import_status == "rejected"
     assert rows[0].import_error == "transfer_date could not be parsed."
+
+
+def test_ingest_retr_rejects_file_without_header_row(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_no_header.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "empty.csv"
+    csv_path.write_text("", encoding="utf-8")
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code != 0
+    assert "CSV file is missing a header row." in result.output
+
+
+def test_ingest_retr_rejects_duplicate_or_blank_header_names(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    duplicate_db_path = tmp_path / "retr_duplicate_headers.sqlite"
+    duplicate_database_url = f"sqlite:///{duplicate_db_path}"
+    duplicate_csv_path = tmp_path / "duplicate_headers.csv"
+    duplicate_csv_path.write_text(
+        "Transfer Date,Transfer Date,Consideration\n01/15/2025,01/15/2025,100000\n",
+        encoding="utf-8",
+    )
+
+    init_db(duplicate_database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=duplicate_database_url),
+    )
+
+    runner = CliRunner()
+    duplicate_result = runner.invoke(
+        cli.app,
+        ["ingest-retr", "--file", str(duplicate_csv_path)],
+    )
+
+    assert duplicate_result.exit_code != 0
+    assert "CSV file contains duplicate header names:" in duplicate_result.output
+    assert "Transfer" in duplicate_result.output
+    assert "Date" in duplicate_result.output
+
+    blank_db_path = tmp_path / "retr_blank_header.sqlite"
+    blank_database_url = f"sqlite:///{blank_db_path}"
+    blank_csv_path = tmp_path / "blank_header.csv"
+    blank_csv_path.write_text(
+        "Transfer Date,,Consideration\n01/15/2025,foo,100000\n",
+        encoding="utf-8",
+    )
+
+    init_db(blank_database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=blank_database_url),
+    )
+
+    blank_result = runner.invoke(
+        cli.app,
+        ["ingest-retr", "--file", str(blank_csv_path)],
+    )
+
+    assert blank_result.exit_code != 0
+    assert "CSV file contains blank header names." in blank_result.output
+
+
+def test_ingest_retr_rejects_files_without_recognizable_retr_headers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_unrecognized_headers.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "unrecognized_headers.csv"
+    csv_path.write_text("Foo,Bar\nx,y\n", encoding="utf-8")
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code != 0
+    assert "CSV file does not contain recognizable RETR" in result.output
+    assert "headers." in result.output
+
+
+def test_ingest_retr_marks_rows_with_extra_columns_as_rejected(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_extra_columns.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "extra_columns.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address\n"
+            "01/15/2025,100000,123 Main St,EXTRA\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=0 rejected=1 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+
+    assert row.import_status == "rejected"
+    assert row.import_error == "Row has extra columns beyond the header definition."
