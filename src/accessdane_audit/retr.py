@@ -140,6 +140,20 @@ _UNIT_DESIGNATOR_TOKENS = {
     "UNIT",
 }
 _UNIT_VALUE_TOKENS = {"FRONT", "LOWER", "REAR", "UPPER"}
+_DIRECTION_SUFFIX_TOKENS = {
+    "N",
+    "S",
+    "E",
+    "W",
+    "NE",
+    "NW",
+    "SE",
+    "SW",
+    "NORTH",
+    "SOUTH",
+    "EAST",
+    "WEST",
+}
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -836,7 +850,10 @@ def _build_legal_description_match_index(
     if lot_tokens:
         for lot_batch in _chunked(lot_tokens, _NARROWING_BATCH_SIZE):
             lot_filter = or_(
-                *(upper_parcel_description.like(f"%LOT {lot}%") for lot in lot_batch)
+                *(
+                    _lot_token_boundary_filter(upper_parcel_description, lot)
+                    for lot in lot_batch
+                )
             )
             for parcel_id, parcel_description in session.execute(
                 base_query.where(lot_filter)
@@ -1386,7 +1403,7 @@ def _strip_trailing_city_state_zip(normalized: str) -> str:
     end_index = last_suffix_index
     if last_suffix_index + 1 < len(street_and_city_tokens):
         next_token = street_and_city_tokens[last_suffix_index + 1]
-        if len(next_token) <= 2:
+        if next_token in _DIRECTION_SUFFIX_TOKENS:
             end_index = last_suffix_index + 1
 
     unit_end = _find_unit_suffix_end(street_and_city_tokens, end_index + 1)
@@ -1435,6 +1452,18 @@ def _is_unit_component_token(token: str) -> bool:
     if any(char.isdigit() for char in token):
         return True
     return len(token) <= 2 and token.isalnum()
+
+
+def _lot_token_boundary_filter(upper_parcel_description, lot: str):
+    return or_(
+        upper_parcel_description.like(f"%LOT {lot} %"),
+        upper_parcel_description.like(f"%LOT {lot}"),
+        upper_parcel_description.like(f"%LOT {lot},%"),
+        upper_parcel_description.like(f"%LOT {lot}.%"),
+        upper_parcel_description.like(f"%LOT {lot})%"),
+        upper_parcel_description.like(f"%LOT {lot};%"),
+        upper_parcel_description.like(f"%LOT {lot}:%"),
+    )
 
 
 def _normalize_boolean(value: Optional[str]) -> Optional[bool]:

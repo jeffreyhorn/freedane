@@ -290,7 +290,8 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
         "needs_review",
         "needs_review",
     ]
-    assert matches[0].matched_at != stale_timestamp
+    assert matches[0].matched_at is not None
+    assert matches[0].matched_at.date() > stale_timestamp.date()
 
 
 def test_match_sales_applies_parcel_number_crosswalk_for_transposed_prefix_digits(
@@ -658,6 +659,66 @@ def test_match_sales_preserves_unit_tokens_when_stripping_zip_plus_four(
     assert row.property_address_norm == "123 MAIN ST APT 2"
     assert len(matches) == 1
     assert matches[0].parcel_id == "parcel-unit-zip4"
+    assert matches[0].match_method == "normalized_address"
+
+
+def test_match_sales_preserves_full_direction_token_before_zip_strip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_direction_suffix.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_direction_suffix.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"123 Main St East Madison WI 53711"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-direction"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-direction",
+                    url="https://example.test/parcel/parcel-direction",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-direction",
+                    fetch_id=1,
+                    primary_address="123 MAIN ST E",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "123 MAIN ST E"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-direction"
     assert matches[0].match_method == "normalized_address"
 
 
