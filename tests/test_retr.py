@@ -223,6 +223,68 @@ def test_ingest_retr_populates_initial_sales_exclusions(
     assert all(exclusion.is_active for exclusion in reloaded_exclusions)
 
 
+def test_ingest_retr_deactivates_exclusions_that_no_longer_apply(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_exclusion_deactivation.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "retr_exclusion_deactivation.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address,Arms Length Indicator\n"
+            "01/15/2025,100000,123 Main St,no\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    first_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert first_result.exit_code == 0, first_result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in first_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        first_exclusion = session.execute(
+            select(SalesExclusion).where(
+                SalesExclusion.exclusion_code == "non_arms_length"
+            )
+        ).scalar_one()
+
+    assert first_exclusion.is_active is True
+    first_exclusion_id = first_exclusion.id
+
+    monkeypatch.setattr(retr_module, "_derive_sales_exclusions", lambda values: [])
+
+    second_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert second_result.exit_code == 0, second_result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=0 updated=1"
+        in second_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        reloaded_exclusion = session.execute(
+            select(SalesExclusion).where(
+                SalesExclusion.exclusion_code == "non_arms_length"
+            )
+        ).scalar_one()
+
+    assert reloaded_exclusion.id == first_exclusion_id
+    assert reloaded_exclusion.is_active is False
+
+
 def test_ingest_retr_rejects_file_without_header_row(
     tmp_path: Path,
     monkeypatch,
