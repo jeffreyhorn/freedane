@@ -260,3 +260,42 @@ def test_ingest_retr_marks_rows_with_extra_columns_as_rejected(
 
     assert row.import_status == "rejected"
     assert row.import_error == "Row has extra columns beyond the header definition."
+
+
+def test_ingest_retr_rejects_non_empty_unparseable_optional_recording_date(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_bad_recording_date.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "bad_recording_date.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Recording Date,Consideration,Property Address\n"
+            "01/15/2025,2025/99/99,100000,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=0 rejected=1 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+
+    assert row.import_status == "rejected"
+    assert row.import_error == "recording_date could not be parsed."
+    assert row.recording_date is None

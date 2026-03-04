@@ -279,7 +279,10 @@ def _build_sales_transaction_values(
     transfer_date, transfer_date_error = _parse_required_date(
         transfer_date_raw, field_name="transfer_date"
     )
-    recording_date = _parse_optional_date(recording_date_raw)
+    recording_date, recording_date_error = _parse_optional_date(
+        recording_date_raw,
+        field_name="recording_date",
+    )
     consideration_amount, consideration_error = _parse_required_amount(
         consideration_raw, field_name="consideration_amount"
     )
@@ -295,6 +298,7 @@ def _build_sales_transaction_values(
     import_error = _classify_row_error(
         raw_row=raw_row,
         transfer_date_error=transfer_date_error,
+        recording_date_error=recording_date_error,
         consideration_error=consideration_error,
         has_identifier=any(
             (
@@ -335,6 +339,7 @@ def _classify_row_error(
     *,
     raw_row: dict[str, object],
     transfer_date_error: Optional[str],
+    recording_date_error: Optional[str],
     consideration_error: Optional[str],
     has_identifier: bool,
 ) -> Optional[str]:
@@ -345,6 +350,8 @@ def _classify_row_error(
         return "Row is blank."
     if transfer_date_error:
         return transfer_date_error
+    if recording_date_error:
+        return recording_date_error
     if consideration_error:
         return consideration_error
     if not has_identifier:
@@ -442,11 +449,18 @@ def _parse_required_date(
     return parsed, None
 
 
-def _parse_optional_date(value: Optional[str]) -> Optional[date]:
+def _parse_optional_date(
+    value: Optional[str],
+    *,
+    field_name: str,
+) -> tuple[Optional[date], Optional[str]]:
     trimmed = _trimmed_text(value)
     if trimmed is None:
-        return None
-    return _parse_date(trimmed)
+        return None, None
+    parsed = _parse_date(trimmed)
+    if parsed is None:
+        return None, f"{field_name} could not be parsed."
+    return parsed, None
 
 
 def _parse_date(value: str) -> Optional[date]:
