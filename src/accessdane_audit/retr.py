@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, load_only
@@ -124,6 +124,7 @@ PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
 _MATCH_BATCH_SIZE = 500
+_T = TypeVar("_T")
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -724,16 +725,19 @@ def _build_parcel_number_match_index(
         return {}
 
     parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
-    for parcel_id, formatted_parcel_number in session.execute(
-        select(
-            ParcelCharacteristic.parcel_id,
-            ParcelCharacteristic.formatted_parcel_number,
-        )
-    ):
-        normalized = _normalize_parcel_number(formatted_parcel_number)
-        if normalized is None or normalized not in allowed_keys:
-            continue
-        parcel_ids_by_norm[normalized].add(parcel_id)
+    normalized_expr = _normalized_parcel_number_sql(
+        ParcelCharacteristic.formatted_parcel_number
+    )
+    for key_batch in _chunked(sorted(allowed_keys), _MATCH_BATCH_SIZE):
+        for parcel_id, normalized in session.execute(
+            select(
+                ParcelCharacteristic.parcel_id,
+                normalized_expr,
+            ).where(normalized_expr.in_(key_batch))
+        ):
+            if normalized is None:
+                continue
+            parcel_ids_by_norm[normalized].add(parcel_id)
 
     return {
         normalized: tuple(sorted(parcel_ids))
@@ -1109,7 +1113,14 @@ def _contains_corrective_deed_phrase(text_values: tuple[str, ...]) -> bool:
     return any(_CORRECTIVE_DEED_PATTERN.search(value) for value in text_values)
 
 
-def _chunked(values: list[int], size: int) -> Iterator[list[int]]:
+def _normalized_parcel_number_sql(column):
+    normalized = func.upper(column)
+    for separator in (" ", "-", ".", "_", "/"):
+        normalized = func.replace(normalized, separator, "")
+    return normalized
+
+
+def _chunked(values: list[_T], size: int) -> Iterator[list[_T]]:
     for index in range(0, len(values), size):
         yield values[index : index + size]
 
@@ -1270,10 +1281,23 @@ def _normalize_legal_component(value: Optional[str]) -> Optional[str]:
 
 def _strip_trailing_city_state_zip(normalized: str) -> str:
     tokens = normalized.split()
-    if len(tokens) < 4 or tokens[-2] != "WI" or not _is_zip_token(tokens[-1]):
+    if len(tokens) < 4:
         return normalized
 
-    street_and_city_tokens = tokens[:-2]
+    if tokens[-2] == "WI" and _is_zip_token(tokens[-1]):
+        street_and_city_tokens = tokens[:-2]
+    elif (
+        len(tokens) >= 5
+        and tokens[-3] == "WI"
+        and _is_zip_token(tokens[-2])
+        and len(tokens[-1]) == 4
+        and tokens[-1].isdigit()
+    ):
+        # After punctuation normalization, ZIP+4 can become: WI <zip5> <zip4>.
+        street_and_city_tokens = tokens[:-3]
+    else:
+        return normalized
+
     last_suffix_index = None
     for index, token in enumerate(street_and_city_tokens):
         if token in _STREET_SUFFIX_TOKENS:
