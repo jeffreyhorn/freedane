@@ -91,6 +91,7 @@ One row per imported permit record (import/audit grain, not deduplicated real-wo
     - `loaded`
     - `rejected`
 - `import_error` (nullable text)
+- `import_warnings` (nullable JSON array of non-fatal warning codes)
 - `loaded_at`
 - `updated_at`
 
@@ -256,12 +257,17 @@ If parse fails:
 
 `permit_year` derivation:
 
-- use explicit parsed year field if present and valid
-- otherwise derive from first available anchor date in order:
+- if a dedicated year field is present in source data and parses as a valid year, use it as the authoritative `permit_year`
+- if no explicit year is present or parseable, derive `permit_year` from the first available anchor date in order:
   - `issued_date`
   - `finaled_date`
   - `status_date`
   - `applied_date`
+- when both an explicit year and one or more anchor dates are present:
+  - implementers may derive an anchor-based year for validation
+  - if anchor-derived year disagrees with explicit year, keep explicit year in `permit_year`
+  - record non-fatal warning code `permit_year_anchor_mismatch` in `import_warnings`
+  - mismatch alone must not trigger `import_error` or row rejection
 
 ### Currency/Amounts
 
@@ -279,11 +285,13 @@ If parse fails:
 - `final`, `finaled`, `closed`, `completed` -> `finaled`
 - `expired` -> `expired`
 - `cancelled`, `canceled`, `void` -> `cancelled`
-- anything else:
+- if `permit_status_raw` is blank or missing:
+  - leave `permit_status_norm` null
+- anything else (nonblank token that does not match mappings above):
   - keep `permit_status_raw`
   - set `permit_status_norm = "unknown"`
 
-Unknown status does not reject the row.
+Unknown status tokens do not reject the row; missing status simply keeps `permit_status_norm` null.
 
 ## Parcel Attachment Behavior
 
@@ -329,6 +337,9 @@ For rejected rows:
 
 Same-file re-run must be idempotent.
 
+For v1 identity semantics, "same file" means same raw file bytes (`source_file_sha256`).
+This is independent of file path or `source_file_name`, so renaming/moving an unchanged file still upserts the same row identities.
+
 Enforce unique key:
 
 - `unique(source_file_sha256, source_row_number)`
@@ -338,6 +349,7 @@ Importer behavior for duplicates:
 - upsert existing row
 - recompute normalized fields from current logic
 - refresh `import_status` and `import_error`
+- refresh `import_warnings`
 - preserve first-seen `loaded_at`
 - refresh `updated_at`
 
