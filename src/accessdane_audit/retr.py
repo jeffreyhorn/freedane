@@ -35,6 +35,7 @@ _STREET_SUFFIX_TOKENS = {
     "AVENUE",
     "AVNEUE",
     "BLVD",
+    "BOULEVARD",
     "CIR",
     "CIRCLE",
     "COURT",
