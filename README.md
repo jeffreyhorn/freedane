@@ -94,6 +94,9 @@ accessdane parse --unparsed
 accessdane build-parcel-year-facts
 accessdane check-data-quality
 accessdane profile-data
+accessdane ingest-retr --file data/sample_retr.csv
+accessdane match-sales
+accessdane report-sales-matches --out data/sales_match_audit.json
 accessdane anomalies --out data/anomalies.json
 ```
 
@@ -106,6 +109,7 @@ Operational notes:
 - `run-all --build-parcel-year-facts` now keeps the rebuild scoped to the current run when `--parse-ids` is used.
 - `check-data-quality` and `profile-data` both support `--ids` to limit runs to a parcel subset and `--out` to write JSON for later review.
 - `check-data-quality --fail-on-issues` exits with status code `1` when any check fails, which is useful for CI or repeatable local gates.
+- `report-sales-matches` emits a JSON audit snapshot of sales-match confidence tiers, method counts, and unresolved/ambiguous/low-confidence review queues.
 - `run-all --skip-anomalies` skips the final anomaly JSON step for faster parser iteration.
 - `parse` supports `--resume-after-fetch-id` and `--limit` so long reparses can resume in smaller chunks.
 - `run-all --parse-only` supports `--parse-resume-after-fetch-id` and `--parse-limit` for the same chunked parse-stage control.
@@ -243,11 +247,13 @@ Use it to measure how complete the current local dataset is, not as a correctnes
 
 `ingest-retr --file ...` keeps imported non-comparable transfers visible in `sales_transactions` and now writes active `sales_exclusions` rows for the initial v1 rules: non-arms-length, non-usable-sale, family-transfer, government-transfer, and corrective-deed signals.
 Those exclusions are synced on same-file re-imports so the importer updates existing exclusion rows instead of duplicating them.
+Use `match-sales` and `report-sales-matches` after each RETR import to refresh candidate links and produce an operator-facing review-queue snapshot.
 
 The AccessDane `Summary Report` / `Custom Report` endpoints were evaluated during Sprint 2 and are intentionally not part of the fetch pipeline right now.
 They currently resolve to a PDF print flow rather than a cleaner machine-readable data source, so the project continues to rely on the main parcel HTML pages.
 
 More detailed operational guidance lives in [docs/planning/SPRINT_1/OPERATIONS.md](docs/planning/SPRINT_1/OPERATIONS.md).
+Sprint 3 RETR-specific operations live in [docs/planning/SPRINT_3/RETR_OPERATIONS.md](docs/planning/SPRINT_3/RETR_OPERATIONS.md).
 
 ## Notes
 

@@ -37,7 +37,12 @@ from .parcel_year_facts import rebuild_parcel_year_facts
 from .parse import ParsedPage, parse_page
 from .profiling import build_data_profile
 from .quality import quality_report_to_dict, run_data_quality_checks
-from .retr import RetrImportFileError, ingest_retr_csv, match_sales_transactions
+from .retr import (
+    RetrImportFileError,
+    build_sales_match_audit_report,
+    ingest_retr_csv,
+    match_sales_transactions,
+)
 from .scrape import fetch_page
 from .search import search_trs
 from .trs import DEFAULT_SPLIT_PARTS, enumerate_trs, parse_trs_code
@@ -195,6 +200,39 @@ def match_sales_cmd() -> None:
         f"ambiguous={summary.ambiguous_transactions} "
         f"low_confidence={summary.low_confidence_transactions}"
     )
+
+
+@app.command("report-sales-matches")
+def report_sales_matches_cmd(
+    ids_file: Optional[Path] = typer.Option(
+        None,
+        "--ids",
+        help="File with sales transaction IDs (one integer ID per line)",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+    sample_size: int = typer.Option(
+        20,
+        "--sample-size",
+        min=1,
+        help="Maximum sample IDs per review-queue category",
+    ),
+) -> None:
+    settings = load_settings()
+    transaction_ids = (
+        _collect_transaction_ids(ids_file, param_hint="--ids") if ids_file else None
+    )
+    with session_scope(settings.database_url) as session:
+        payload = build_sales_match_audit_report(
+            session,
+            sales_transaction_ids=transaction_ids,
+            sample_size=sample_size,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
 
 
 @app.command("enumerate-trs")
@@ -1430,6 +1468,27 @@ def _collect_ids(ids: Iterable[str], ids_file: Optional[Path]) -> list[str]:
         lines = ids_file.read_text(encoding="utf-8").splitlines()
         collected.extend([line.strip() for line in lines if line.strip()])
     return collected
+
+
+def _collect_transaction_ids(
+    ids_file: Path,
+    *,
+    param_hint: str,
+) -> list[int]:
+    transaction_ids: list[int] = []
+    lines = ids_file.read_text(encoding="utf-8").splitlines()
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            transaction_ids.append(int(stripped))
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"Invalid transaction ID at line {line_number}: {stripped!r}",
+                param_hint=param_hint,
+            ) from exc
+    return transaction_ids
 
 
 def _ensure_parcel(session, parcel_id: str) -> None:
