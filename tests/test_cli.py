@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import db as db_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import Fetch, Parcel, ParcelYearFact
 
@@ -644,7 +645,7 @@ def test_report_sales_matches_ids_rejects_non_integer_lines(
     ids_path = tmp_path / "sales_transaction_ids_invalid.txt"
     ids_path.write_text("1\nabc\n", encoding="utf-8")
 
-    init_db(database_url)
+    db_module.init_db(database_url)
     monkeypatch.setattr(
         cli,
         "load_settings",
@@ -667,7 +668,7 @@ def test_report_sales_matches_ids_trims_whitespace_and_skips_blank_lines(
     ids_path = tmp_path / "sales_transaction_ids_whitespace.txt"
     ids_path.write_text(" 1 \n\n\t2\t\n", encoding="utf-8")
 
-    init_db(database_url)
+    db_module.init_db(database_url)
     monkeypatch.setattr(
         cli,
         "load_settings",
@@ -692,7 +693,7 @@ def test_report_sales_matches_ids_accepts_empty_file(
     ids_path = tmp_path / "sales_transaction_ids_empty.txt"
     ids_path.write_text("", encoding="utf-8")
 
-    init_db(database_url)
+    db_module.init_db(database_url)
     monkeypatch.setattr(
         cli,
         "load_settings",
