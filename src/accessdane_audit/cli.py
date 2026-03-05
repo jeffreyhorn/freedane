@@ -189,7 +189,11 @@ def match_sales_cmd() -> None:
         f"selected={summary.selected_transactions} "
         f"matched={summary.matched_transactions} "
         f"rows_written={summary.rows_written} "
-        f"rows_deleted={summary.rows_deleted}"
+        f"rows_deleted={summary.rows_deleted} "
+        f"needs_review={summary.needs_review_transactions} "
+        f"unresolved={summary.unresolved_transactions} "
+        f"ambiguous={summary.ambiguous_transactions} "
+        f"low_confidence={summary.low_confidence_transactions}"
     )
 
 
