@@ -180,6 +180,18 @@ The importer should map source headers into canonical internal fields with an ex
 - `declared_valuation`
 - `estimated_cost`
 
+### Header Normalization
+
+Before applying alias and precedence rules, normalize every raw CSV header name:
+
+- convert to lowercase
+- trim leading and trailing whitespace
+- collapse internal whitespace runs (space/tab) to a single space
+- treat space (` `), underscore (`_`), and hyphen (`-`) as equivalent separators for matching
+- ignore a single trailing `:` or `#` character
+
+All alias lookups and header comparisons must use this normalized header key.
+
 ### Header Alias Strategy
 
 The alias map should cover common variations, e.g.:
@@ -219,7 +231,9 @@ File-level failure conditions:
 
 - unreadable CSV
 - duplicate identical header names in the same file
-- no recognizable permit-shape headers
+- header set does not meet minimum permit-shape requirement:
+  - must recognize at least one parcel locator header (`parcel_number_raw` or `site_address_raw`)
+  - must recognize at least one temporal anchor header (one of `applied_date`, `issued_date`, `finaled_date`, `status_date`, or `permit_year`)
 
 ## Normalization Rules
 
