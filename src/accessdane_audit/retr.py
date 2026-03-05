@@ -138,7 +138,7 @@ ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
 LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD = Decimal("0.8500")
 HIGH_CONFIDENCE_TIER_MIN = Decimal("0.9500")
-MEDIUM_CONFIDENCE_TIER_MIN = LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD
+MEDIUM_CONFIDENCE_TIER_MIN = Decimal("0.8500")
 _MATCH_BATCH_SIZE = 500
 _NARROWING_BATCH_SIZE = 100
 _T = TypeVar("_T")
@@ -568,9 +568,9 @@ def build_sales_match_audit_report(
         }
 
     review_status_counts = Counter(transaction_review_status.values())
-    matches_by_transaction: dict[int, list[_SalesMatchAuditCandidate]] = defaultdict(
-        list
-    )
+    matched_transaction_ids: set[int] = set()
+    candidate_counts: Counter[int] = Counter()
+    best_candidate_by_transaction: dict[int, _SalesMatchAuditCandidate] = {}
     for transaction_id_batch in _chunked(transaction_ids, _MATCH_BATCH_SIZE):
         match_query = select(
             SalesParcelMatch.sales_transaction_id,
@@ -584,45 +584,46 @@ def build_sales_match_audit_report(
             confidence_score,
             match_rank,
         ) in session.execute(match_query):
-            matches_by_transaction[transaction_id].append(
-                _SalesMatchAuditCandidate(
-                    match_method=match_method,
-                    confidence_score=confidence_score,
-                    match_rank=match_rank,
-                )
+            candidate = _SalesMatchAuditCandidate(
+                match_method=match_method,
+                confidence_score=confidence_score,
+                match_rank=match_rank,
             )
+            candidate_counts[transaction_id] += 1
+            matched_transaction_ids.add(transaction_id)
 
-    unmatched_transaction_ids: list[int] = []
+            existing_best = best_candidate_by_transaction.get(transaction_id)
+            if existing_best is None:
+                best_candidate_by_transaction[transaction_id] = candidate
+                continue
+            if _sales_match_audit_candidate_sort_key(
+                candidate
+            ) < _sales_match_audit_candidate_sort_key(existing_best):
+                best_candidate_by_transaction[transaction_id] = candidate
+
+    unmatched_transaction_ids = [
+        transaction_id
+        for transaction_id in transaction_ids
+        if transaction_id not in matched_transaction_ids
+    ]
+    unmatched_transaction_id_set = set(unmatched_transaction_ids)
+
     ambiguous_transaction_ids: list[int] = []
     low_confidence_transaction_ids: list[int] = []
     confidence_tier_counts: Counter[str] = Counter()
     best_match_method_counts: Counter[str] = Counter()
 
     for transaction_id in transaction_ids:
-        candidates = matches_by_transaction.get(transaction_id, [])
-        if not candidates:
-            unmatched_transaction_ids.append(transaction_id)
+        if transaction_id in unmatched_transaction_id_set:
             continue
 
-        best_candidate = min(
-            candidates,
-            key=lambda candidate: (
-                candidate.match_rank is None,
-                candidate.match_rank or 0,
-                -1
-                * (
-                    candidate.confidence_score
-                    if candidate.confidence_score is not None
-                    else Decimal("-1.0000")
-                ),
-            ),
-        )
+        best_candidate = best_candidate_by_transaction[transaction_id]
         best_match_method_counts[best_candidate.match_method] += 1
         confidence_tier_counts[
             _classify_confidence_tier(best_candidate.confidence_score)
         ] += 1
 
-        if len(candidates) > 1:
+        if candidate_counts[transaction_id] > 1:
             ambiguous_transaction_ids.append(transaction_id)
         if (
             best_candidate.confidence_score is None
@@ -734,6 +735,21 @@ def _classify_confidence_tier(confidence_score: Optional[Decimal]) -> str:
     if confidence_score >= MEDIUM_CONFIDENCE_TIER_MIN:
         return "medium"
     return "low"
+
+
+def _sales_match_audit_candidate_sort_key(
+    candidate: _SalesMatchAuditCandidate,
+) -> tuple[bool, int, Decimal]:
+    return (
+        candidate.match_rank is None,
+        candidate.match_rank or 0,
+        -1
+        * (
+            candidate.confidence_score
+            if candidate.confidence_score is not None
+            else Decimal("-1.0000")
+        ),
+    )
 
 
 def _hash_file(csv_path: Path) -> str:
