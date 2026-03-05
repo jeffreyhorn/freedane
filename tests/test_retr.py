@@ -970,6 +970,52 @@ def test_match_sales_leaves_non_matching_transactions_unmatched(
     assert matches == []
 
 
+def test_match_sales_skips_review_queue_counters_for_reviewed_transactions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_reviewed_skip.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_reviewed_skip.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,06-10-0139-151-1,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    assert import_result.exit_code == 0, import_result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        row.review_status = "reviewed"
+
+    match_result = runner.invoke(cli.app, ["match-sales"])
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0 "
+        "needs_review=0 unresolved=0 ambiguous=0 low_confidence=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.review_status == "reviewed"
+    assert matches == []
+
+
 def test_ingest_retr_records_rejected_rows_and_reuses_existing_same_file_rows(
     tmp_path: Path,
     monkeypatch,

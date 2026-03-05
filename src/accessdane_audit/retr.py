@@ -129,6 +129,9 @@ NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
 NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD = "normalized_legal_description"
 AUTO_ACCEPTED_MATCH_REVIEW_STATUS = "auto_accepted"
 NEEDS_REVIEW_MATCH_REVIEW_STATUS = "needs_review"
+UNREVIEWED_TRANSACTION_REVIEW_STATUS = "unreviewed"
+NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS = "needs_review"
+REVIEWED_TRANSACTION_REVIEW_STATUS = "reviewed"
 EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
 PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
@@ -425,19 +428,23 @@ def match_sales_transactions(
             if desired_matches:
                 matched_transactions += 1
 
-            match_outcome = _derive_sales_match_outcome(desired_matches)
-            _apply_transaction_review_status(
-                transaction,
-                review_status=match_outcome.review_status,
-            )
-            if match_outcome.review_status == NEEDS_REVIEW_MATCH_REVIEW_STATUS:
-                needs_review_transactions += 1
-            if match_outcome.unresolved:
-                unresolved_transactions += 1
-            if match_outcome.ambiguous:
-                ambiguous_transactions += 1
-            if match_outcome.low_confidence:
-                low_confidence_transactions += 1
+            if transaction.review_status != REVIEWED_TRANSACTION_REVIEW_STATUS:
+                match_outcome = _derive_sales_match_outcome(desired_matches)
+                _apply_transaction_review_status(
+                    transaction,
+                    review_status=match_outcome.review_status,
+                )
+                if (
+                    match_outcome.review_status
+                    == NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS
+                ):
+                    needs_review_transactions += 1
+                if match_outcome.unresolved:
+                    unresolved_transactions += 1
+                if match_outcome.ambiguous:
+                    ambiguous_transactions += 1
+                if match_outcome.low_confidence:
+                    low_confidence_transactions += 1
 
             transaction_existing_matches = existing_matches.get(transaction.id, {})
             sync_counts = _sync_sales_parcel_matches(
@@ -1096,7 +1103,7 @@ def _derive_sales_match_outcome(
 ) -> SalesMatchOutcome:
     if not desired_matches:
         return SalesMatchOutcome(
-            review_status=NEEDS_REVIEW_MATCH_REVIEW_STATUS,
+            review_status=NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS,
             unresolved=True,
             ambiguous=False,
             low_confidence=False,
@@ -1117,7 +1124,9 @@ def _derive_sales_match_outcome(
     )
     return SalesMatchOutcome(
         review_status=(
-            NEEDS_REVIEW_MATCH_REVIEW_STATUS if needs_review else "unreviewed"
+            NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS
+            if needs_review
+            else UNREVIEWED_TRANSACTION_REVIEW_STATUS
         ),
         unresolved=False,
         ambiguous=ambiguous,
@@ -1130,7 +1139,7 @@ def _apply_transaction_review_status(
     *,
     review_status: str,
 ) -> None:
-    if transaction.review_status == "reviewed":
+    if transaction.review_status == REVIEWED_TRANSACTION_REVIEW_STATUS:
         return
     transaction.review_status = review_status
 
