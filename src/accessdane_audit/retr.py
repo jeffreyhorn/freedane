@@ -487,24 +487,47 @@ def build_sales_match_audit_report(
     sales_transaction_ids: Optional[Iterable[int]] = None,
     sample_size: int = 20,
 ) -> dict[str, object]:
+    """Build an aggregate audit report for loaded sales/parcel matches.
+
+    The returned payload has these top-level keys:
+    - ``scope``: scope metadata and loaded transaction count
+    - ``totals``: matched vs unmatched transaction counts
+    - ``review_status_counts``: counts by ``SalesTransaction.review_status``
+    - ``confidence_tiers``: counts of best-match confidence tiers
+    - ``best_match_method_counts``: counts by best-match method
+    - ``review_queue``: unresolved/ambiguous/low-confidence counts with samples
+
+    Review-queue categories are intentionally not mutually exclusive.
+    A transaction may appear in multiple queue categories.
+    """
     scoped_transaction_ids = (
         sorted(set(sales_transaction_ids))
         if sales_transaction_ids is not None
         else None
     )
 
-    transaction_rows_query = select(
+    base_transaction_rows_query = select(
         SalesTransaction.id,
         SalesTransaction.review_status,
     ).where(SalesTransaction.import_status == "loaded")
-    if scoped_transaction_ids is not None:
-        transaction_rows_query = transaction_rows_query.where(
-            SalesTransaction.id.in_(scoped_transaction_ids)
-        )
-
-    transaction_rows = list(
-        session.execute(transaction_rows_query.order_by(SalesTransaction.id))
-    )
+    transaction_rows: list[tuple[int, str]] = []
+    if scoped_transaction_ids is None:
+        transaction_rows = [
+            (transaction_id, review_status)
+            for transaction_id, review_status in session.execute(
+                base_transaction_rows_query.order_by(SalesTransaction.id)
+            )
+        ]
+    else:
+        # Keep per-query IN lists bounded to avoid SQLite bind parameter limits.
+        for transaction_id_batch in _chunked(scoped_transaction_ids, _MATCH_BATCH_SIZE):
+            transaction_query = base_transaction_rows_query.where(
+                SalesTransaction.id.in_(transaction_id_batch)
+            ).order_by(SalesTransaction.id)
+            transaction_rows.extend(
+                (transaction_id, review_status)
+                for transaction_id, review_status in session.execute(transaction_query)
+            )
     transaction_review_status = {
         transaction_id: review_status
         for transaction_id, review_status in transaction_rows
@@ -549,7 +572,7 @@ def build_sales_match_audit_report(
         list
     )
     for transaction_id_batch in _chunked(transaction_ids, _MATCH_BATCH_SIZE):
-        query = select(
+        match_query = select(
             SalesParcelMatch.sales_transaction_id,
             SalesParcelMatch.match_method,
             SalesParcelMatch.confidence_score,
@@ -560,7 +583,7 @@ def build_sales_match_audit_report(
             match_method,
             confidence_score,
             match_rank,
-        ) in session.execute(query):
+        ) in session.execute(match_query):
             matches_by_transaction[transaction_id].append(
                 _SalesMatchAuditCandidate(
                     match_method=match_method,
@@ -581,15 +604,19 @@ def build_sales_match_audit_report(
             unmatched_transaction_ids.append(transaction_id)
             continue
 
-        candidates_sorted = sorted(
+        best_candidate = min(
             candidates,
             key=lambda candidate: (
                 candidate.match_rank is None,
                 candidate.match_rank or 0,
-                -1 * (candidate.confidence_score or Decimal("-1.0000")),
+                -1
+                * (
+                    candidate.confidence_score
+                    if candidate.confidence_score is not None
+                    else Decimal("-1.0000")
+                ),
             ),
         )
-        best_candidate = candidates_sorted[0]
         best_match_method_counts[best_candidate.match_method] += 1
         confidence_tier_counts[
             _classify_confidence_tier(best_candidate.confidence_score)
