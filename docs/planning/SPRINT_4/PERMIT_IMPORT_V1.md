@@ -60,7 +60,7 @@ Every imported row must carry file-level metadata:
 
 Definitions:
 
-- `source_row_number` is the 1-based ordinal of parsed data records after the header.
+- `source_row_number` is the 1-based physical CSV data-row index after the header line, counting every data row in the file (including blank/empty lines).
 - `source_file_sha256` is computed from raw file bytes exactly as read from disk.
 - `raw_row` stores source values exactly as parsed from CSV (pre-normalization).
 
@@ -74,7 +74,7 @@ One row per imported permit record (import/audit grain, not deduplicated real-wo
 
 - surrogate integer `id`
 
-### Required Columns
+### Schema Columns
 
 #### Source/Audit Fields
 
@@ -148,7 +148,7 @@ A row should be `rejected` when:
 - row is fully blank
 - no parcel locator is available
 - no temporal anchor is available
-- numeric/date parsing fails for a value that is present in a required anchor field
+- after numeric/date parsing, no valid temporal anchor remains (all temporal anchor fields are missing or failed parsing)
 
 Important v1 rule:
 
@@ -211,7 +211,8 @@ The alias map should cover common variations, e.g.:
 
 Deterministic rule:
 
-- if multiple physical headers map to the same canonical field, choose the highest-precedence alias from the documented list and ignore lower-precedence aliases.
+- within each alias group above, aliases are listed from highest to lowest precedence (top to bottom).
+- if multiple physical headers map to the same canonical field, choose the first matching alias in that ordered list and ignore lower-precedence aliases.
 
 File-level failure conditions:
 
