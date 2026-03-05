@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import db as db_module
 from accessdane_audit import retr as retr_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
@@ -1014,6 +1016,128 @@ def test_match_sales_skips_review_queue_counters_for_reviewed_transactions(
 
     assert row.review_status == "reviewed"
     assert matches == []
+
+
+def test_report_sales_matches_summarizes_confidence_tiers_and_review_queue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_report.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_report.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,"
+            "Property Address,Legal Description\n"
+            "01/15/2025,100000,06-10-0139-151-1,100 Main St,\n"
+            '01/16/2025,150000,,,"Lot Twenty-three (23), Block Four (4), Sixth '
+            "Addition to Autumn Grove, in the Village of McFarland, Dane County, "
+            'Wisconsin."\n'
+            "01/17/2025,90000,,999 Not Found Ave,\n"
+        ),
+        encoding="utf-8",
+    )
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="0601001391511",
+                    formatted_parcel_number="06-10-0139-151-1",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="123 Wrong Ave",
+                ),
+                Parcel(id="parcel-legal"),
+                Fetch(
+                    id=2,
+                    parcel_id="parcel-legal",
+                    url="https://example.test/parcel/parcel-legal",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-legal",
+                    fetch_id=2,
+                    parcel_description="AUTUMN GROVE BLOCK 4 LOT 23",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+    report_result = runner.invoke(cli.app, ["report-sales-matches"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert report_result.exit_code == 0, report_result.stdout
+
+    payload = json.loads(report_result.stdout)
+
+    with session_scope(database_url) as session:
+        transaction_rows = session.execute(
+            select(
+                SalesTransaction.id,
+                SalesTransaction.property_address_norm,
+                SalesTransaction.legal_description_raw,
+            )
+        ).all()
+
+    unresolved_transaction_id = next(
+        transaction_id
+        for transaction_id, property_address_norm, _ in transaction_rows
+        if property_address_norm == "999 NOT FOUND AVE"
+    )
+    low_confidence_transaction_id = next(
+        transaction_id
+        for transaction_id, _, legal_description_raw in transaction_rows
+        if legal_description_raw is not None
+        and "Lot Twenty-three (23)" in legal_description_raw
+    )
+
+    assert payload["scope"]["loaded_transactions_in_scope"] == 3
+    assert payload["totals"] == {
+        "matched_transactions": 2,
+        "unmatched_transactions": 1,
+    }
+    assert payload["review_status_counts"] == {
+        "needs_review": 2,
+        "unreviewed": 1,
+    }
+    assert payload["confidence_tiers"] == {
+        "high": 1,
+        "medium": 0,
+        "low": 1,
+        "unknown": 0,
+    }
+    assert payload["best_match_method_counts"] == {
+        "exact_parcel_number": 1,
+        "normalized_legal_description": 1,
+    }
+    assert payload["review_queue"]["unresolved_count"] == 1
+    assert payload["review_queue"]["ambiguous_count"] == 0
+    assert payload["review_queue"]["low_confidence_count"] == 1
+    unresolved_ids = payload["review_queue"]["sample_transaction_ids"]["unresolved"]
+    low_confidence_ids = payload["review_queue"]["sample_transaction_ids"][
+        "low_confidence"
+    ]
+    assert unresolved_ids == [unresolved_transaction_id]
+    assert low_confidence_ids == [low_confidence_transaction_id]
+    assert unresolved_ids[0] != low_confidence_ids[0]
 
 
 def test_ingest_retr_records_rejected_rows_and_reuses_existing_same_file_rows(

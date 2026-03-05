@@ -137,6 +137,8 @@ PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
 LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD = Decimal("0.8500")
+HIGH_CONFIDENCE_TIER_MIN = Decimal("0.9500")
+MEDIUM_CONFIDENCE_TIER_MIN = Decimal("0.8500")
 _MATCH_BATCH_SIZE = 500
 _NARROWING_BATCH_SIZE = 100
 _T = TypeVar("_T")
@@ -279,6 +281,13 @@ class SalesMatchOutcome:
     unresolved: bool
     ambiguous: bool
     low_confidence: bool
+
+
+@dataclass(frozen=True)
+class _SalesMatchAuditCandidate:
+    match_method: str
+    confidence_score: Optional[Decimal]
+    match_rank: Optional[int]
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
@@ -472,6 +481,213 @@ def match_sales_transactions(
     )
 
 
+def build_sales_match_audit_report(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]] = None,
+    sample_size: int = 20,
+) -> dict[str, object]:
+    """Build an aggregate audit report for loaded sales/parcel matches.
+
+    The returned payload has these top-level keys:
+    - ``scope``: scope metadata and loaded transaction count
+    - ``totals``: matched vs unmatched transaction counts
+    - ``review_status_counts``: counts by ``SalesTransaction.review_status``
+    - ``confidence_tiers``: counts of best-match confidence tiers
+    - ``best_match_method_counts``: counts by best-match method
+    - ``review_queue``: unresolved/ambiguous/low-confidence counts with samples
+
+    Review-queue categories are intentionally not mutually exclusive.
+    A transaction may appear in multiple queue categories.
+    """
+    scoped_transaction_ids = (
+        sorted(set(sales_transaction_ids))
+        if sales_transaction_ids is not None
+        else None
+    )
+
+    base_transaction_rows_query = select(
+        SalesTransaction.id,
+        SalesTransaction.review_status,
+    ).where(SalesTransaction.import_status == "loaded")
+    transaction_rows: list[tuple[int, str]] = []
+    if scoped_transaction_ids is None:
+        transaction_rows = [
+            (transaction_id, review_status)
+            for transaction_id, review_status in session.execute(
+                base_transaction_rows_query.order_by(SalesTransaction.id)
+            )
+        ]
+    else:
+        # Keep per-query IN lists bounded to avoid SQLite bind parameter limits.
+        for transaction_id_batch in _chunked(scoped_transaction_ids, _MATCH_BATCH_SIZE):
+            transaction_query = base_transaction_rows_query.where(
+                SalesTransaction.id.in_(transaction_id_batch)
+            ).order_by(SalesTransaction.id)
+            transaction_rows.extend(
+                (transaction_id, review_status)
+                for transaction_id, review_status in session.execute(transaction_query)
+            )
+    transaction_review_status = {
+        transaction_id: review_status
+        for transaction_id, review_status in transaction_rows
+    }
+    transaction_ids = list(transaction_review_status.keys())
+    if not transaction_ids:
+        return {
+            "scope": {
+                "scoped_transaction_id_count": (
+                    len(scoped_transaction_ids)
+                    if scoped_transaction_ids is not None
+                    else None
+                ),
+                "loaded_transactions_in_scope": 0,
+            },
+            "totals": {
+                "matched_transactions": 0,
+                "unmatched_transactions": 0,
+            },
+            "review_status_counts": {},
+            "confidence_tiers": {
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "unknown": 0,
+            },
+            "best_match_method_counts": {},
+            "review_queue": {
+                "unresolved_count": 0,
+                "ambiguous_count": 0,
+                "low_confidence_count": 0,
+                "sample_transaction_ids": {
+                    "unresolved": [],
+                    "ambiguous": [],
+                    "low_confidence": [],
+                },
+            },
+        }
+
+    review_status_counts = Counter(transaction_review_status.values())
+    matched_transaction_ids: set[int] = set()
+    candidate_counts: Counter[int] = Counter()
+    best_candidate_by_transaction: dict[int, _SalesMatchAuditCandidate] = {}
+    for transaction_id_batch in _chunked(transaction_ids, _MATCH_BATCH_SIZE):
+        match_query = select(
+            SalesParcelMatch.sales_transaction_id,
+            SalesParcelMatch.match_method,
+            SalesParcelMatch.confidence_score,
+            SalesParcelMatch.match_rank,
+        ).where(SalesParcelMatch.sales_transaction_id.in_(transaction_id_batch))
+        for (
+            transaction_id,
+            match_method,
+            confidence_score,
+            match_rank,
+        ) in session.execute(match_query):
+            candidate = _SalesMatchAuditCandidate(
+                match_method=match_method,
+                confidence_score=confidence_score,
+                match_rank=match_rank,
+            )
+            candidate_counts[transaction_id] += 1
+            matched_transaction_ids.add(transaction_id)
+
+            existing_best = best_candidate_by_transaction.get(transaction_id)
+            if existing_best is None:
+                best_candidate_by_transaction[transaction_id] = candidate
+                continue
+            if _sales_match_audit_candidate_sort_key(
+                candidate
+            ) < _sales_match_audit_candidate_sort_key(existing_best):
+                best_candidate_by_transaction[transaction_id] = candidate
+
+    unmatched_transaction_ids = [
+        transaction_id
+        for transaction_id in transaction_ids
+        if transaction_id not in matched_transaction_ids
+    ]
+    unmatched_transaction_id_set = set(unmatched_transaction_ids)
+
+    ambiguous_transaction_ids: list[int] = []
+    low_confidence_transaction_ids: list[int] = []
+    confidence_tier_counts: Counter[str] = Counter()
+    best_match_method_counts: Counter[str] = Counter()
+
+    for transaction_id in transaction_ids:
+        if transaction_id in unmatched_transaction_id_set:
+            continue
+
+        best_candidate = best_candidate_by_transaction[transaction_id]
+        best_match_method_counts[best_candidate.match_method] += 1
+        confidence_tier_counts[
+            _classify_confidence_tier(best_candidate.confidence_score)
+        ] += 1
+
+        if candidate_counts[transaction_id] > 1:
+            ambiguous_transaction_ids.append(transaction_id)
+        if (
+            best_candidate.confidence_score is None
+            or best_candidate.confidence_score < LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD
+        ):
+            low_confidence_transaction_ids.append(transaction_id)
+
+    needs_review_ids = {
+        transaction_id
+        for transaction_id, review_status in transaction_review_status.items()
+        if review_status == NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS
+    }
+    unresolved_queue_ids = sorted(
+        transaction_id
+        for transaction_id in unmatched_transaction_ids
+        if transaction_id in needs_review_ids
+    )
+    ambiguous_queue_ids = sorted(
+        transaction_id
+        for transaction_id in ambiguous_transaction_ids
+        if transaction_id in needs_review_ids
+    )
+    low_confidence_queue_ids = sorted(
+        transaction_id
+        for transaction_id in low_confidence_transaction_ids
+        if transaction_id in needs_review_ids
+    )
+
+    return {
+        "scope": {
+            "scoped_transaction_id_count": (
+                len(scoped_transaction_ids)
+                if scoped_transaction_ids is not None
+                else None
+            ),
+            "loaded_transactions_in_scope": len(transaction_ids),
+        },
+        "totals": {
+            "matched_transactions": (
+                len(transaction_ids) - len(unmatched_transaction_ids)
+            ),
+            "unmatched_transactions": len(unmatched_transaction_ids),
+        },
+        "review_status_counts": dict(sorted(review_status_counts.items())),
+        "confidence_tiers": {
+            "high": confidence_tier_counts.get("high", 0),
+            "medium": confidence_tier_counts.get("medium", 0),
+            "low": confidence_tier_counts.get("low", 0),
+            "unknown": confidence_tier_counts.get("unknown", 0),
+        },
+        "best_match_method_counts": dict(sorted(best_match_method_counts.items())),
+        "review_queue": {
+            "unresolved_count": len(unresolved_queue_ids),
+            "ambiguous_count": len(ambiguous_queue_ids),
+            "low_confidence_count": len(low_confidence_queue_ids),
+            "sample_transaction_ids": {
+                "unresolved": unresolved_queue_ids[:sample_size],
+                "ambiguous": ambiguous_queue_ids[:sample_size],
+                "low_confidence": low_confidence_queue_ids[:sample_size],
+            },
+        },
+    }
+
+
 def _collect_sales_match_candidate_keys(
     session: Session,
     *,
@@ -508,6 +724,31 @@ def _collect_sales_match_candidate_keys(
         parcel_number_keys=parcel_number_keys,
         address_keys=address_keys,
         legal_description_keys=legal_description_keys,
+    )
+
+
+def _classify_confidence_tier(confidence_score: Optional[Decimal]) -> str:
+    if confidence_score is None:
+        return "unknown"
+    if confidence_score >= HIGH_CONFIDENCE_TIER_MIN:
+        return "high"
+    if confidence_score >= MEDIUM_CONFIDENCE_TIER_MIN:
+        return "medium"
+    return "low"
+
+
+def _sales_match_audit_candidate_sort_key(
+    candidate: _SalesMatchAuditCandidate,
+) -> tuple[bool, int, Decimal]:
+    return (
+        candidate.match_rank is None,
+        candidate.match_rank or 0,
+        -1
+        * (
+            candidate.confidence_score
+            if candidate.confidence_score is not None
+            else Decimal("-1.0000")
+        ),
     )
 
 

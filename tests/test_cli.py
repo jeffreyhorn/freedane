@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import db as db_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import Fetch, Parcel, ParcelYearFact
 
@@ -633,3 +634,76 @@ def test_clean_stringifies_non_string_scalars() -> None:
     assert cli._clean(6) == "6"
     assert cli._clean(3.5) == "3.5"
     assert cli._clean(None) is None
+
+
+def test_report_sales_matches_ids_rejects_non_integer_lines(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "report_sales_matches_ids_invalid.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    ids_path = tmp_path / "sales_transaction_ids_invalid.txt"
+    ids_path.write_text("1\nabc\n", encoding="utf-8")
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["report-sales-matches", "--ids", str(ids_path)])
+
+    assert result.exit_code != 0
+    assert "Invalid transaction ID at line 2: 'abc'" in result.output
+
+
+def test_report_sales_matches_ids_trims_whitespace_and_skips_blank_lines(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "report_sales_matches_ids_whitespace.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    ids_path = tmp_path / "sales_transaction_ids_whitespace.txt"
+    ids_path.write_text(" 1 \n\n\t2\t\n", encoding="utf-8")
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["report-sales-matches", "--ids", str(ids_path)])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["scope"]["scoped_transaction_id_count"] == 2
+    assert payload["scope"]["loaded_transactions_in_scope"] == 0
+
+
+def test_report_sales_matches_ids_accepts_empty_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "report_sales_matches_ids_empty.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    ids_path = tmp_path / "sales_transaction_ids_empty.txt"
+    ids_path.write_text("", encoding="utf-8")
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["report-sales-matches", "--ids", str(ids_path)])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["scope"]["scoped_transaction_id_count"] == 0
+    assert payload["scope"]["loaded_transactions_in_scope"] == 0
