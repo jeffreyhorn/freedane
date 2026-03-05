@@ -236,3 +236,48 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
         assert revision == HEAD_REVISION
     finally:
         engine.dispose()
+
+
+def test_reconcile_sales_match_index_name_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_match_index_reconcile.sqlite"
+    database_url = _db_url(db_path)
+    config = _alembic_config(database_url)
+
+    command.upgrade(config, "20260304_0005")
+
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP INDEX ux_sales_parcel_matches_txn_parcel_method"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX "
+                    "ux_sales_parcel_matches_"
+                    "sales_transaction_id_parcel_id_match_method "
+                    "ON sales_parcel_matches "
+                    "(sales_transaction_id, parcel_id, match_method)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, HEAD_REVISION)
+
+    engine = create_engine(database_url, future=True)
+    try:
+        inspector = inspect(engine)
+        index_names = {
+            index["name"] for index in inspector.get_indexes("sales_parcel_matches")
+        }
+        assert "ux_sales_parcel_matches_txn_parcel_method" in index_names
+        assert (
+            "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method"
+            not in index_names
+        )
+        with engine.connect() as conn:
+            revision = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert revision == HEAD_REVISION
+    finally:
+        engine.dispose()

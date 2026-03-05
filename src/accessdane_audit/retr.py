@@ -33,6 +33,7 @@ _STREET_SUFFIX_TOKENS = {
     "ALY",
     "AVE",
     "AVENUE",
+    "AVNEUE",
     "BLVD",
     "CIR",
     "CIRCLE",
@@ -408,6 +409,10 @@ def match_sales_transactions(
             rows_written += sync_counts.inserted_rows + sync_counts.updated_rows
             rows_deleted += sync_counts.deleted_rows
 
+        # Keep session identity-map growth bounded across large match runs.
+        session.flush()
+        session.expunge_all()
+
     return SalesMatchSummary(
         selected_transactions=selected_transactions,
         matched_transactions=matched_transactions,
@@ -444,6 +449,9 @@ def _collect_sales_match_candidate_keys(
             )
             if legal_match_value is not None:
                 legal_description_keys.add(legal_match_value)
+
+        # Candidate-key collection is read-only; detach processed rows per batch.
+        session.expunge_all()
 
     return SalesMatchCandidateKeys(
         parcel_number_keys=parcel_number_keys,
