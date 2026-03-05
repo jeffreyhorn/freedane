@@ -105,6 +105,14 @@ _LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN = re.compile(
     r"\s*,\s*(?P<subdivision>[^,.;]+)",
     re.IGNORECASE,
 )
+_LEGAL_DESCRIPTION_BLOCK_LOT_PATTERN = re.compile(
+    r"^\s*BLOCK\s+"
+    r"(?:[A-Z][A-Z0-9 -]*?\((?P<block_paren>\d+[A-Z]?)\)|(?P<block>\d+[A-Z]?))"
+    r"\s*,\s*LOT\s+"
+    r"(?:[A-Z][A-Z0-9 -]*?\((?P<lot_paren>\d+[A-Z]?)\)|(?P<lot>\d+[A-Z]?))"
+    r"\s*,\s*(?P<subdivision>[^,.;]+)",
+    re.IGNORECASE,
+)
 _PARCEL_DESCRIPTION_BLOCK_LOT_PATTERN = re.compile(
     r"^(?P<subdivision>.+?)\s+BLOCK\s+(?P<block>\d+[A-Z]?)\s+LOT\s+(?P<lot>\d+[A-Z]?)$"
 )
@@ -114,17 +122,21 @@ _PARCEL_DESCRIPTION_LOT_PATTERN = re.compile(
 _PARCEL_DESCRIPTION_LEADING_LOT_PATTERN = re.compile(
     r"^LOT\s+(?P<lot>\d+[A-Z]?)(?:\s+BLOCK\s+(?P<block>\d+[A-Z]?))?\s+(?P<subdivision>.+)$"
 )
-MATCHER_VERSION = "sprint3_day12_v1"
+MATCHER_VERSION = "sprint3_day13_v1"
 EXACT_PARCEL_NUMBER_MATCH_METHOD = "exact_parcel_number"
 PARCEL_NUMBER_CROSSWALK_MATCH_METHOD = "parcel_number_crosswalk"
 NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
 NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD = "normalized_legal_description"
 AUTO_ACCEPTED_MATCH_REVIEW_STATUS = "auto_accepted"
 NEEDS_REVIEW_MATCH_REVIEW_STATUS = "needs_review"
+UNREVIEWED_TRANSACTION_REVIEW_STATUS = "unreviewed"
+NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS = "needs_review"
+REVIEWED_TRANSACTION_REVIEW_STATUS = "reviewed"
 EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
 PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
+LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD = Decimal("0.8500")
 _MATCH_BATCH_SIZE = 500
 _NARROWING_BATCH_SIZE = 100
 _T = TypeVar("_T")
@@ -229,6 +241,10 @@ class SalesMatchSummary:
     matched_transactions: int
     rows_written: int
     rows_deleted: int
+    needs_review_transactions: int
+    unresolved_transactions: int
+    ambiguous_transactions: int
+    low_confidence_transactions: int
 
 
 @dataclass(frozen=True)
@@ -255,6 +271,14 @@ class SalesMatchCandidateKeys:
     parcel_number_keys: set[str]
     address_keys: set[str]
     legal_description_keys: set[str]
+
+
+@dataclass(frozen=True)
+class SalesMatchOutcome:
+    review_status: str
+    unresolved: bool
+    ambiguous: bool
+    low_confidence: bool
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
@@ -382,6 +406,10 @@ def match_sales_transactions(
     matched_transactions = 0
     rows_written = 0
     rows_deleted = 0
+    needs_review_transactions = 0
+    unresolved_transactions = 0
+    ambiguous_transactions = 0
+    low_confidence_transactions = 0
 
     for transactions in _iter_sales_transaction_batches(
         session,
@@ -399,6 +427,24 @@ def match_sales_transactions(
             )
             if desired_matches:
                 matched_transactions += 1
+
+            if transaction.review_status != REVIEWED_TRANSACTION_REVIEW_STATUS:
+                match_outcome = _derive_sales_match_outcome(desired_matches)
+                _apply_transaction_review_status(
+                    transaction,
+                    review_status=match_outcome.review_status,
+                )
+                if (
+                    match_outcome.review_status
+                    == NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS
+                ):
+                    needs_review_transactions += 1
+                if match_outcome.unresolved:
+                    unresolved_transactions += 1
+                if match_outcome.ambiguous:
+                    ambiguous_transactions += 1
+                if match_outcome.low_confidence:
+                    low_confidence_transactions += 1
 
             transaction_existing_matches = existing_matches.get(transaction.id, {})
             sync_counts = _sync_sales_parcel_matches(
@@ -419,6 +465,10 @@ def match_sales_transactions(
         matched_transactions=matched_transactions,
         rows_written=rows_written,
         rows_deleted=rows_deleted,
+        needs_review_transactions=needs_review_transactions,
+        unresolved_transactions=unresolved_transactions,
+        ambiguous_transactions=ambiguous_transactions,
+        low_confidence_transactions=low_confidence_transactions,
     )
 
 
@@ -922,6 +972,7 @@ def _iter_sales_transaction_batches(
                 SalesTransaction.official_parcel_number_norm,
                 SalesTransaction.property_address_norm,
                 SalesTransaction.legal_description_raw,
+                SalesTransaction.review_status,
             )
         )
     )
@@ -1025,7 +1076,10 @@ def _build_sales_match_specs(
     if matched_value is None:
         return []
 
-    is_auto_accepted = len(parcel_ids) == 1
+    requires_review = (
+        len(parcel_ids) > 1 or confidence_score < LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD
+    )
+    is_auto_accepted = len(parcel_ids) == 1 and not requires_review
     return [
         SalesMatchSpec(
             parcel_id=parcel_id,
@@ -1042,6 +1096,52 @@ def _build_sales_match_specs(
         )
         for index, parcel_id in enumerate(parcel_ids, start=1)
     ]
+
+
+def _derive_sales_match_outcome(
+    desired_matches: list[SalesMatchSpec],
+) -> SalesMatchOutcome:
+    if not desired_matches:
+        return SalesMatchOutcome(
+            review_status=NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS,
+            unresolved=True,
+            ambiguous=False,
+            low_confidence=False,
+        )
+
+    ambiguous = len(desired_matches) > 1
+    low_confidence = any(
+        match.confidence_score < LOW_CONFIDENCE_NEEDS_REVIEW_THRESHOLD
+        for match in desired_matches
+    )
+    needs_review = (
+        ambiguous
+        or low_confidence
+        or any(
+            match.match_review_status == NEEDS_REVIEW_MATCH_REVIEW_STATUS
+            for match in desired_matches
+        )
+    )
+    return SalesMatchOutcome(
+        review_status=(
+            NEEDS_REVIEW_TRANSACTION_REVIEW_STATUS
+            if needs_review
+            else UNREVIEWED_TRANSACTION_REVIEW_STATUS
+        ),
+        unresolved=False,
+        ambiguous=ambiguous,
+        low_confidence=low_confidence,
+    )
+
+
+def _apply_transaction_review_status(
+    transaction: SalesTransaction,
+    *,
+    review_status: str,
+) -> None:
+    if transaction.review_status == REVIEWED_TRANSACTION_REVIEW_STATUS:
+        return
+    transaction.review_status = review_status
 
 
 def _sync_sales_parcel_matches(
@@ -1299,15 +1399,21 @@ def _normalize_sales_legal_description(value: Optional[str]) -> Optional[str]:
     if collapsed is None:
         return None
 
-    match = _LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN.match(collapsed.upper())
-    if match is None:
-        return None
+    upper_value = collapsed.upper()
+    for pattern in (
+        _LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN,
+        _LEGAL_DESCRIPTION_BLOCK_LOT_PATTERN,
+    ):
+        match = pattern.match(upper_value)
+        if match is None:
+            continue
+        return _build_legal_description_match_key(
+            subdivision=match.group("subdivision"),
+            lot_value=match.group("lot_paren") or match.group("lot"),
+            block_value=match.group("block_paren") or match.group("block"),
+        )
 
-    return _build_legal_description_match_key(
-        subdivision=match.group("subdivision"),
-        lot_value=match.group("lot_paren") or match.group("lot"),
-        block_value=match.group("block_paren") or match.group("block"),
-    )
+    return None
 
 
 def _normalize_parcel_legal_description(value: Optional[str]) -> Optional[str]:

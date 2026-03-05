@@ -192,7 +192,7 @@ def test_match_sales_creates_exact_parcel_number_matches(
     assert matches[0].is_primary is True
     assert matches[0].match_review_status == "auto_accepted"
     assert matches[0].matched_value == "061001391511"
-    assert matches[0].matcher_version == "sprint3_day12_v1"
+    assert matches[0].matcher_version == "sprint3_day13_v1"
 
 
 def test_match_sales_updates_existing_matches_for_ambiguous_results(
@@ -241,7 +241,8 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
     assert import_result.exit_code == 0, import_result.stdout
     assert first_match_result.exit_code == 0, first_match_result.stdout
     assert (
-        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0 "
+        "needs_review=0 unresolved=0 ambiguous=0 low_confidence=0"
         in first_match_result.stdout
     )
 
@@ -269,11 +270,13 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
 
     assert second_match_result.exit_code == 0, second_match_result.stdout
     assert (
-        "Sales match summary: selected=1 matched=1 rows_written=2 rows_deleted=0"
+        "Sales match summary: selected=1 matched=1 rows_written=2 rows_deleted=0 "
+        "needs_review=1 unresolved=0 ambiguous=1 low_confidence=0"
         in second_match_result.stdout
     )
 
     with session_scope(database_url) as session:
+        transaction_row = session.execute(select(SalesTransaction)).scalar_one()
         matches = (
             session.execute(
                 select(SalesParcelMatch).order_by(SalesParcelMatch.parcel_id)
@@ -282,6 +285,7 @@ def test_match_sales_updates_existing_matches_for_ambiguous_results(
             .all()
         )
 
+    assert transaction_row.review_status == "needs_review"
     assert len(matches) == 2
     assert [match.parcel_id for match in matches] == ["parcel-a", "parcel-b"]
     assert [match.match_rank for match in matches] == [1, 2]
@@ -774,19 +778,89 @@ def test_match_sales_falls_back_to_lot_block_legal_description(
     )
     assert match_result.exit_code == 0, match_result.stdout
     assert (
-        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0 "
+        "needs_review=1 unresolved=0 ambiguous=0 low_confidence=1"
         in match_result.stdout
     )
 
     with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
         matches = session.execute(select(SalesParcelMatch)).scalars().all()
 
+    assert row.review_status == "needs_review"
     assert len(matches) == 1
     assert matches[0].parcel_id == "parcel-legal"
     assert matches[0].match_method == "normalized_legal_description"
     assert str(matches[0].confidence_score) == "0.8000"
-    assert matches[0].is_primary is True
-    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].is_primary is False
+    assert matches[0].match_review_status == "needs_review"
+    assert matches[0].matched_value == "SUBDIVISION:AUTUMN GROVE|LOT:23|BLOCK:4"
+
+
+def test_match_sales_falls_back_to_block_lot_legal_description(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_legal_block_lot.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_legal_block_lot.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Legal Description\n"
+            '01/15/2025,100000,"Block Four (4), Lot Twenty-three (23), Sixth '
+            "Addition to Autumn Grove, in the Village of McFarland, Dane County, "
+            'Wisconsin."\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-legal-block-lot"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-legal-block-lot",
+                    url="https://example.test/parcel/parcel-legal-block-lot",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-legal-block-lot",
+                    fetch_id=1,
+                    parcel_description="AUTUMN GROVE BLOCK 4 LOT 23",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0 "
+        "needs_review=1 unresolved=0 ambiguous=0 low_confidence=1"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.review_status == "needs_review"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-legal-block-lot"
+    assert matches[0].match_method == "normalized_legal_description"
+    assert str(matches[0].confidence_score) == "0.8000"
+    assert matches[0].is_primary is False
+    assert matches[0].match_review_status == "needs_review"
     assert matches[0].matched_value == "SUBDIVISION:AUTUMN GROVE|LOT:23|BLOCK:4"
 
 
@@ -841,13 +915,16 @@ def test_match_sales_skips_partial_lot_legal_descriptions(
     )
     assert match_result.exit_code == 0, match_result.stdout
     assert (
-        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0"
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0 "
+        "needs_review=1 unresolved=1 ambiguous=0 low_confidence=0"
         in match_result.stdout
     )
 
     with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
         matches = session.execute(select(SalesParcelMatch)).scalars().all()
 
+    assert row.review_status == "needs_review"
     assert matches == []
 
 
@@ -880,13 +957,62 @@ def test_match_sales_leaves_non_matching_transactions_unmatched(
     assert import_result.exit_code == 0, import_result.stdout
     assert match_result.exit_code == 0, match_result.stdout
     assert (
-        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0"
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0 "
+        "needs_review=1 unresolved=1 ambiguous=0 low_confidence=0"
         in match_result.stdout
     )
 
     with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
         matches = session.execute(select(SalesParcelMatch)).scalars().all()
 
+    assert row.review_status == "needs_review"
+    assert matches == []
+
+
+def test_match_sales_skips_review_queue_counters_for_reviewed_transactions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_reviewed_skip.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_reviewed_skip.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,06-10-0139-151-1,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    assert import_result.exit_code == 0, import_result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        row.review_status = "reviewed"
+
+    match_result = runner.invoke(cli.app, ["match-sales"])
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0 "
+        "needs_review=0 unresolved=0 ambiguous=0 low_confidence=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.review_status == "reviewed"
     assert matches == []
 
 
