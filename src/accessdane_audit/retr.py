@@ -8,20 +8,76 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, load_only
 
-from .models import SalesExclusion, SalesTransaction
+from .models import (
+    ParcelCharacteristic,
+    ParcelSummary,
+    SalesExclusion,
+    SalesParcelMatch,
+    SalesTransaction,
+)
 
 RETR_SOURCE_SYSTEM = "wisconsin_dor_retr"
 _EXTRA_COLUMNS_KEY = "_extra_columns"
 _SPACE_RE = re.compile(r"\s+")
 _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"[,.;:/#-]+")
+_LEGAL_TEXT_PUNCTUATION_RE = re.compile(r"[^A-Z0-9]+")
 _TRUE_TOKENS = {"y", "yes", "true", "1"}
 _FALSE_TOKENS = {"n", "no", "false", "0"}
+_STREET_SUFFIX_TOKENS = {
+    "ALY",
+    "AVE",
+    "AVENUE",
+    "AVNEUE",
+    "BLVD",
+    "BOULEVARD",
+    "CIR",
+    "CIRCLE",
+    "COURT",
+    "CT",
+    "DR",
+    "DRIVE",
+    "HWY",
+    "LANE",
+    "LN",
+    "PKWY",
+    "PARKWAY",
+    "PL",
+    "PLACE",
+    "RD",
+    "ROAD",
+    "ST",
+    "STREET",
+    "TER",
+    "TERRACE",
+    "TRL",
+    "TRAIL",
+    "WAY",
+}
+_ADDRESS_TOKEN_NORMALIZATION = {
+    "AVENUE": "AVE",
+    "AVNEUE": "AVE",
+    "BOULEVARD": "BLVD",
+    "CIRCLE": "CIR",
+    "COURT": "CT",
+    "DRIVE": "DR",
+    "EAST": "E",
+    "LANE": "LN",
+    "NORTH": "N",
+    "PLACE": "PL",
+    "PARKWAY": "PKWY",
+    "ROAD": "RD",
+    "SOUTH": "S",
+    "STREET": "ST",
+    "TERRACE": "TER",
+    "TRAIL": "TRL",
+    "WEST": "W",
+}
 _FAMILY_TRANSFER_PHRASES = (
     "family transfer",
     "intra family",
@@ -41,6 +97,65 @@ _GOVERNMENT_TRANSFER_PHRASES = (
 _CORRECTIVE_DEED_PATTERN = re.compile(
     r"(?<![a-z-])(?:corrective deed|correction deed)\b"
 )
+_LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN = re.compile(
+    r"^\s*LOT\s+"
+    r"(?:[A-Z][A-Z0-9 -]*?\((?P<lot_paren>\d+[A-Z]?)\)|(?P<lot>\d+[A-Z]?))"
+    r"(?:\s*,\s*BLOCK\s+"
+    r"(?:[A-Z][A-Z0-9 -]*?\((?P<block_paren>\d+[A-Z]?)\)|(?P<block>\d+[A-Z]?)))?"
+    r"\s*,\s*(?P<subdivision>[^,.;]+)",
+    re.IGNORECASE,
+)
+_PARCEL_DESCRIPTION_BLOCK_LOT_PATTERN = re.compile(
+    r"^(?P<subdivision>.+?)\s+BLOCK\s+(?P<block>\d+[A-Z]?)\s+LOT\s+(?P<lot>\d+[A-Z]?)$"
+)
+_PARCEL_DESCRIPTION_LOT_PATTERN = re.compile(
+    r"^(?P<subdivision>.+?)\s+LOT\s+(?P<lot>\d+[A-Z]?)$"
+)
+_PARCEL_DESCRIPTION_LEADING_LOT_PATTERN = re.compile(
+    r"^LOT\s+(?P<lot>\d+[A-Z]?)(?:\s+BLOCK\s+(?P<block>\d+[A-Z]?))?\s+(?P<subdivision>.+)$"
+)
+MATCHER_VERSION = "sprint3_day12_v1"
+EXACT_PARCEL_NUMBER_MATCH_METHOD = "exact_parcel_number"
+PARCEL_NUMBER_CROSSWALK_MATCH_METHOD = "parcel_number_crosswalk"
+NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
+NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD = "normalized_legal_description"
+AUTO_ACCEPTED_MATCH_REVIEW_STATUS = "auto_accepted"
+NEEDS_REVIEW_MATCH_REVIEW_STATUS = "needs_review"
+EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
+PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
+ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
+LEGAL_DESCRIPTION_MATCH_CONFIDENCE = Decimal("0.8000")
+_MATCH_BATCH_SIZE = 500
+_NARROWING_BATCH_SIZE = 100
+_T = TypeVar("_T")
+_UNIT_DESIGNATOR_TOKENS = {
+    "APT",
+    "APARTMENT",
+    "BLDG",
+    "BUILDING",
+    "FL",
+    "FLOOR",
+    "RM",
+    "ROOM",
+    "STE",
+    "SUITE",
+    "UNIT",
+}
+_UNIT_VALUE_TOKENS = {"FRONT", "LOWER", "REAR", "UPPER"}
+_DIRECTION_SUFFIX_TOKENS = {
+    "N",
+    "S",
+    "E",
+    "W",
+    "NE",
+    "NW",
+    "SE",
+    "SW",
+    "NORTH",
+    "SOUTH",
+    "EAST",
+    "WEST",
+}
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "revenue_object_id": (
@@ -69,6 +184,7 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "property_address_raw": (
         "Property Address",
         "Property Address 1",
+        "Physical Address",
         "Address",
         "Site Address",
     ),
@@ -105,6 +221,40 @@ class SalesExclusionSpec:
     exclusion_code: str
     exclusion_reason: str
     excluded_by_rule: str
+
+
+@dataclass(frozen=True)
+class SalesMatchSummary:
+    selected_transactions: int
+    matched_transactions: int
+    rows_written: int
+    rows_deleted: int
+
+
+@dataclass(frozen=True)
+class SalesMatchSpec:
+    parcel_id: str
+    match_method: str
+    confidence_score: Decimal
+    match_rank: int
+    is_primary: bool
+    match_review_status: str
+    matched_value: str
+    matcher_version: str = MATCHER_VERSION
+
+
+@dataclass(frozen=True)
+class SalesMatchSyncCounts:
+    inserted_rows: int
+    updated_rows: int
+    deleted_rows: int
+
+
+@dataclass(frozen=True)
+class SalesMatchCandidateKeys:
+    parcel_number_keys: set[str]
+    address_keys: set[str]
+    legal_description_keys: set[str]
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
@@ -200,6 +350,114 @@ def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
         rejected_rows=rejected_rows,
         inserted_rows=inserted_rows,
         updated_rows=updated_rows,
+    )
+
+
+def match_sales_transactions(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]] = None,
+) -> SalesMatchSummary:
+    scoped_transaction_ids = (
+        list(sales_transaction_ids) if sales_transaction_ids is not None else None
+    )
+    candidate_keys = _collect_sales_match_candidate_keys(
+        session,
+        sales_transaction_ids=scoped_transaction_ids,
+    )
+    parcel_number_index = _build_parcel_number_match_index(
+        session,
+        allowed_keys=candidate_keys.parcel_number_keys,
+    )
+    address_index = _build_address_match_index(
+        session,
+        allowed_keys=candidate_keys.address_keys,
+    )
+    legal_description_index = _build_legal_description_match_index(
+        session,
+        allowed_keys=candidate_keys.legal_description_keys,
+    )
+
+    selected_transactions = 0
+    matched_transactions = 0
+    rows_written = 0
+    rows_deleted = 0
+
+    for transactions in _iter_sales_transaction_batches(
+        session,
+        sales_transaction_ids=scoped_transaction_ids,
+    ):
+        selected_transactions += len(transactions)
+        existing_matches = _load_existing_sales_parcel_matches(session, transactions)
+
+        for transaction in transactions:
+            desired_matches = _derive_sales_parcel_matches(
+                transaction,
+                parcel_number_index=parcel_number_index,
+                address_index=address_index,
+                legal_description_index=legal_description_index,
+            )
+            if desired_matches:
+                matched_transactions += 1
+
+            transaction_existing_matches = existing_matches.get(transaction.id, {})
+            sync_counts = _sync_sales_parcel_matches(
+                session,
+                transaction=transaction,
+                desired_matches=desired_matches,
+                existing_matches=transaction_existing_matches,
+            )
+            rows_written += sync_counts.inserted_rows + sync_counts.updated_rows
+            rows_deleted += sync_counts.deleted_rows
+
+        # Keep session identity-map growth bounded across large match runs.
+        session.flush()
+        session.expunge_all()
+
+    return SalesMatchSummary(
+        selected_transactions=selected_transactions,
+        matched_transactions=matched_transactions,
+        rows_written=rows_written,
+        rows_deleted=rows_deleted,
+    )
+
+
+def _collect_sales_match_candidate_keys(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]],
+) -> SalesMatchCandidateKeys:
+    parcel_number_keys: set[str] = set()
+    address_keys: set[str] = set()
+    legal_description_keys: set[str] = set()
+
+    for transactions in _iter_sales_transaction_batches(
+        session,
+        sales_transaction_ids=sales_transaction_ids,
+    ):
+        for transaction in transactions:
+            if transaction.official_parcel_number_norm is not None:
+                parcel_number_keys.add(transaction.official_parcel_number_norm)
+            parcel_number_keys.update(
+                _parcel_number_crosswalk_candidates(
+                    transaction.official_parcel_number_raw
+                )
+            )
+            if transaction.property_address_norm is not None:
+                address_keys.add(transaction.property_address_norm)
+            legal_match_value = _normalize_sales_legal_description(
+                transaction.legal_description_raw
+            )
+            if legal_match_value is not None:
+                legal_description_keys.add(legal_match_value)
+
+        # Candidate-key collection is read-only; detach processed rows per batch.
+        session.expunge_all()
+
+    return SalesMatchCandidateKeys(
+        parcel_number_keys=parcel_number_keys,
+        address_keys=address_keys,
+        legal_description_keys=legal_description_keys,
     )
 
 
@@ -496,6 +754,370 @@ def _sync_sales_exclusions(
         existing.is_active = False
 
 
+def _build_parcel_number_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, tuple[str, ...]]:
+    if not allowed_keys:
+        return {}
+
+    parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
+    normalized_expr = _normalized_parcel_number_sql(
+        ParcelCharacteristic.formatted_parcel_number
+    )
+    for key_batch in _chunked(sorted(allowed_keys), _MATCH_BATCH_SIZE):
+        for parcel_id, normalized in session.execute(
+            select(
+                ParcelCharacteristic.parcel_id,
+                normalized_expr,
+            ).where(normalized_expr.in_(key_batch))
+        ):
+            if normalized is None:
+                continue
+            parcel_ids_by_norm[normalized].add(parcel_id)
+
+    return {
+        normalized: tuple(sorted(parcel_ids))
+        for normalized, parcel_ids in parcel_ids_by_norm.items()
+    }
+
+
+def _build_address_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, tuple[str, ...]]:
+    if not allowed_keys:
+        return {}
+
+    parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
+    prefix_tokens = sorted(
+        {key.split()[0] for key in allowed_keys if key.strip() and key.split()}
+    )
+    if not prefix_tokens:
+        return {}
+
+    base_query = (
+        select(ParcelSummary.parcel_id, ParcelSummary.primary_address)
+        .where(ParcelSummary.primary_address.is_not(None))
+        .where(func.length(func.trim(ParcelSummary.primary_address)) > 0)
+    )
+    upper_primary_address = func.upper(ParcelSummary.primary_address)
+    for prefix_batch in _chunked(prefix_tokens, _NARROWING_BATCH_SIZE):
+        prefix_filter = or_(
+            *(
+                or_(
+                    upper_primary_address == prefix,
+                    upper_primary_address.startswith(
+                        f"{prefix} ",
+                        autoescape=True,
+                    ),
+                )
+                for prefix in prefix_batch
+            )
+        )
+        for parcel_id, primary_address in session.execute(
+            base_query.where(prefix_filter)
+        ):
+            normalized = _normalize_address(primary_address)
+            if normalized is None or normalized not in allowed_keys:
+                continue
+            parcel_ids_by_norm[normalized].add(parcel_id)
+
+    return {
+        normalized: tuple(sorted(parcel_ids))
+        for normalized, parcel_ids in parcel_ids_by_norm.items()
+    }
+
+
+def _build_legal_description_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, tuple[str, ...]]:
+    if not allowed_keys:
+        return {}
+
+    parcel_ids_by_norm: dict[str, set[str]] = defaultdict(set)
+    lot_tokens = sorted(
+        {
+            component[len("LOT:") :]
+            for key in allowed_keys
+            for component in key.split("|")
+            if component.startswith("LOT:")
+        }
+    )
+
+    base_query = (
+        select(ParcelSummary.parcel_id, ParcelSummary.parcel_description)
+        .where(ParcelSummary.parcel_description.is_not(None))
+        .where(func.length(func.trim(ParcelSummary.parcel_description)) > 0)
+    )
+    upper_parcel_description = func.upper(ParcelSummary.parcel_description)
+
+    if lot_tokens:
+        for lot_batch in _chunked(lot_tokens, _NARROWING_BATCH_SIZE):
+            lot_filter = or_(
+                *(
+                    _lot_token_boundary_filter(upper_parcel_description, lot)
+                    for lot in lot_batch
+                )
+            )
+            for parcel_id, parcel_description in session.execute(
+                base_query.where(lot_filter)
+            ):
+                normalized = _normalize_parcel_legal_description(parcel_description)
+                if normalized is None or normalized not in allowed_keys:
+                    continue
+                parcel_ids_by_norm[normalized].add(parcel_id)
+    else:
+        for parcel_id, parcel_description in session.execute(base_query):
+            normalized = _normalize_parcel_legal_description(parcel_description)
+            if normalized is None or normalized not in allowed_keys:
+                continue
+            parcel_ids_by_norm[normalized].add(parcel_id)
+
+    return {
+        normalized: tuple(sorted(parcel_ids))
+        for normalized, parcel_ids in parcel_ids_by_norm.items()
+    }
+
+
+def _load_existing_sales_parcel_matches(
+    session: Session,
+    transactions: Iterable[SalesTransaction],
+) -> dict[int, dict[tuple[str, str], SalesParcelMatch]]:
+    transaction_ids = [transaction.id for transaction in transactions]
+    if not transaction_ids:
+        return {}
+
+    matches_by_transaction: dict[int, dict[tuple[str, str], SalesParcelMatch]] = (
+        defaultdict(dict)
+    )
+    for transaction_id_batch in _chunked(transaction_ids, _MATCH_BATCH_SIZE):
+        for row in session.execute(
+            select(SalesParcelMatch).where(
+                SalesParcelMatch.sales_transaction_id.in_(transaction_id_batch)
+            )
+        ).scalars():
+            key = (row.parcel_id, row.match_method)
+            matches_by_transaction[row.sales_transaction_id][key] = row
+
+    return dict(matches_by_transaction)
+
+
+def _iter_sales_transaction_batches(
+    session: Session,
+    *,
+    sales_transaction_ids: Optional[Iterable[int]],
+) -> Iterator[list[SalesTransaction]]:
+    base_query = (
+        select(SalesTransaction)
+        .where(SalesTransaction.import_status == "loaded")
+        .options(
+            load_only(
+                SalesTransaction.id,
+                SalesTransaction.official_parcel_number_raw,
+                SalesTransaction.official_parcel_number_norm,
+                SalesTransaction.property_address_norm,
+                SalesTransaction.legal_description_raw,
+            )
+        )
+    )
+    if sales_transaction_ids is not None:
+        deduped_ids = sorted(set(sales_transaction_ids))
+        for transaction_id_batch in _chunked(deduped_ids, _MATCH_BATCH_SIZE):
+            transactions = list(
+                session.execute(
+                    base_query.where(
+                        SalesTransaction.id.in_(transaction_id_batch)
+                    ).order_by(SalesTransaction.id)
+                ).scalars()
+            )
+            if transactions:
+                yield transactions
+        return
+
+    last_seen_id = 0
+    while True:
+        transactions = list(
+            session.execute(
+                base_query.where(SalesTransaction.id > last_seen_id)
+                .order_by(SalesTransaction.id)
+                .limit(_MATCH_BATCH_SIZE)
+            ).scalars()
+        )
+        if not transactions:
+            return
+        yield transactions
+        last_seen_id = transactions[-1].id
+
+
+def _derive_sales_parcel_matches(
+    transaction: SalesTransaction,
+    *,
+    parcel_number_index: dict[str, tuple[str, ...]],
+    address_index: dict[str, tuple[str, ...]],
+    legal_description_index: dict[str, tuple[str, ...]],
+) -> list[SalesMatchSpec]:
+    exact_match_value = transaction.official_parcel_number_norm
+    exact_candidates = None
+    if exact_match_value is not None:
+        exact_candidates = parcel_number_index.get(exact_match_value)
+    if exact_candidates:
+        return _build_sales_match_specs(
+            exact_candidates,
+            match_method=EXACT_PARCEL_NUMBER_MATCH_METHOD,
+            matched_value=exact_match_value,
+            confidence_score=EXACT_MATCH_CONFIDENCE,
+        )
+
+    for crosswalk_value in _parcel_number_crosswalk_candidates(
+        transaction.official_parcel_number_raw
+    ):
+        crosswalk_candidates = parcel_number_index.get(crosswalk_value)
+        if not crosswalk_candidates:
+            continue
+        return _build_sales_match_specs(
+            crosswalk_candidates,
+            match_method=PARCEL_NUMBER_CROSSWALK_MATCH_METHOD,
+            matched_value=crosswalk_value,
+            confidence_score=PARCEL_NUMBER_CROSSWALK_CONFIDENCE,
+        )
+
+    address_match_value = transaction.property_address_norm
+    address_candidates = None
+    if address_match_value is not None:
+        address_candidates = address_index.get(address_match_value)
+    if address_candidates:
+        return _build_sales_match_specs(
+            address_candidates,
+            match_method=NORMALIZED_ADDRESS_MATCH_METHOD,
+            matched_value=address_match_value,
+            confidence_score=ADDRESS_MATCH_CONFIDENCE,
+        )
+
+    legal_match_value = _normalize_sales_legal_description(
+        transaction.legal_description_raw
+    )
+    legal_candidates = None
+    if legal_match_value is not None:
+        legal_candidates = legal_description_index.get(legal_match_value)
+    if legal_candidates:
+        return _build_sales_match_specs(
+            legal_candidates,
+            match_method=NORMALIZED_LEGAL_DESCRIPTION_MATCH_METHOD,
+            matched_value=legal_match_value,
+            confidence_score=LEGAL_DESCRIPTION_MATCH_CONFIDENCE,
+        )
+
+    return []
+
+
+def _build_sales_match_specs(
+    parcel_ids: tuple[str, ...],
+    *,
+    match_method: str,
+    matched_value: Optional[str],
+    confidence_score: Decimal,
+) -> list[SalesMatchSpec]:
+    if matched_value is None:
+        return []
+
+    is_auto_accepted = len(parcel_ids) == 1
+    return [
+        SalesMatchSpec(
+            parcel_id=parcel_id,
+            match_method=match_method,
+            confidence_score=confidence_score,
+            match_rank=index,
+            is_primary=is_auto_accepted and index == 1,
+            match_review_status=(
+                AUTO_ACCEPTED_MATCH_REVIEW_STATUS
+                if is_auto_accepted
+                else NEEDS_REVIEW_MATCH_REVIEW_STATUS
+            ),
+            matched_value=matched_value,
+        )
+        for index, parcel_id in enumerate(parcel_ids, start=1)
+    ]
+
+
+def _sync_sales_parcel_matches(
+    session: Session,
+    *,
+    transaction: SalesTransaction,
+    desired_matches: list[SalesMatchSpec],
+    existing_matches: dict[tuple[str, str], SalesParcelMatch],
+) -> SalesMatchSyncCounts:
+    desired_by_key = {
+        (match.parcel_id, match.match_method): match for match in desired_matches
+    }
+
+    inserted_rows = 0
+    updated_rows = 0
+    for key, desired in desired_by_key.items():
+        existing = existing_matches.get(key)
+        if existing is None:
+            session.add(
+                SalesParcelMatch(
+                    sales_transaction_id=transaction.id,
+                    parcel_id=desired.parcel_id,
+                    match_method=desired.match_method,
+                    confidence_score=desired.confidence_score,
+                    match_rank=desired.match_rank,
+                    is_primary=desired.is_primary,
+                    match_review_status=desired.match_review_status,
+                    matched_value=desired.matched_value,
+                    matcher_version=desired.matcher_version,
+                )
+            )
+            inserted_rows += 1
+            continue
+
+        if not _sales_match_needs_update(existing, desired):
+            continue
+
+        existing.confidence_score = desired.confidence_score
+        existing.match_rank = desired.match_rank
+        existing.is_primary = desired.is_primary
+        existing.match_review_status = desired.match_review_status
+        existing.matched_value = desired.matched_value
+        existing.matcher_version = desired.matcher_version
+        existing.matched_at = func.now()
+        updated_rows += 1
+
+    deleted_rows = 0
+    for key, existing in existing_matches.items():
+        if key in desired_by_key:
+            continue
+        session.delete(existing)
+        deleted_rows += 1
+
+    return SalesMatchSyncCounts(
+        inserted_rows=inserted_rows,
+        updated_rows=updated_rows,
+        deleted_rows=deleted_rows,
+    )
+
+
+def _sales_match_needs_update(
+    existing: SalesParcelMatch,
+    desired: SalesMatchSpec,
+) -> bool:
+    return any(
+        (
+            existing.confidence_score != desired.confidence_score,
+            existing.match_rank != desired.match_rank,
+            existing.is_primary != desired.is_primary,
+            existing.match_review_status != desired.match_review_status,
+            existing.matched_value != desired.matched_value,
+            existing.matcher_version != desired.matcher_version,
+        )
+    )
+
+
 def _derive_sales_exclusions(values: dict[str, object]) -> list[SalesExclusionSpec]:
     if values.get("import_status") != "loaded":
         return []
@@ -594,6 +1216,18 @@ def _contains_corrective_deed_phrase(text_values: tuple[str, ...]) -> bool:
     return any(_CORRECTIVE_DEED_PATTERN.search(value) for value in text_values)
 
 
+def _normalized_parcel_number_sql(column):
+    normalized = func.upper(column)
+    for separator in (" ", "-", ".", "_", "/"):
+        normalized = func.replace(normalized, separator, "")
+    return normalized
+
+
+def _chunked(values: list[_T], size: int) -> Iterator[list[_T]]:
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
+
+
 def _collapsed_text(value: Optional[str]) -> Optional[str]:
     trimmed = _trimmed_text(value)
     if trimmed is None:
@@ -628,7 +1262,213 @@ def _normalize_address(value: Optional[str]) -> Optional[str]:
     if collapsed is None:
         return None
     normalized = _ADDRESS_PUNCTUATION_RE.sub(" ", collapsed.upper())
-    return _SPACE_RE.sub(" ", normalized).strip()
+    normalized = _SPACE_RE.sub(" ", normalized).strip()
+    normalized = _strip_trailing_city_state_zip(normalized)
+    return _normalize_address_tokens(normalized)
+
+
+def _normalize_address_tokens(normalized: str) -> str:
+    return " ".join(
+        _ADDRESS_TOKEN_NORMALIZATION.get(token, token) for token in normalized.split()
+    )
+
+
+def _parcel_number_crosswalk_candidates(value: Optional[str]) -> tuple[str, ...]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None or "/" not in collapsed:
+        return ()
+
+    prefix, suffix = collapsed.split("/", 1)
+    suffix_digits = "".join(char for char in suffix if char.isdigit())
+    if len(suffix_digits) != 12:
+        return ()
+
+    # Some RETR exports swap the 3rd and 4th digits after the slash,
+    # e.g. 0601... instead of the parcel-side 0610... representation.
+    swapped = prefix + suffix_digits[:2] + suffix_digits[3] + suffix_digits[2]
+    swapped += suffix_digits[4:]
+
+    normalized = _normalize_parcel_number(f"{prefix}/{swapped[len(prefix):]}")
+    if normalized is None:
+        return ()
+    return (normalized,)
+
+
+def _normalize_sales_legal_description(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    match = _LEGAL_DESCRIPTION_LOT_BLOCK_PATTERN.match(collapsed.upper())
+    if match is None:
+        return None
+
+    return _build_legal_description_match_key(
+        subdivision=match.group("subdivision"),
+        lot_value=match.group("lot_paren") or match.group("lot"),
+        block_value=match.group("block_paren") or match.group("block"),
+    )
+
+
+def _normalize_parcel_legal_description(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    normalized = _LEGAL_TEXT_PUNCTUATION_RE.sub(" ", collapsed.upper())
+    normalized = _SPACE_RE.sub(" ", normalized).strip()
+    if not normalized:
+        return None
+
+    for pattern in (
+        _PARCEL_DESCRIPTION_BLOCK_LOT_PATTERN,
+        _PARCEL_DESCRIPTION_LOT_PATTERN,
+        _PARCEL_DESCRIPTION_LEADING_LOT_PATTERN,
+    ):
+        match = pattern.match(normalized)
+        if match is None:
+            continue
+        return _build_legal_description_match_key(
+            subdivision=match.group("subdivision"),
+            lot_value=match.group("lot"),
+            block_value=match.groupdict().get("block"),
+        )
+
+    return None
+
+
+def _build_legal_description_match_key(
+    *,
+    subdivision: Optional[str],
+    lot_value: Optional[str],
+    block_value: Optional[str],
+) -> Optional[str]:
+    normalized_subdivision = _normalize_legal_subdivision(subdivision)
+    normalized_lot = _normalize_legal_component(lot_value)
+    normalized_block = _normalize_legal_component(block_value)
+    if normalized_subdivision is None or normalized_lot is None:
+        return None
+
+    components = [f"SUBDIVISION:{normalized_subdivision}", f"LOT:{normalized_lot}"]
+    if normalized_block is not None:
+        components.append(f"BLOCK:{normalized_block}")
+    return "|".join(components)
+
+
+def _normalize_legal_subdivision(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    normalized = _LEGAL_TEXT_PUNCTUATION_RE.sub(" ", collapsed.upper())
+    normalized = _SPACE_RE.sub(" ", normalized).strip()
+    if " ADDITION TO " in normalized:
+        normalized = normalized.split(" ADDITION TO ", 1)[1].strip()
+    if normalized.startswith("THE "):
+        normalized = normalized[4:].strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _normalize_legal_component(value: Optional[str]) -> Optional[str]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None:
+        return None
+
+    normalized = _LEGAL_TEXT_PUNCTUATION_RE.sub("", collapsed.upper())
+    if not normalized:
+        return None
+    return normalized
+
+
+def _strip_trailing_city_state_zip(normalized: str) -> str:
+    tokens = normalized.split()
+    if len(tokens) < 4:
+        return normalized
+
+    if tokens[-2] == "WI" and _is_zip_token(tokens[-1]):
+        street_and_city_tokens = tokens[:-2]
+    elif (
+        len(tokens) >= 5
+        and tokens[-3] == "WI"
+        and _is_zip_token(tokens[-2])
+        and len(tokens[-1]) == 4
+        and tokens[-1].isdigit()
+    ):
+        # After punctuation normalization, ZIP+4 can become: WI <zip5> <zip4>.
+        street_and_city_tokens = tokens[:-3]
+    else:
+        return normalized
+
+    last_suffix_index = None
+    for index, token in enumerate(street_and_city_tokens):
+        if token in _STREET_SUFFIX_TOKENS:
+            last_suffix_index = index
+
+    if last_suffix_index is None:
+        return normalized
+
+    end_index = last_suffix_index
+    if last_suffix_index + 1 < len(street_and_city_tokens):
+        next_token = street_and_city_tokens[last_suffix_index + 1]
+        if next_token in _DIRECTION_SUFFIX_TOKENS:
+            end_index = last_suffix_index + 1
+
+    unit_end = _find_unit_suffix_end(street_and_city_tokens, end_index + 1)
+    if unit_end is not None:
+        end_index = unit_end
+
+    return " ".join(street_and_city_tokens[: end_index + 1])
+
+
+def _is_zip_token(token: str) -> bool:
+    return len(token) == 5 and token.isdigit()
+
+
+def _find_unit_suffix_end(tokens: list[str], start_index: int) -> Optional[int]:
+    if start_index >= len(tokens):
+        return None
+
+    token = tokens[start_index]
+    if token in _UNIT_DESIGNATOR_TOKENS:
+        end_index = start_index
+        max_components = 2
+        for component_index in range(start_index + 1, len(tokens)):
+            candidate = tokens[component_index]
+            if not _is_unit_component_token(candidate):
+                break
+            end_index = component_index
+            max_components -= 1
+            if max_components == 0:
+                break
+        return end_index
+
+    for designator in ("APT", "UNIT", "STE", "SUITE"):
+        if token.startswith(designator) and len(token) > len(designator):
+            return start_index
+
+    return None
+
+
+def _is_unit_component_token(token: str) -> bool:
+    if token in _UNIT_VALUE_TOKENS:
+        return True
+    if any(char.isdigit() for char in token):
+        return True
+    return len(token) <= 2 and token.isalnum()
+
+
+def _lot_token_boundary_filter(upper_parcel_description, lot: str):
+    return or_(
+        upper_parcel_description.like(f"%LOT {lot} %"),
+        upper_parcel_description.like(f"%LOT {lot}"),
+        upper_parcel_description.like(f"%LOT {lot},%"),
+        upper_parcel_description.like(f"%LOT {lot}.%"),
+        upper_parcel_description.like(f"%LOT {lot})%"),
+        upper_parcel_description.like(f"%LOT {lot};%"),
+        upper_parcel_description.like(f"%LOT {lot}:%"),
+    )
 
 
 def _normalize_boolean(value: Optional[str]) -> Optional[bool]:
@@ -672,7 +1512,7 @@ def _parse_optional_date(
 
 
 def _parse_date(value: str) -> Optional[date]:
-    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:

@@ -422,7 +422,7 @@ class SalesParcelMatch(Base):
     __tablename__ = "sales_parcel_matches"
     __table_args__ = (
         Index(
-            "ux_sales_parcel_matches_sales_transaction_id_parcel_id_match_method",
+            "ux_sales_parcel_matches_txn_parcel_method",
             "sales_transaction_id",
             "parcel_id",
             "match_method",

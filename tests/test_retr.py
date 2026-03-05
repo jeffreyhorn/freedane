@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +10,15 @@ from typer.testing import CliRunner
 from accessdane_audit import cli
 from accessdane_audit import retr as retr_module
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import SalesExclusion, SalesTransaction
+from accessdane_audit.models import (
+    Fetch,
+    Parcel,
+    ParcelCharacteristic,
+    ParcelSummary,
+    SalesExclusion,
+    SalesParcelMatch,
+    SalesTransaction,
+)
 
 
 def test_ingest_retr_imports_and_normalizes_loaded_rows(
@@ -66,6 +75,819 @@ def test_ingest_retr_imports_and_normalizes_loaded_rows(
     assert row.arms_length_indicator_norm is True
     assert row.usable_sale_indicator_raw == "0"
     assert row.usable_sale_indicator_norm is False
+
+
+def test_ingest_retr_accepts_real_export_date_format_and_physical_address_alias(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "retr_real_export_shape.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "retr_real_export_shape.csv"
+    csv_path.write_text(
+        (
+            "Conveyance Date,Recorded Date,Sale Price,Parcel Number,Physical "
+            "Address\n"
+            "03-01-2021,03-02-2021,$0.00,06-10-0139-151-1,4519 and 4521 Field Ave\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.import_error is None
+    assert row.transfer_date.isoformat() == "2021-03-01"
+    assert row.recording_date.isoformat() == "2021-03-02"
+    assert str(row.consideration_amount) == "0.00"
+    assert row.property_address_raw == "4519 and 4521 Field Ave"
+    assert row.property_address_norm == "4519 AND 4521 FIELD AVE"
+
+
+def test_match_sales_creates_exact_parcel_number_matches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_exact.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_exact.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,06-10-0139-151-1,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="0601001391511",
+                    formatted_parcel_number="06-10-0139-151-1",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="999 Wrong Ave",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    first_match_result = runner.invoke(cli.app, ["match-sales"])
+    second_match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert first_match_result.exit_code == 0, first_match_result.stdout
+    assert second_match_result.exit_code == 0, second_match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in first_match_result.stdout
+    )
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=0 rows_deleted=0"
+        in second_match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "0601001391511"
+    assert matches[0].match_method == "exact_parcel_number"
+    assert str(matches[0].confidence_score) == "1.0000"
+    assert matches[0].match_rank == 1
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "061001391511"
+    assert matches[0].matcher_version == "sprint3_day12_v1"
+
+
+def test_match_sales_updates_existing_matches_for_ambiguous_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_ambiguous.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_ambiguous.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address\n"
+            "01/15/2025,100000,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-a"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-a",
+                    url="https://example.test/parcel/parcel-a",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-a",
+                    fetch_id=1,
+                    primary_address="123 Main St",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    first_match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert first_match_result.exit_code == 0, first_match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in first_match_result.stdout
+    )
+
+    stale_timestamp = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    with session_scope(database_url) as session:
+        existing_match = session.execute(select(SalesParcelMatch)).scalar_one()
+        existing_match.matched_at = stale_timestamp
+        session.add_all(
+            [
+                Parcel(id="parcel-b"),
+                Fetch(
+                    id=2,
+                    parcel_id="parcel-b",
+                    url="https://example.test/parcel/parcel-b",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-b",
+                    fetch_id=2,
+                    primary_address="123 Main St",
+                ),
+            ]
+        )
+
+    second_match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert second_match_result.exit_code == 0, second_match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=2 rows_deleted=0"
+        in second_match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = (
+            session.execute(
+                select(SalesParcelMatch).order_by(SalesParcelMatch.parcel_id)
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(matches) == 2
+    assert [match.parcel_id for match in matches] == ["parcel-a", "parcel-b"]
+    assert [match.match_rank for match in matches] == [1, 2]
+    assert [match.is_primary for match in matches] == [False, False]
+    assert [match.match_review_status for match in matches] == [
+        "needs_review",
+        "needs_review",
+    ]
+    assert matches[0].matched_at is not None
+    assert matches[0].matched_at.date() > stale_timestamp.date()
+
+
+def test_match_sales_applies_parcel_number_crosswalk_for_transposed_prefix_digits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_crosswalk.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_crosswalk.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,154/060102337591,5627 Osborn Drive\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="061002337591"),
+                Fetch(
+                    id=1,
+                    parcel_id="061002337591",
+                    url="https://example.test/parcel/061002337591",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="061002337591",
+                    formatted_parcel_number="154/0610-023-3759-1",
+                ),
+                ParcelSummary(
+                    parcel_id="061002337591",
+                    fetch_id=1,
+                    primary_address="No parcel address available.",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "061002337591"
+    assert matches[0].match_method == "parcel_number_crosswalk"
+    assert str(matches[0].confidence_score) == "0.9500"
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "154061002337591"
+
+
+def test_match_sales_falls_back_to_normalized_address_matching(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address\n"
+            '01/15/2025,100000," 123 Main St., Apt #2 "\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-123"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-123",
+                    url="https://example.test/parcel/parcel-123",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-123",
+                    fetch_id=1,
+                    primary_address="123 Main St Apt 2",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-123"
+    assert matches[0].match_method == "normalized_address"
+    assert str(matches[0].confidence_score) == "0.9000"
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "123 MAIN ST APT 2"
+
+
+def test_match_sales_normalizes_address_suffix_variants(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_suffix_variant.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_suffix_variant.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Property Address\n"
+            "01/15/2025,100000,5006 Farwell Street\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-5006"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-5006",
+                    url="https://example.test/parcel/parcel-5006",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-5006",
+                    fetch_id=1,
+                    primary_address="5006 FARWELL ST",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "5006 FARWELL ST"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-5006"
+    assert matches[0].match_method == "normalized_address"
+
+
+def test_match_sales_strips_city_state_zip_from_retr_addresses(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_suffix.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_suffix.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"5218 Lewis Ln., McFarland, WI 53558"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-5218"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-5218",
+                    url="https://example.test/parcel/parcel-5218",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-5218",
+                    fetch_id=1,
+                    primary_address="5218 Lewis Ln",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "5218 LEWIS LN"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-5218"
+    assert matches[0].match_method == "normalized_address"
+
+
+def test_match_sales_strips_city_state_zip_before_parkway_normalization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_parkway_suffix.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_parkway_suffix.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"123 Maple Parkway, Madison, WI 53711"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-parkway"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-parkway",
+                    url="https://example.test/parcel/parcel-parkway",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-parkway",
+                    fetch_id=1,
+                    primary_address="123 MAPLE PKWY",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "123 MAPLE PKWY"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-parkway"
+    assert matches[0].match_method == "normalized_address"
+
+
+def test_match_sales_preserves_unit_tokens_when_stripping_zip_plus_four(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_unit_zip4.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_unit_zip4.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"123 Main St Apt 2 Madison WI 53711-1234"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-unit-zip4"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-unit-zip4",
+                    url="https://example.test/parcel/parcel-unit-zip4",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-unit-zip4",
+                    fetch_id=1,
+                    primary_address="123 MAIN ST APT 2",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "123 MAIN ST APT 2"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-unit-zip4"
+    assert matches[0].match_method == "normalized_address"
+
+
+def test_match_sales_preserves_full_direction_token_before_zip_strip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_address_direction_suffix.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_address_direction_suffix.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Physical Address\n"
+            '01/15/2025,100000,"123 Main St East Madison WI 53711"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-direction"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-direction",
+                    url="https://example.test/parcel/parcel-direction",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-direction",
+                    fetch_id=1,
+                    primary_address="123 MAIN ST E",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(SalesTransaction)).scalar_one()
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert row.property_address_norm == "123 MAIN ST E"
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-direction"
+    assert matches[0].match_method == "normalized_address"
+
+
+def test_match_sales_falls_back_to_lot_block_legal_description(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_legal.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_legal.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Legal Description\n"
+            '01/15/2025,100000,"Lot Twenty-three (23), Block Four (4), Sixth '
+            "Addition to Autumn Grove, in the Village of McFarland, Dane County, "
+            'Wisconsin."\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-legal"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-legal",
+                    url="https://example.test/parcel/parcel-legal",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-legal",
+                    fetch_id=1,
+                    parcel_description="AUTUMN GROVE BLOCK 4 LOT 23",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in import_result.stdout
+    )
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=1 rows_written=1 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert len(matches) == 1
+    assert matches[0].parcel_id == "parcel-legal"
+    assert matches[0].match_method == "normalized_legal_description"
+    assert str(matches[0].confidence_score) == "0.8000"
+    assert matches[0].is_primary is True
+    assert matches[0].match_review_status == "auto_accepted"
+    assert matches[0].matched_value == "SUBDIVISION:AUTUMN GROVE|LOT:23|BLOCK:4"
+
+
+def test_match_sales_skips_partial_lot_legal_descriptions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_partial_lot.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_partial_lot.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Legal Description\n"
+            "01/15/2025,100000,\"That part of Lot 4, Block 4, Edward's Park, in "
+            'the Village of McFarland, Dane County, Wisconsin."\n'
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="parcel-partial"),
+                Fetch(
+                    id=1,
+                    parcel_id="parcel-partial",
+                    url="https://example.test/parcel/parcel-partial",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-partial",
+                    fetch_id=1,
+                    parcel_description="EDWARDS PARK BLOCK 4 LOT 4",
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert (
+        "RETR import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in import_result.stdout
+    )
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert matches == []
+
+
+def test_match_sales_leaves_non_matching_transactions_unmatched(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_none.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_none.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,Property Address\n"
+            "01/15/2025,100000,06-10-0139-151-1,123 Main St\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert (
+        "Sales match summary: selected=1 matched=0 rows_written=0 rows_deleted=0"
+        in match_result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        matches = session.execute(select(SalesParcelMatch)).scalars().all()
+
+    assert matches == []
 
 
 def test_ingest_retr_records_rejected_rows_and_reuses_existing_same_file_rows(

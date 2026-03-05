@@ -37,7 +37,7 @@ from .parcel_year_facts import rebuild_parcel_year_facts
 from .parse import ParsedPage, parse_page
 from .profiling import build_data_profile
 from .quality import quality_report_to_dict, run_data_quality_checks
-from .retr import RetrImportFileError, ingest_retr_csv
+from .retr import RetrImportFileError, ingest_retr_csv, match_sales_transactions
 from .scrape import fetch_page
 from .search import search_trs
 from .trs import DEFAULT_SPLIT_PARTS, enumerate_trs, parse_trs_code
@@ -174,6 +174,22 @@ def ingest_retr_cmd(
         f"rejected={summary.rejected_rows} "
         f"inserted={summary.inserted_rows} "
         f"updated={summary.updated_rows}"
+    )
+
+
+@app.command("match-sales")
+def match_sales_cmd() -> None:
+    settings = load_settings()
+
+    with session_scope(settings.database_url) as session:
+        summary = match_sales_transactions(session)
+
+    typer.echo(
+        "Sales match summary: "
+        f"selected={summary.selected_transactions} "
+        f"matched={summary.matched_transactions} "
+        f"rows_written={summary.rows_written} "
+        f"rows_deleted={summary.rows_deleted}"
     )
 
 
