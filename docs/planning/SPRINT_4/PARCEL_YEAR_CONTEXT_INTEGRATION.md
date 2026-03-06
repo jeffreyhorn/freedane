@@ -47,13 +47,16 @@ Each event must resolve to an `effective_parcel_id` before it can contribute to
 Resolution order:
 
 1. use `event.parcel_id` when present
-2. else, for events with `parcel_number_norm`, match to `parcels.id` using exact normalized equality
-3. else unresolved; do not include in parcel-year rollups
+2. else, for events with `parcel_number_norm`, attempt normalized parcel lookup in two stages:
+   1. match to normalized `parcels.id`
+   2. if no match, match to normalized `parcel_characteristics.formatted_parcel_number`
+3. else (or if both normalized lookups fail) unresolved; do not include in parcel-year rollups
 
 Notes:
 
 - This fallback is required because appeals v1 currently preserves parcel locator fields
   but does not yet populate `appeal_events.parcel_id` during import.
+- The two-stage normalized lookup is intentionally aligned with permit matching behavior.
 - Unresolved events remain auditable in event tables and are intentionally not dropped.
 
 ### Year resolution
@@ -81,31 +84,33 @@ Add the following columns to `parcel_year_facts`.
 
 ### Permit rollups
 
-- `permit_event_count` (`Integer`, not null default `0`)
-- `permit_declared_valuation_known_count` (`Integer`, not null default `0`)
+- `permit_event_count` (`Integer`, nullable)
+- `permit_declared_valuation_known_count` (`Integer`, nullable)
 - `permit_declared_valuation_sum` (`Numeric(14,2)`, nullable)
-- `permit_estimated_cost_known_count` (`Integer`, not null default `0`)
+- `permit_estimated_cost_known_count` (`Integer`, nullable)
 - `permit_estimated_cost_sum` (`Numeric(14,2)`, nullable)
-- `permit_status_issued_count` (`Integer`, not null default `0`)
-- `permit_status_finaled_count` (`Integer`, not null default `0`)
-- `permit_status_cancelled_count` (`Integer`, not null default `0`)
-- `permit_status_expired_count` (`Integer`, not null default `0`)
-- `permit_recent_1y_count` (`Integer`, not null default `0`)
-- `permit_recent_2y_count` (`Integer`, not null default `0`)
-- `permit_has_recent_1y` (`Boolean`, not null default `false`)
-- `permit_has_recent_2y` (`Boolean`, not null default `false`)
+- `permit_status_applied_count` (`Integer`, nullable)
+- `permit_status_issued_count` (`Integer`, nullable)
+- `permit_status_finaled_count` (`Integer`, nullable)
+- `permit_status_cancelled_count` (`Integer`, nullable)
+- `permit_status_expired_count` (`Integer`, nullable)
+- `permit_status_unknown_count` (`Integer`, nullable)
+- `permit_recent_1y_count` (`Integer`, nullable)
+- `permit_recent_2y_count` (`Integer`, nullable)
+- `permit_has_recent_1y` (`Boolean`, nullable)
+- `permit_has_recent_2y` (`Boolean`, nullable)
 
 ### Appeal rollups
 
-- `appeal_event_count` (`Integer`, not null default `0`)
-- `appeal_reduction_granted_count` (`Integer`, not null default `0`)
-- `appeal_partial_reduction_count` (`Integer`, not null default `0`)
-- `appeal_denied_count` (`Integer`, not null default `0`)
-- `appeal_withdrawn_count` (`Integer`, not null default `0`)
-- `appeal_dismissed_count` (`Integer`, not null default `0`)
-- `appeal_pending_count` (`Integer`, not null default `0`)
-- `appeal_unknown_outcome_count` (`Integer`, not null default `0`)
-- `appeal_value_change_known_count` (`Integer`, not null default `0`)
+- `appeal_event_count` (`Integer`, nullable)
+- `appeal_reduction_granted_count` (`Integer`, nullable)
+- `appeal_partial_reduction_count` (`Integer`, nullable)
+- `appeal_denied_count` (`Integer`, nullable)
+- `appeal_withdrawn_count` (`Integer`, nullable)
+- `appeal_dismissed_count` (`Integer`, nullable)
+- `appeal_pending_count` (`Integer`, nullable)
+- `appeal_unknown_outcome_count` (`Integer`, nullable)
+- `appeal_value_change_known_count` (`Integer`, nullable)
 - `appeal_value_change_total` (`Numeric(14,2)`, nullable)
 - `appeal_value_change_reduction_total` (`Numeric(14,2)`, nullable)
 - `appeal_value_change_increase_total` (`Numeric(14,2)`, nullable)
@@ -121,7 +126,15 @@ For each `(parcel_id, year)`:
 - `permit_declared_valuation_sum` = sum of non-null `declared_valuation`
 - `permit_estimated_cost_known_count` = count where `estimated_cost is not null`
 - `permit_estimated_cost_sum` = sum of non-null `estimated_cost`
-- status counts use `permit_status_norm` exact values
+- status counts use `permit_status_norm` exact values:
+  - `applied`
+  - `issued`
+  - `finaled`
+  - `cancelled`
+  - `expired`
+  - `unknown`
+- events where `permit_status_norm` is null are excluded from `permit_status_*_count`
+  buckets but still included in `permit_event_count`
 
 Recent indicators for each `(parcel_id, year)`:
 
@@ -152,8 +165,11 @@ For each `(parcel_id, year)`:
 
 Counts and booleans:
 
-- use explicit zero/false defaults when no matching events exist for that parcel-year
-- this avoids null-as-zero ambiguity in downstream aggregations
+- keep nullable to align with existing `parcel_year_facts` rollups
+  (for example `payment_event_count` and `payment_has_placeholder_row`)
+- set to null when no matching permit/appeal events exist for that parcel-year
+- use numeric zero / false only when at least one contributing event exists and the
+  true computed value is actually zero / false
 
 Numeric sums:
 
