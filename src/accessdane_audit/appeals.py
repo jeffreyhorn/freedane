@@ -22,6 +22,7 @@ _HEADER_SEPARATOR_RE = re.compile(r"[ _-]+")
 _HEADER_SPACE_TAB_RE = re.compile(r"[ \t]+")
 _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"""[,.:;#@\-\/\\()'"]""")
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
 _NULL_TOKENS = {
     "n/a",
     "na",
@@ -33,6 +34,23 @@ _NULL_TOKENS = {
     "tbd",
 }
 _REDUCTION_OUTCOME_VALUES = {"reduction_granted", "partial_reduction"}
+_DATE_FORMATS = (
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%m/%d/%y",
+    "%m-%d-%y",
+)
+_DATETIME_FORMATS = (
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y %H:%M:%S",
+    "%m-%d-%Y %H:%M",
+    "%m-%d-%Y %H:%M:%S",
+    "%m/%d/%Y %I:%M %p",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d %H:%M:%S",
+)
 
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "appeal_number": ("Appeal Number", "Appeal #", "Case Number"),
@@ -691,11 +709,26 @@ def _parse_optional_date(
 
 
 def _parse_date(value: str) -> Optional[date]:
-    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
+    for fmt in _DATE_FORMATS:
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:
             continue
+
+    for fmt in _DATETIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+
+    iso_candidate = value.strip()
+    if iso_candidate.endswith("Z"):
+        iso_candidate = f"{iso_candidate[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(iso_candidate).date()
+    except ValueError:
+        pass
+
     return None
 
 
@@ -707,7 +740,14 @@ def _parse_optional_year(value: Optional[str]) -> tuple[Optional[int], Optional[
     try:
         parsed = int(trimmed)
     except ValueError:
-        return None, "tax_year_unparseable"
+        candidate_values = {
+            int(token)
+            for token in _YEAR_TOKEN_RE.findall(trimmed)
+            if 1000 <= int(token) <= 9999
+        }
+        if len(candidate_values) != 1:
+            return None, "tax_year_unparseable"
+        parsed = candidate_values.pop()
 
     if parsed < 1000 or parsed > 9999:
         return None, "tax_year_unparseable"
