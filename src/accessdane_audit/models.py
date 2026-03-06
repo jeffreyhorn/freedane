@@ -490,3 +490,77 @@ class SalesExclusion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class PermitEvent(Base):
+    __tablename__ = "permit_events"
+    __table_args__ = (
+        Index("ix_permit_events_source_file_sha256", "source_file_sha256"),
+        Index(
+            "ux_permit_events_source_file_sha256_source_row_number",
+            "source_file_sha256",
+            "source_row_number",
+            unique=True,
+        ),
+        Index("ix_permit_events_import_status", "import_status"),
+        Index("ix_permit_events_parcel_number_norm", "parcel_number_norm"),
+        Index("ix_permit_events_site_address_norm", "site_address_norm"),
+        Index("ix_permit_events_parcel_id", "parcel_id"),
+        Index("ix_permit_events_permit_year", "permit_year"),
+        Index("ix_permit_events_permit_status_norm", "permit_status_norm"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    source_system: Mapped[str] = mapped_column(String, nullable=False)
+    source_file_name: Mapped[str] = mapped_column(String, nullable=False)
+    source_file_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_headers: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    raw_row: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    import_status: Mapped[str] = mapped_column(String, nullable=False)
+    import_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    import_warnings: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    loaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    parcel_number_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parcel_number_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    site_address_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    site_address_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parcel_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=True
+    )
+    parcel_link_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parcel_link_confidence: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+
+    permit_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    issuing_jurisdiction: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    permit_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    permit_subtype: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    work_class: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    permit_status_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    permit_status_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    owner_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    contractor_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    applied_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    issued_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    finaled_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    status_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    declared_valuation: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    estimated_cost: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    permit_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
