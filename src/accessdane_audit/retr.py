@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, load_only
 from .models import (
     ParcelCharacteristic,
     ParcelSummary,
+    ParcelYearFact,
     SalesExclusion,
     SalesParcelMatch,
     SalesTransaction,
@@ -142,6 +143,8 @@ MEDIUM_CONFIDENCE_TIER_MIN = Decimal("0.8500")
 _MATCH_BATCH_SIZE = 500
 _NARROWING_BATCH_SIZE = 100
 _T = TypeVar("_T")
+_SALE_ASSESSMENT_GAP_HIGH_THRESHOLD = Decimal("1.5000")
+_SALE_ASSESSMENT_GAP_LOW_THRESHOLD = Decimal("0.5000")
 _UNIT_DESIGNATOR_TOKENS = {
     "APT",
     "APARTMENT",
@@ -285,9 +288,11 @@ class SalesMatchOutcome:
 
 @dataclass(frozen=True)
 class _SalesMatchAuditCandidate:
+    parcel_id: str
     match_method: str
     confidence_score: Optional[Decimal]
     match_rank: Optional[int]
+    is_primary: bool
 
 
 def ingest_retr_csv(session: Session, csv_path: Path) -> RetrImportSummary:
@@ -565,6 +570,15 @@ def build_sales_match_audit_report(
                     "low_confidence": [],
                 },
             },
+            "context_signals": {
+                "matched_transactions_with_any_context": 0,
+                "matched_transactions_with_transfer_year_context": 0,
+                "with_recent_permit_signal": 0,
+                "with_appeal_activity_signal": 0,
+                "with_sale_assessment_gap_flag": 0,
+            },
+            "parcel_timeline_samples": [],
+            "neighborhood_context_aggregates": [],
         }
 
     review_status_counts = Counter(transaction_review_status.values())
@@ -574,20 +588,26 @@ def build_sales_match_audit_report(
     for transaction_id_batch in _chunked(transaction_ids, _MATCH_BATCH_SIZE):
         match_query = select(
             SalesParcelMatch.sales_transaction_id,
+            SalesParcelMatch.parcel_id,
             SalesParcelMatch.match_method,
             SalesParcelMatch.confidence_score,
             SalesParcelMatch.match_rank,
+            SalesParcelMatch.is_primary,
         ).where(SalesParcelMatch.sales_transaction_id.in_(transaction_id_batch))
         for (
             transaction_id,
+            parcel_id,
             match_method,
             confidence_score,
             match_rank,
+            is_primary,
         ) in session.execute(match_query):
             candidate = _SalesMatchAuditCandidate(
+                parcel_id=parcel_id,
                 match_method=match_method,
                 confidence_score=confidence_score,
                 match_rank=match_rank,
+                is_primary=bool(is_primary),
             )
             candidate_counts[transaction_id] += 1
             matched_transaction_ids.add(transaction_id)
@@ -651,6 +671,13 @@ def build_sales_match_audit_report(
         for transaction_id in low_confidence_transaction_ids
         if transaction_id in needs_review_ids
     )
+    context_sections = _build_sales_context_sections(
+        session,
+        transaction_ids=transaction_ids,
+        transaction_review_status=transaction_review_status,
+        best_candidate_by_transaction=best_candidate_by_transaction,
+        sample_size=sample_size,
+    )
 
     return {
         "scope": {
@@ -685,7 +712,323 @@ def build_sales_match_audit_report(
                 "low_confidence": low_confidence_queue_ids[:sample_size],
             },
         },
+        "context_signals": context_sections["context_signals"],
+        "parcel_timeline_samples": context_sections["parcel_timeline_samples"],
+        "neighborhood_context_aggregates": context_sections[
+            "neighborhood_context_aggregates"
+        ],
     }
+
+
+def _build_sales_context_sections(
+    session: Session,
+    *,
+    transaction_ids: list[int],
+    transaction_review_status: dict[int, str],
+    best_candidate_by_transaction: dict[int, _SalesMatchAuditCandidate],
+    sample_size: int,
+) -> dict[str, object]:
+    matched_transaction_ids = sorted(
+        {
+            transaction_id
+            for transaction_id in transaction_ids
+            if transaction_id in best_candidate_by_transaction
+        }
+    )
+    if not matched_transaction_ids:
+        return {
+            "context_signals": {
+                "matched_transactions_with_any_context": 0,
+                "matched_transactions_with_transfer_year_context": 0,
+                "with_recent_permit_signal": 0,
+                "with_appeal_activity_signal": 0,
+                "with_sale_assessment_gap_flag": 0,
+            },
+            "parcel_timeline_samples": [],
+            "neighborhood_context_aggregates": [],
+        }
+
+    transaction_rows: dict[int, tuple[Optional[date], Optional[Decimal]]] = {}
+    for transaction_id_batch in _chunked(matched_transaction_ids, _MATCH_BATCH_SIZE):
+        transaction_query = select(
+            SalesTransaction.id,
+            SalesTransaction.transfer_date,
+            SalesTransaction.consideration_amount,
+        ).where(SalesTransaction.id.in_(transaction_id_batch))
+        for transaction_id, transfer_date, consideration_amount in session.execute(
+            transaction_query
+        ):
+            transaction_rows[transaction_id] = (
+                transfer_date,
+                consideration_amount,
+            )
+
+    parcel_ids = sorted(
+        {
+            candidate.parcel_id
+            for candidate in best_candidate_by_transaction.values()
+            if candidate.parcel_id
+        }
+    )
+    facts_by_parcel: dict[str, list[ParcelYearFact]] = defaultdict(list)
+    for parcel_id_batch in _chunked(parcel_ids, _MATCH_BATCH_SIZE):
+        parcel_fact_query = (
+            select(ParcelYearFact)
+            .where(ParcelYearFact.parcel_id.in_(parcel_id_batch))
+            .order_by(ParcelYearFact.parcel_id, ParcelYearFact.year.desc())
+        )
+        for fact in session.execute(parcel_fact_query).scalars():
+            facts_by_parcel[fact.parcel_id].append(fact)
+
+    matched_with_any_context = 0
+    matched_with_transfer_year_context = 0
+    with_recent_permit_signal = 0
+    with_appeal_activity_signal = 0
+    with_sale_assessment_gap_flag = 0
+    timeline_samples: list[dict[str, object]] = []
+    neighborhood_rollups: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "transaction_count": 0,
+            "with_recent_permit_signal_count": 0,
+            "with_appeal_activity_signal_count": 0,
+            "with_sale_assessment_gap_flag_count": 0,
+        }
+    )
+
+    for transaction_id in matched_transaction_ids:
+        candidate = best_candidate_by_transaction.get(transaction_id)
+        if candidate is None:
+            continue
+
+        parcel_facts = facts_by_parcel.get(candidate.parcel_id, [])
+        if parcel_facts:
+            matched_with_any_context += 1
+
+        transfer_date, consideration_amount = transaction_rows.get(
+            transaction_id, (None, None)
+        )
+        transfer_year = transfer_date.year if transfer_date is not None else None
+        transfer_year_fact = (
+            _find_parcel_year_fact(parcel_facts, transfer_year)
+            if transfer_year is not None
+            else None
+        )
+        if transfer_year_fact is not None:
+            matched_with_transfer_year_context += 1
+
+        has_recent_permit_signal = bool(
+            transfer_year_fact and transfer_year_fact.permit_has_recent_2y is True
+        )
+        if has_recent_permit_signal:
+            with_recent_permit_signal += 1
+
+        has_appeal_activity_signal = bool(
+            transfer_year_fact and (transfer_year_fact.appeal_event_count or 0) > 0
+        )
+        if has_appeal_activity_signal:
+            with_appeal_activity_signal += 1
+
+        has_sale_assessment_gap_flag = _has_sale_assessment_gap(
+            consideration_amount=consideration_amount,
+            assessment_total_value=(
+                transfer_year_fact.assessment_total_value
+                if transfer_year_fact
+                else None
+            ),
+        )
+        if has_sale_assessment_gap_flag:
+            with_sale_assessment_gap_flag += 1
+
+        municipality_name = _resolve_municipality_name(
+            transfer_year_fact=transfer_year_fact,
+            parcel_facts=parcel_facts,
+        )
+        if transfer_year_fact is not None:
+            municipality_rollup = neighborhood_rollups[municipality_name]
+            municipality_rollup["transaction_count"] += 1
+            if has_recent_permit_signal:
+                municipality_rollup["with_recent_permit_signal_count"] += 1
+            if has_appeal_activity_signal:
+                municipality_rollup["with_appeal_activity_signal_count"] += 1
+            if has_sale_assessment_gap_flag:
+                municipality_rollup["with_sale_assessment_gap_flag_count"] += 1
+
+        if (
+            len(timeline_samples) < sample_size
+            and transfer_year is not None
+            and parcel_facts
+        ):
+            timeline_samples.append(
+                _build_transaction_timeline_sample(
+                    transaction_id=transaction_id,
+                    parcel_id=candidate.parcel_id,
+                    review_status=transaction_review_status.get(transaction_id),
+                    transfer_date=transfer_date,
+                    transfer_year=transfer_year,
+                    transfer_year_fact=transfer_year_fact,
+                    parcel_facts=parcel_facts,
+                    has_recent_permit_signal=has_recent_permit_signal,
+                    has_appeal_activity_signal=has_appeal_activity_signal,
+                    has_sale_assessment_gap_flag=has_sale_assessment_gap_flag,
+                )
+            )
+
+    neighborhood_context_aggregates = []
+    for municipality_name in sorted(
+        neighborhood_rollups.keys(),
+        key=lambda name: (
+            -neighborhood_rollups[name]["transaction_count"],
+            name,
+        ),
+    ):
+        rollup = neighborhood_rollups[municipality_name]
+        transaction_count = rollup["transaction_count"]
+        neighborhood_context_aggregates.append(
+            {
+                "municipality_name": municipality_name,
+                "transaction_count": transaction_count,
+                "with_recent_permit_signal_count": rollup[
+                    "with_recent_permit_signal_count"
+                ],
+                "with_appeal_activity_signal_count": rollup[
+                    "with_appeal_activity_signal_count"
+                ],
+                "with_sale_assessment_gap_flag_count": rollup[
+                    "with_sale_assessment_gap_flag_count"
+                ],
+                "recent_permit_signal_rate": _rate(
+                    rollup["with_recent_permit_signal_count"],
+                    transaction_count,
+                ),
+                "appeal_activity_signal_rate": _rate(
+                    rollup["with_appeal_activity_signal_count"],
+                    transaction_count,
+                ),
+                "sale_assessment_gap_flag_rate": _rate(
+                    rollup["with_sale_assessment_gap_flag_count"],
+                    transaction_count,
+                ),
+            }
+        )
+
+    return {
+        "context_signals": {
+            "matched_transactions_with_any_context": matched_with_any_context,
+            "matched_transactions_with_transfer_year_context": (
+                matched_with_transfer_year_context
+            ),
+            "with_recent_permit_signal": with_recent_permit_signal,
+            "with_appeal_activity_signal": with_appeal_activity_signal,
+            "with_sale_assessment_gap_flag": with_sale_assessment_gap_flag,
+        },
+        "parcel_timeline_samples": timeline_samples,
+        "neighborhood_context_aggregates": neighborhood_context_aggregates,
+    }
+
+
+def _build_transaction_timeline_sample(
+    *,
+    transaction_id: int,
+    parcel_id: str,
+    review_status: Optional[str],
+    transfer_date: Optional[date],
+    transfer_year: int,
+    transfer_year_fact: Optional[ParcelYearFact],
+    parcel_facts: list[ParcelYearFact],
+    has_recent_permit_signal: bool,
+    has_appeal_activity_signal: bool,
+    has_sale_assessment_gap_flag: bool,
+) -> dict[str, object]:
+    year_context_rows = [
+        fact for fact in parcel_facts if abs(fact.year - transfer_year) <= 2
+    ]
+    if not year_context_rows:
+        year_context_rows = parcel_facts[:5]
+
+    return {
+        "transaction_id": transaction_id,
+        "parcel_id": parcel_id,
+        "review_status": review_status,
+        "transfer_date": transfer_date.isoformat() if transfer_date else None,
+        "transfer_year": transfer_year,
+        "municipality_name": _resolve_municipality_name(
+            transfer_year_fact=transfer_year_fact,
+            parcel_facts=parcel_facts,
+        ),
+        "context_flags": {
+            "has_recent_permit_signal": has_recent_permit_signal,
+            "has_appeal_activity_signal": has_appeal_activity_signal,
+            "has_sale_assessment_gap_flag": has_sale_assessment_gap_flag,
+        },
+        "year_context": [
+            {
+                "year": fact.year,
+                "assessment_total_value": _decimal_to_string(
+                    fact.assessment_total_value
+                ),
+                "tax_amount": _decimal_to_string(fact.tax_amount),
+                "permit_event_count": fact.permit_event_count,
+                "permit_has_recent_1y": fact.permit_has_recent_1y,
+                "permit_has_recent_2y": fact.permit_has_recent_2y,
+                "appeal_event_count": fact.appeal_event_count,
+                "appeal_reduction_granted_count": fact.appeal_reduction_granted_count,
+                "appeal_partial_reduction_count": fact.appeal_partial_reduction_count,
+                "appeal_unknown_outcome_count": fact.appeal_unknown_outcome_count,
+            }
+            for fact in year_context_rows
+        ],
+    }
+
+
+def _find_parcel_year_fact(
+    parcel_facts: list[ParcelYearFact],
+    transfer_year: int,
+) -> Optional[ParcelYearFact]:
+    for fact in parcel_facts:
+        if fact.year == transfer_year:
+            return fact
+    return None
+
+
+def _resolve_municipality_name(
+    *,
+    transfer_year_fact: Optional[ParcelYearFact],
+    parcel_facts: list[ParcelYearFact],
+) -> str:
+    if transfer_year_fact and transfer_year_fact.municipality_name:
+        return transfer_year_fact.municipality_name
+    for fact in parcel_facts:
+        if fact.municipality_name:
+            return fact.municipality_name
+    return "UNKNOWN"
+
+
+def _has_sale_assessment_gap(
+    *,
+    consideration_amount: Optional[Decimal],
+    assessment_total_value: Optional[Decimal],
+) -> bool:
+    if consideration_amount is None or assessment_total_value is None:
+        return False
+    if assessment_total_value <= 0:
+        return False
+    ratio = consideration_amount / assessment_total_value
+    return (
+        ratio >= _SALE_ASSESSMENT_GAP_HIGH_THRESHOLD
+        or ratio <= _SALE_ASSESSMENT_GAP_LOW_THRESHOLD
+    )
+
+
+def _decimal_to_string(value: Optional[Decimal]) -> Optional[str]:
+    if value is None:
+        return None
+    return f"{value:.2f}"
+
+
+def _rate(numerator: int, denominator: int) -> Optional[float]:
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 4)
 
 
 def _collect_sales_match_candidate_keys(
@@ -739,8 +1082,9 @@ def _classify_confidence_tier(confidence_score: Optional[Decimal]) -> str:
 
 def _sales_match_audit_candidate_sort_key(
     candidate: _SalesMatchAuditCandidate,
-) -> tuple[bool, int, Decimal]:
+) -> tuple[bool, bool, int, Decimal]:
     return (
+        not candidate.is_primary,
         candidate.match_rank is None,
         candidate.match_rank or 0,
         -1
@@ -1629,7 +1973,7 @@ def _parcel_number_crosswalk_candidates(value: Optional[str]) -> tuple[str, ...]
     swapped = prefix + suffix_digits[:2] + suffix_digits[3] + suffix_digits[2]
     swapped += suffix_digits[4:]
 
-    normalized = _normalize_parcel_number(f"{prefix}/{swapped[len(prefix):]}")
+    normalized = _normalize_parcel_number(f"{prefix}/{swapped[len(prefix) :]}")
     if normalized is None:
         return ()
     return (normalized,)
