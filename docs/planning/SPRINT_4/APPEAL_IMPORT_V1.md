@@ -121,17 +121,17 @@ One row per imported appeal event record (import/audit grain, not deduplicated r
 - `docket_number` (nullable string)
 - `appeal_level_raw` (nullable string)
 - `appeal_level_norm` (nullable string)
-  - examples: `open_book`, `board_of_review`, `assessor_review`, `court`, `other`, `unknown`
+  - examples: `open_book`, `board_of_review`, `assessor_review`, `court`, `unknown`
 - `appeal_reason_raw` (nullable text)
 - `appeal_reason_norm` (nullable string)
-  - examples: `valuation`, `classification`, `exemption`, `clerical_error`, `other`, `unknown`
+  - examples: `valuation`, `classification`, `exemption`, `clerical_error`, `unknown`
 - `filing_date` (nullable date)
 - `hearing_date` (nullable date)
 - `decision_date` (nullable date)
 - `tax_year` (nullable integer)
 - `outcome_raw` (nullable string)
 - `outcome_norm` (nullable string)
-  - examples: `reduction_granted`, `partial_reduction`, `denied`, `withdrawn`, `dismissed`, `pending`, `other`, `unknown`
+  - examples: `reduction_granted`, `partial_reduction`, `denied`, `withdrawn`, `dismissed`, `pending`, `unknown`
 - `assessed_value_before` (nullable numeric(14,2))
 - `requested_assessed_value` (nullable numeric(14,2))
 - `decided_assessed_value` (nullable numeric(14,2))
@@ -333,6 +333,11 @@ Unknown outcome tokens should not reject the row.
 ### Appeal Reason Mapping
 
 `appeal_reason_norm` should map common tokens case-insensitively:
+
+Deterministic precedence rule:
+
+- evaluate these mapping rules top-to-bottom and stop on first match
+- this resolves overlapping phrases consistently (for example `valuation error` maps to `valuation`)
 
 - contains `value` or `valuation` -> `valuation`
 - contains `class` or `classification` -> `classification`
