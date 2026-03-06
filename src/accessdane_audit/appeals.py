@@ -606,13 +606,19 @@ def _normalize_outcome(value: Optional[str]) -> Optional[str]:
     if normalized in {"granted", "approved"} or "reduction granted" in normalized:
         return "reduction_granted"
     if (
-        "partial" in normalized
+        normalized in {"denied", "upheld"}
+        or "denied" in normalized
+        or "denial" in normalized
+        or "no change" in normalized
+    ):
+        return "denied"
+    if (
+        normalized == "partial"
+        or "partial reduction" in normalized
         or "partially granted" in normalized
         or "modified" in normalized
     ):
         return "partial_reduction"
-    if normalized in {"denied", "upheld"} or "no change" in normalized:
-        return "denied"
     if normalized in {"withdraw", "withdrawn"}:
         return "withdrawn"
     if "dismissed" in normalized:

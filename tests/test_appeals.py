@@ -114,6 +114,39 @@ def test_ingest_appeals_rejects_row_without_appeal_signal(
     )
 
 
+def test_ingest_appeals_outcome_mapping_prioritizes_denial_over_partial_keyword(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_outcome_priority.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_outcome_priority.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Outcome\n"
+            "A-1,06-10-0139-151-1,01/15/2025,partial denial\n"
+            "A-2,06-10-0139-151-1,01/15/2025,partial reduction\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_appeals_csv(session, csv_path)
+
+    assert summary.total_rows == 2
+    assert summary.loaded_rows == 2
+    assert summary.rejected_rows == 0
+
+    with session_scope(database_url) as session:
+        rows = session.execute(
+            select(AppealEvent).order_by(AppealEvent.source_row_number)
+        ).scalars()
+        first_row, second_row = list(rows)
+
+    assert first_row.outcome_norm == "denied"
+    assert second_row.outcome_norm == "partial_reduction"
+
+
 def test_ingest_appeals_rejects_file_without_appeal_signal_headers(
     tmp_path: Path,
 ) -> None:
