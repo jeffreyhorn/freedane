@@ -247,6 +247,7 @@ File-level failure conditions:
 - duplicate headers after normalization
 - header set does not include any parcel locator header
 - header set does not include any temporal anchor header
+- header set does not include any appeal-signal header (at least one of `appeal_number`, `docket_number`, `outcome_raw`, `requested_assessed_value`, or `decided_assessed_value`)
 
 ## Normalization Rules
 
@@ -267,9 +268,11 @@ File-level failure conditions:
 - `site_address_raw`: preserve source value when nonblank
 - `site_address_norm` algorithm:
   1. uppercase
-  2. replace punctuation characters (`, . : ; # @ - / \\ ( ) ' "`) with spaces
-  3. normalize all whitespace to single spaces
-  4. trim
+  2. replace punctuation characters (`, . : ; # @ - / \ ( ) ' "`) with spaces
+  3. treat all ASCII whitespace characters (space, tab, carriage return, line feed) as spaces
+  4. collapse any sequence of one or more spaces into a single space
+  5. trim leading and trailing spaces
+  6. use the resulting string as the normalized address
 - do not remove unit/suite identifiers in v1
 
 ### Owner Name
@@ -365,7 +368,7 @@ Derived value:
 
 - `value_change_amount = decided_assessed_value - assessed_value_before` when both are present
 - otherwise null
-- if computed change is positive for a row mapped to a reduction outcome, emit warning `outcome_value_direction_mismatch`
+- if computed change is positive for a row whose `outcome_norm` is `reduction_granted` or `partial_reduction`, emit warning `outcome_value_direction_mismatch`
 
 ## Parcel Attachment Strategy
 
