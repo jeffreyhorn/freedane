@@ -81,6 +81,38 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         assert parcel_year_indexes["ix_parcel_year_facts_current_owner_name"] == (
             "current_owner_name",
         )
+        parcel_year_columns = {
+            column["name"] for column in inspector.get_columns("parcel_year_facts")
+        }
+        assert {
+            "permit_event_count",
+            "permit_declared_valuation_known_count",
+            "permit_declared_valuation_sum",
+            "permit_estimated_cost_known_count",
+            "permit_estimated_cost_sum",
+            "permit_status_applied_count",
+            "permit_status_issued_count",
+            "permit_status_finaled_count",
+            "permit_status_cancelled_count",
+            "permit_status_expired_count",
+            "permit_status_unknown_count",
+            "permit_recent_1y_count",
+            "permit_recent_2y_count",
+            "permit_has_recent_1y",
+            "permit_has_recent_2y",
+            "appeal_event_count",
+            "appeal_reduction_granted_count",
+            "appeal_partial_reduction_count",
+            "appeal_denied_count",
+            "appeal_withdrawn_count",
+            "appeal_dismissed_count",
+            "appeal_pending_count",
+            "appeal_unknown_outcome_count",
+            "appeal_value_change_known_count",
+            "appeal_value_change_total",
+            "appeal_value_change_reduction_total",
+            "appeal_value_change_increase_total",
+        }.issubset(parcel_year_columns)
         parcel_characteristic_indexes = {
             index["name"]: tuple(index["column_names"])
             for index in inspector.get_indexes("parcel_characteristics")
