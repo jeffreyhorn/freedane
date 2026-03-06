@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, load_only
 
 from .models import Parcel, ParcelCharacteristic, ParcelSummary, PermitEvent
@@ -28,6 +28,9 @@ NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
 EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
 PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
 ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
+_MATCH_BATCH_SIZE = 500
+_NARROWING_BATCH_SIZE = 100
+_T = TypeVar("_T")
 _STATUS_MAP = {
     "applied": "applied",
     "application received": "applied",
@@ -109,9 +112,26 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
             normalized_header_to_raw = _build_normalized_header_map(source_headers)
             header_binding = _resolve_header_binding(normalized_header_to_raw)
             _validate_permit_shape_headers(header_binding)
-            parcel_number_index, address_index = _build_permit_parcel_link_indexes(
-                session
+            parcel_number_keys, address_keys = (
+                _collect_permit_parcel_link_candidate_keys(
+                    reader=reader,
+                    source_headers=source_headers,
+                    header_binding=header_binding,
+                )
             )
+            parcel_number_index, address_index = _build_permit_parcel_link_indexes(
+                session,
+                parcel_number_keys=parcel_number_keys,
+                address_keys=address_keys,
+            )
+            handle.seek(0)
+            reader = csv.reader(handle)
+            try:
+                next(reader)
+            except StopIteration as exc:
+                raise PermitImportFileError(
+                    "CSV file is missing a header row."
+                ) from exc
 
             total_rows = 0
             loaded_rows = 0
@@ -452,13 +472,11 @@ def _bound_value(
     return value if isinstance(value, str) else None
 
 
-def _apply_permit_event_update(
-    transaction: PermitEvent, values: dict[str, object]
-) -> None:
+def _apply_permit_event_update(event: PermitEvent, values: dict[str, object]) -> None:
     for key, value in values.items():
         if key in {"loaded_at"}:
             continue
-        setattr(transaction, key, value)
+        setattr(event, key, value)
 
 
 def _classify_row_error(
@@ -556,37 +574,134 @@ def _normalize_site_address(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _collect_permit_parcel_link_candidate_keys(
+    *,
+    reader: Iterator[list[str]],
+    source_headers: list[str],
+    header_binding: dict[str, Optional[str]],
+) -> tuple[set[str], set[str]]:
+    parcel_number_keys: set[str] = set()
+    address_keys: set[str] = set()
+
+    for row_values in reader:
+        row = _build_row_mapping(source_headers, row_values)
+
+        parcel_number_raw = _preserved_raw_text(
+            _bound_value(row, header_binding, "parcel_number_raw")
+        )
+        normalized_parcel_number = _normalize_parcel_number(parcel_number_raw)
+        if normalized_parcel_number is not None:
+            parcel_number_keys.add(normalized_parcel_number)
+        parcel_number_keys.update(
+            _parcel_number_crosswalk_candidates(parcel_number_raw)
+        )
+
+        site_address_raw = _preserved_raw_text(
+            _bound_value(row, header_binding, "site_address_raw")
+        )
+        normalized_address = _normalize_site_address(site_address_raw)
+        if normalized_address is not None:
+            address_keys.add(normalized_address)
+
+    return parcel_number_keys, address_keys
+
+
 def _build_permit_parcel_link_indexes(
     session: Session,
+    *,
+    parcel_number_keys: set[str],
+    address_keys: set[str],
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    parcel_number_index: dict[str, set[str]] = defaultdict(set)
-    address_index: dict[str, set[str]] = defaultdict(set)
+    return (
+        _build_permit_parcel_number_match_index(
+            session,
+            allowed_keys=parcel_number_keys,
+        ),
+        _build_permit_address_match_index(
+            session,
+            allowed_keys=address_keys,
+        ),
+    )
 
-    for parcel_id in session.execute(select(Parcel.id)).scalars():
-        normalized_parcel_id = _normalize_parcel_number(parcel_id)
-        if normalized_parcel_id is not None:
+
+def _build_permit_parcel_number_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, set[str]]:
+    if not allowed_keys:
+        return {}
+
+    parcel_number_index: dict[str, set[str]] = defaultdict(set)
+    for key_batch in _chunked(sorted(allowed_keys), _MATCH_BATCH_SIZE):
+        for parcel_id in session.execute(
+            select(Parcel.id).where(Parcel.id.in_(key_batch))
+        ).scalars():
+            normalized_parcel_id = _normalize_parcel_number(parcel_id)
+            if normalized_parcel_id is None or normalized_parcel_id not in allowed_keys:
+                continue
             parcel_number_index[normalized_parcel_id].add(parcel_id)
 
-    for row in session.execute(
-        select(
-            ParcelCharacteristic.parcel_id,
-            ParcelCharacteristic.formatted_parcel_number,
-        ).where(ParcelCharacteristic.formatted_parcel_number.is_not(None))
-    ):
-        normalized = _normalize_parcel_number(row.formatted_parcel_number)
-        if normalized is not None:
-            parcel_number_index[normalized].add(row.parcel_id)
+    normalized_expr = _normalized_parcel_number_sql(
+        ParcelCharacteristic.formatted_parcel_number
+    )
+    for key_batch in _chunked(sorted(allowed_keys), _MATCH_BATCH_SIZE):
+        for parcel_id, normalized in session.execute(
+            select(
+                ParcelCharacteristic.parcel_id,
+                normalized_expr,
+            ).where(normalized_expr.in_(key_batch))
+        ):
+            if normalized is None:
+                continue
+            parcel_number_index[normalized].add(parcel_id)
 
-    for row in session.execute(
-        select(ParcelSummary.parcel_id, ParcelSummary.primary_address).where(
-            ParcelSummary.primary_address.is_not(None)
+    return dict(parcel_number_index)
+
+
+def _build_permit_address_match_index(
+    session: Session,
+    *,
+    allowed_keys: set[str],
+) -> dict[str, set[str]]:
+    if not allowed_keys:
+        return {}
+
+    address_index: dict[str, set[str]] = defaultdict(set)
+    prefix_tokens = sorted(
+        {key.split()[0] for key in allowed_keys if key.strip() and key.split()}
+    )
+    if not prefix_tokens:
+        return {}
+
+    base_query = (
+        select(ParcelSummary.parcel_id, ParcelSummary.primary_address)
+        .where(ParcelSummary.primary_address.is_not(None))
+        .where(func.length(func.trim(ParcelSummary.primary_address)) > 0)
+    )
+    upper_primary_address = func.upper(ParcelSummary.primary_address)
+    for prefix_batch in _chunked(prefix_tokens, _NARROWING_BATCH_SIZE):
+        prefix_filter = or_(
+            *(
+                or_(
+                    upper_primary_address == prefix,
+                    upper_primary_address.startswith(
+                        f"{prefix} ",
+                        autoescape=True,
+                    ),
+                )
+                for prefix in prefix_batch
+            )
         )
-    ):
-        normalized = _normalize_site_address(row.primary_address)
-        if normalized is not None:
-            address_index[normalized].add(row.parcel_id)
+        for parcel_id, primary_address in session.execute(
+            base_query.where(prefix_filter)
+        ):
+            normalized = _normalize_site_address(primary_address)
+            if normalized is None or normalized not in allowed_keys:
+                continue
+            address_index[normalized].add(parcel_id)
 
-    return dict(parcel_number_index), dict(address_index)
+    return dict(address_index)
 
 
 def _resolve_permit_parcel_link(
@@ -633,6 +748,18 @@ def _resolve_permit_parcel_link(
             )
 
     return None, None, None
+
+
+def _normalized_parcel_number_sql(column):
+    normalized = func.upper(column)
+    for separator in (" ", "-", ".", "_", "/"):
+        normalized = func.replace(normalized, separator, "")
+    return normalized
+
+
+def _chunked(values: list[_T], size: int) -> Iterator[list[_T]]:
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
 
 
 def _normalize_permit_status(value: Optional[str]) -> Optional[str]:

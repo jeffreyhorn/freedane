@@ -9,7 +9,13 @@ from typer.testing import CliRunner
 
 from accessdane_audit import cli
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import Fetch, Parcel, ParcelCharacteristic, PermitEvent
+from accessdane_audit.models import (
+    Fetch,
+    Parcel,
+    ParcelCharacteristic,
+    ParcelSummary,
+    PermitEvent,
+)
 from accessdane_audit.permits import PermitImportFileError, ingest_permits_csv
 
 
@@ -283,6 +289,226 @@ def test_ingest_permits_links_unique_exact_parcel_number_match(
                 ParcelCharacteristic(
                     parcel_id="0601001391511",
                     formatted_parcel_number="06-10-0139-151-1",
+                ),
+            ]
+        )
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-permits", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.parcel_id == "0601001391511"
+    assert row.parcel_link_method == "exact_parcel_number"
+    assert str(row.parcel_link_confidence) == "1.0000"
+
+
+def test_ingest_permits_links_unique_crosswalk_parcel_number_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "permit_import_crosswalk_link.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_crosswalk_link.csv"
+    csv_path.write_text(
+        "Parcel Number,Issued Date\n06-01/060101391511,01/15/2025\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601061001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601061001391511",
+                    url="https://example.test/parcel/0601061001391511",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="0601061001391511",
+                    formatted_parcel_number="06-01/061001391511",
+                ),
+            ]
+        )
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-permits", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.parcel_id == "0601061001391511"
+    assert row.parcel_link_method == "parcel_number_crosswalk"
+    assert str(row.parcel_link_confidence) == "0.9500"
+
+
+def test_ingest_permits_links_unique_normalized_address_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "permit_import_address_link.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_address_link.csv"
+    csv_path.write_text(
+        "Address,Issued Date\n4519 and 4521 Field Ave #2,01/15/2025\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="4519 and 4521 Field Ave #2",
+                ),
+            ]
+        )
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-permits", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.parcel_id == "0601001391511"
+    assert row.parcel_link_method == "normalized_address"
+    assert str(row.parcel_link_confidence) == "0.9000"
+
+
+def test_ingest_permits_does_not_link_ambiguous_normalized_address_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "permit_import_address_ambiguous.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_address_ambiguous.csv"
+    csv_path.write_text(
+        "Address,Issued Date\n4519 and 4521 Field Ave #2,01/15/2025\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Parcel(id="0601001391512"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                Fetch(
+                    id=2,
+                    parcel_id="0601001391512",
+                    url="https://example.test/parcel/0601001391512",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="4519 and 4521 Field Ave #2",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391512",
+                    fetch_id=2,
+                    primary_address="4519 and 4521 Field Ave #2",
+                ),
+            ]
+        )
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-permits", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.parcel_id is None
+    assert row.parcel_link_method is None
+    assert row.parcel_link_confidence is None
+
+
+def test_ingest_permits_prefers_exact_parcel_number_over_ambiguous_address_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "permit_import_exact_precedence.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_exact_precedence.csv"
+    csv_path.write_text(
+        (
+            "Parcel Number,Address,Issued Date\n"
+            "06-10-0139-151-1,4519 and 4521 Field Ave #2,01/15/2025\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Parcel(id="0601001391512"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                Fetch(
+                    id=2,
+                    parcel_id="0601001391512",
+                    url="https://example.test/parcel/0601001391512",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="0601001391511",
+                    formatted_parcel_number="06-10-0139-151-1",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="4519 and 4521 Field Ave #2",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391512",
+                    fetch_id=2,
+                    primary_address="4519 and 4521 Field Ave #2",
                 ),
             ]
         )
