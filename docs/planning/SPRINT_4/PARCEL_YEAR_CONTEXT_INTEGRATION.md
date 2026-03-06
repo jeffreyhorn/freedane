@@ -180,12 +180,26 @@ For each `(parcel_id, year)`:
   - set to `0` when the explicit-outcome eligible set is non-empty but none map to that
     bucket value
   - set to a positive integer when one or more events map to that bucket
-- `appeal_unknown_outcome_count` counts included events where `outcome_norm` is null or
-  outside the explicit bucket domain
+- `appeal_unknown_outcome_count`:
+  - counts included events where `outcome_norm` is null or outside the explicit bucket
+    domain
+  - set to null when there are no included appeal events for `(parcel_id, year)`
+  - set to `0` when included appeal events exist but all outcomes map to explicit
+    non-unknown buckets
+  - set to a positive integer when one or more included events map to the unknown bucket
 - `appeal_value_change_known_count` = count where `value_change_amount is not null`
-- `appeal_value_change_total` = sum of non-null `value_change_amount`
-- `appeal_value_change_reduction_total` = sum where `value_change_amount < 0`
-- `appeal_value_change_increase_total` = sum where `value_change_amount > 0`
+- `appeal_value_change_total`:
+  - sum of non-null `value_change_amount`
+  - set to null when `appeal_value_change_known_count = 0`
+  - set to a numeric value (including `0.00`) when `appeal_value_change_known_count > 0`
+- `appeal_value_change_reduction_total`:
+  - sum where `value_change_amount < 0`
+  - set to null when `appeal_value_change_known_count = 0`
+  - set to `0.00` when `appeal_value_change_known_count > 0` but no known values are `< 0`
+- `appeal_value_change_increase_total`:
+  - sum where `value_change_amount > 0`
+  - set to null when `appeal_value_change_known_count = 0`
+  - set to `0.00` when `appeal_value_change_known_count > 0` but no known values are `> 0`
 
 ## Null / Unknown Semantics
 
@@ -209,8 +223,11 @@ Counts and booleans:
 Numeric sums:
 
 - keep nullable
-- set to null when no contributing non-null values exist
+- set to null when no contributing non-null values exist for that metric
 - set to numeric value (including `0.00`) when at least one contributing value exists
+- for sign-filtered appeal subtotals (`appeal_value_change_reduction_total`,
+  `appeal_value_change_increase_total`), use `0.00` (not null) when
+  `appeal_value_change_known_count > 0` but the sign-filtered subset is empty
 
 Unknown outcomes:
 
