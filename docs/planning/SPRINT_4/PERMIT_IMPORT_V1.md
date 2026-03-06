@@ -62,6 +62,8 @@ Definitions:
 
 - `source_row_number` is the 1-based physical CSV data-row index after the header line, counting every data row in the file (including blank/empty lines).
 - `source_file_sha256` is computed from raw file bytes exactly as read from disk.
+- `source_headers` stores raw CSV header cells exactly as read, in original column order.
+- v1 does not persist normalized header keys; normalization is applied at ingest-time for matching logic.
 - `raw_row` stores source values exactly as parsed from CSV (pre-normalization).
 
 ## `permit_events`
@@ -182,15 +184,15 @@ The importer should map source headers into canonical internal fields with an ex
 
 ### Header Normalization
 
-Before applying alias and precedence rules, normalize every raw CSV header name:
+Before applying alias and precedence rules, normalize every raw CSV header name with this exact algorithm, in order:
 
-- convert to lowercase
-- trim leading and trailing whitespace
-- collapse internal whitespace runs (space/tab) to a single space
-- treat space (` `), underscore (`_`), and hyphen (`-`) as equivalent separators for matching
-- ignore a single trailing `:` or `#` character
+1. Trim leading and trailing whitespace.
+2. If, after trimming, the header ends with a single `:` or `#`, remove that one trailing character.
+3. Convert the full header to lowercase.
+4. Replace every run of one or more separator characters (space ` `, underscore `_`, or hyphen `-`) with a single space.
+5. Collapse any remaining internal whitespace runs (space/tab) to a single space.
 
-All alias lookups and header comparisons must use this normalized header key.
+All alias lookups and header comparisons must use this normalized header key and compare by exact string equality.
 
 ### Header Alias Strategy
 
@@ -230,7 +232,7 @@ Deterministic rule:
 File-level failure conditions:
 
 - unreadable CSV
-- duplicate identical header names in the same file
+- duplicate headers after normalization (two or more physical headers that normalize to the same header key)
 - header set does not meet minimum permit-shape requirement:
   - must recognize at least one parcel locator header (`parcel_number_raw` or `site_address_raw`)
   - must recognize at least one temporal anchor header (one of `applied_date`, `issued_date`, `finaled_date`, `status_date`, or `permit_year`)
