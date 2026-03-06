@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import delete, select
 
 from .anomaly import detect_anomalies
+from .appeals import AppealImportFileError, ingest_appeals_csv
 from .config import load_settings
 from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
@@ -217,6 +218,44 @@ def ingest_permits_cmd(
             typer.echo(f"  {reason}={count}")
     if summary.warning_counts:
         typer.echo("Permit warning counts:")
+        for warning, count in summary.warning_counts.items():
+            typer.echo(f"  {warning}={count}")
+
+
+@app.command("ingest-appeals")
+def ingest_appeals_cmd(
+    file: Path = typer.Option(
+        ...,
+        "--file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Path to an appeal events CSV file",
+    ),
+) -> None:
+    settings = load_settings()
+
+    try:
+        with session_scope(settings.database_url) as session:
+            summary = ingest_appeals_csv(session, file)
+    except AppealImportFileError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--file") from exc
+
+    typer.echo(
+        "Appeal import summary: "
+        f"total={summary.total_rows} "
+        f"loaded={summary.loaded_rows} "
+        f"rejected={summary.rejected_rows} "
+        f"inserted={summary.inserted_rows} "
+        f"updated={summary.updated_rows}"
+    )
+    if summary.rejection_reason_counts:
+        typer.echo("Appeal rejection counts:")
+        for reason, count in summary.rejection_reason_counts.items():
+            typer.echo(f"  {reason}={count}")
+    if summary.warning_counts:
+        typer.echo("Appeal warning counts:")
         for warning, count in summary.warning_counts.items():
             typer.echo(f"  {warning}={count}")
 
