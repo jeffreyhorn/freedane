@@ -54,6 +54,9 @@ Resolution order:
 
 Notes:
 
+- A lookup stage resolves only when it yields exactly one candidate parcel. If a stage
+  yields multiple candidates, treat the event as unresolved for this integration step
+  (do not pick one arbitrarily).
 - This fallback is required because appeals v1 currently preserves parcel locator fields
   but does not yet populate `appeal_events.parcel_id` during import.
 - For this integration step, we intentionally stop after those two normalized parcel-number
@@ -206,8 +209,11 @@ Full rebuild behavior:
 Scoped rebuild behavior (`parcel_ids` provided):
 
 - delete only facts for selected parcels
+- when loading permit/appeal events, do not pre-filter by raw `parcel_id` alone; include
+  candidate rows with null `parcel_id`, resolve `effective_parcel_id`, then keep only
+  events whose resolved parcel is selected
 - regenerate only selected parcels
-- recent indicators are computed from events for the same selected parcel only
+- recent indicators are computed from events whose resolved parcel is selected
 
 Idempotency expectations:
 
