@@ -35,6 +35,7 @@ from .models import (
 )
 from .parcel_year_facts import rebuild_parcel_year_facts
 from .parse import ParsedPage, parse_page
+from .permits import PermitImportFileError, ingest_permits_csv
 from .profiling import build_data_profile
 from .quality import quality_report_to_dict, run_data_quality_checks
 from .retr import (
@@ -174,6 +175,36 @@ def ingest_retr_cmd(
 
     typer.echo(
         "RETR import summary: "
+        f"total={summary.total_rows} "
+        f"loaded={summary.loaded_rows} "
+        f"rejected={summary.rejected_rows} "
+        f"inserted={summary.inserted_rows} "
+        f"updated={summary.updated_rows}"
+    )
+
+
+@app.command("ingest-permits")
+def ingest_permits_cmd(
+    file: Path = typer.Option(
+        ...,
+        "--file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Path to a permit events CSV file",
+    ),
+) -> None:
+    settings = load_settings()
+
+    try:
+        with session_scope(settings.database_url) as session:
+            summary = ingest_permits_csv(session, file)
+    except PermitImportFileError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--file") from exc
+
+    typer.echo(
+        "Permit import summary: "
         f"total={summary.total_rows} "
         f"loaded={summary.loaded_rows} "
         f"rejected={summary.rejected_rows} "
