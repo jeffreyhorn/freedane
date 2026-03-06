@@ -47,6 +47,7 @@ from .retr import (
 )
 from .scrape import fetch_page
 from .search import search_trs
+from .spatial import detect_spatial_support, spatial_support_status_to_dict
 from .trs import DEFAULT_SPLIT_PARTS, enumerate_trs, parse_trs_code
 
 app = typer.Typer(add_completion=False)
@@ -305,6 +306,21 @@ def report_sales_matches_cmd(
             sales_transaction_ids=transaction_ids,
             sample_size=sample_size,
         )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("spatial-support")
+def spatial_support_cmd(
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = spatial_support_status_to_dict(detect_spatial_support(session))
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)

@@ -126,6 +126,14 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         assert parcel_characteristic_indexes[
             "ix_parcel_characteristics_state_municipality_code"
         ] == ("state_municipality_code",)
+        parcel_characteristic_columns = {
+            column["name"] for column in inspector.get_columns("parcel_characteristics")
+        }
+        assert {
+            "centroid_latitude",
+            "centroid_longitude",
+            "geometry_wkt",
+        }.issubset(parcel_characteristic_columns)
         parcel_lineage_indexes = {
             index["name"]: tuple(index["column_names"])
             for index in inspector.get_indexes("parcel_lineage_links")

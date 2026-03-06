@@ -707,3 +707,56 @@ def test_report_sales_matches_ids_accepts_empty_file(
     payload = json.loads(result.stdout)
     assert payload["scope"]["scoped_transaction_id_count"] == 0
     assert payload["scope"]["loaded_transactions_in_scope"] == 0
+
+
+def test_spatial_support_reports_point_only_mode_for_sqlite(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "spatial_support.sqlite"
+    database_url = f"sqlite:///{db_path}"
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["spatial-support"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["database_dialect"] == "sqlite"
+    assert payload["mode"] == "point_only"
+    assert payload["postgis_available"] is False
+    assert payload["geometry_columns_available"] is False
+
+
+def test_spatial_support_can_write_output_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "spatial_support_out.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    output_path = tmp_path / "spatial_support.json"
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["spatial-support", "--out", str(output_path)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert output_path.exists()
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["database_dialect"] == "sqlite"
+    assert payload["mode"] == "point_only"
