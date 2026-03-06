@@ -188,6 +188,125 @@ def test_ingest_appeals_outcome_mapping_prioritizes_denial_over_partial_keyword(
     assert second_row.outcome_norm == "partial_reduction"
 
 
+def test_ingest_appeals_records_year_anchor_mismatch_warning(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "appeal_import_year_anchor_mismatch.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_year_anchor_mismatch.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Tax Year\n"
+            "A-1,06-10-0139-151-1,01/15/2025,2024\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-appeals", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Appeal warning counts:" in result.stdout
+    assert "  tax_year_anchor_mismatch=1" in result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.tax_year == 2024
+    assert row.import_warnings == ["tax_year_anchor_mismatch"]
+
+
+def test_ingest_appeals_records_outcome_value_direction_mismatch_warning(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "appeal_import_outcome_direction_mismatch.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_outcome_direction_mismatch.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Outcome,"
+            "Assessed Value Before,Final Value\n"
+            "A-1,06-10-0139-151-1,01/15/2025,reduction granted,100000,110000\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-appeals", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Appeal warning counts:" in result.stdout
+    assert "  outcome_value_direction_mismatch=1" in result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.outcome_norm == "reduction_granted"
+    assert str(row.value_change_amount) == "10000.00"
+    assert row.import_warnings == ["outcome_value_direction_mismatch"]
+
+
+def test_ingest_appeals_treats_common_null_tokens_as_missing_values(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "appeal_import_null_tokens.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_null_tokens.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,"
+            "Hearing Date,Decision Date,Outcome\n"
+            "A-1,06-10-0139-151-1,01/15/2025,N/A,NULL,TBD\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-appeals", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "Appeal import summary: total=1 loaded=1 rejected=0 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.hearing_date is None
+    assert row.decision_date is None
+    assert row.outcome_raw is None
+    assert row.outcome_norm is None
+    assert row.import_warnings is None
+
+
 def test_ingest_appeals_rejects_file_without_appeal_signal_headers(
     tmp_path: Path,
 ) -> None:
@@ -206,6 +325,76 @@ def test_ingest_appeals_rejects_file_without_appeal_signal_headers(
     ):
         with session_scope(database_url) as session:
             ingest_appeals_csv(session, csv_path)
+
+
+def test_ingest_appeals_rejects_duplicate_headers_after_normalization(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_duplicate_headers.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_duplicate_headers.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Appeal-Number,Parcel Number,Filing Date\n"
+            "A-1,A-1,06-10-0139-151-1,01/15/2025\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with pytest.raises(
+        AppealImportFileError,
+        match="duplicate headers after normalization",
+    ):
+        with session_scope(database_url) as session:
+            ingest_appeals_csv(session, csv_path)
+
+
+def test_ingest_appeals_rejects_blank_header_name(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_blank_header.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_blank_header.csv"
+    csv_path.write_text(
+        ",Parcel Number,Filing Date,Appeal Number\nx,06-10-0139-151-1,01/15/2025,A-1\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with pytest.raises(AppealImportFileError, match="blank header names"):
+        with session_scope(database_url) as session:
+            ingest_appeals_csv(session, csv_path)
+
+
+def test_ingest_appeals_parses_parenthesized_amount_with_internal_spaces(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_parenthesized_amount.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_parenthesized_amount.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Requested Value\n"
+            "A-1,06-10-0139-151-1,01/15/2025,( 10 000 )\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_appeals_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 0
+    assert summary.warning_counts == {}
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert str(row.requested_assessed_value) == "-10000.00"
 
 
 def test_ingest_appeals_upserts_rows_when_reimporting_same_file(
