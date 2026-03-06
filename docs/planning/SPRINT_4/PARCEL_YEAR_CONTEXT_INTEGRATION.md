@@ -33,9 +33,13 @@ Primary sources:
 - `appeal_events`
 - existing `parcel_year_facts` source tables (`assessments`, `taxes`, `payments`, `parcel_summaries`)
 
-Event inclusion rule:
+Event inclusion rule (event tables only):
 
-- include only rows where `import_status = 'loaded'`
+- for `permit_events` and `appeal_events`, include only rows where
+  `import_status = 'loaded'`
+- non-event parcel-year sources (`assessments`, `taxes`, `payments`,
+  `parcel_summaries`) do not have `import_status` and are included via existing
+  `parcel_year_facts` integration behavior (no extra event-specific filter)
 
 ## Parcel And Year Resolution
 
@@ -142,6 +146,12 @@ For each `(parcel_id, year)`:
   - `unknown`
 - events where `permit_status_norm` is null are excluded from `permit_status_*_count`
   buckets but still included in `permit_event_count`
+- for each `permit_status_*_count` bucket:
+  - set to null when no included permit events for `(parcel_id, year)` have non-null
+    `permit_status_norm` (status-eligible event set is empty)
+  - set to `0` when at least one included permit event has non-null `permit_status_norm`
+    but none map to that specific bucket value
+  - set to a positive integer when one or more included permit events map to that bucket
 
 Recent indicators for each `(parcel_id, year)`:
 
@@ -163,6 +173,15 @@ For each `(parcel_id, year)`:
   - `dismissed`
   - `pending`
   - null or any other value -> `appeal_unknown_outcome_count`
+- for each explicit non-unknown outcome bucket (`reduction_granted`, `partial_reduction`,
+  `denied`, `withdrawn`, `dismissed`, `pending`):
+  - set to null when there are no included appeal events for `(parcel_id, year)` with
+    non-null `outcome_norm` in the explicit bucket domain
+  - set to `0` when the explicit-outcome eligible set is non-empty but none map to that
+    bucket value
+  - set to a positive integer when one or more events map to that bucket
+- `appeal_unknown_outcome_count` counts included events where `outcome_norm` is null or
+  outside the explicit bucket domain
 - `appeal_value_change_known_count` = count where `value_change_amount is not null`
 - `appeal_value_change_total` = sum of non-null `value_change_amount`
 - `appeal_value_change_reduction_total` = sum where `value_change_amount < 0`
