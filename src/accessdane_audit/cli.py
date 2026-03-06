@@ -211,6 +211,17 @@ def ingest_permits_cmd(
         f"inserted={summary.inserted_rows} "
         f"updated={summary.updated_rows}"
     )
+    if summary.rejection_reason_counts:
+        rejection_counts_text = ", ".join(
+            f"{reason}={count}"
+            for reason, count in summary.rejection_reason_counts.items()
+        )
+        typer.echo(f"Permit rejection counts: {rejection_counts_text}")
+    if summary.warning_counts:
+        warning_counts_text = ", ".join(
+            f"{warning}={count}" for warning, count in summary.warning_counts.items()
+        )
+        typer.echo(f"Permit warning counts: {warning_counts_text}")
 
 
 @app.command("match-sales")

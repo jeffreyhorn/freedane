@@ -31,6 +31,16 @@ ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 _MATCH_BATCH_SIZE = 500
 _NARROWING_BATCH_SIZE = 100
 _T = TypeVar("_T")
+_NULL_TOKENS = {
+    "n/a",
+    "na",
+    "n\\a",
+    "none",
+    "null",
+    "not available",
+    "not applicable",
+    "tbd",
+}
 _STATUS_MAP = {
     "applied": "applied",
     "application received": "applied",
@@ -83,6 +93,8 @@ class PermitImportSummary:
     rejected_rows: int
     inserted_rows: int
     updated_rows: int
+    rejection_reason_counts: dict[str, int]
+    warning_counts: dict[str, int]
 
 
 def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
@@ -138,6 +150,8 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
             rejected_rows = 0
             inserted_rows = 0
             updated_rows = 0
+            rejection_reason_counts: Counter[str] = Counter()
+            warning_counts: Counter[str] = Counter()
 
             for source_row_number, row_values in enumerate(reader, start=1):
                 total_rows += 1
@@ -147,6 +161,7 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
                     source_file_name=csv_path.name,
                     source_file_sha256=file_sha256,
                     source_row_number=source_row_number,
+                    source_column_count=len(row_values),
                     source_headers=source_headers,
                     header_binding=header_binding,
                     parcel_number_index=parcel_number_index,
@@ -166,6 +181,18 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
                     loaded_rows += 1
                 else:
                     rejected_rows += 1
+
+                    import_error = values.get("import_error")
+                    if isinstance(import_error, str):
+                        rejection_reason_counts[import_error] += 1
+
+                import_warnings = values.get("import_warnings")
+                if isinstance(import_warnings, list):
+                    warning_counts.update(
+                        warning
+                        for warning in import_warnings
+                        if isinstance(warning, str) and warning
+                    )
     except OSError as exc:
         raise PermitImportFileError(f"Could not read CSV file: {exc}") from exc
     except UnicodeDecodeError as exc:
@@ -181,6 +208,8 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
         rejected_rows=rejected_rows,
         inserted_rows=inserted_rows,
         updated_rows=updated_rows,
+        rejection_reason_counts=dict(sorted(rejection_reason_counts.items())),
+        warning_counts=dict(sorted(warning_counts.items())),
     )
 
 
@@ -285,6 +314,7 @@ def _build_permit_event_values(
     source_file_name: str,
     source_file_sha256: str,
     source_row_number: int,
+    source_column_count: int,
     source_headers: list[str],
     header_binding: dict[str, Optional[str]],
     parcel_number_index: dict[str, set[str]],
@@ -382,6 +412,12 @@ def _build_permit_event_values(
     ):
         if warning is not None:
             warnings.append(warning)
+    warnings.extend(
+        _row_shape_warnings(
+            source_column_count=source_column_count,
+            source_header_count=len(source_headers),
+        )
+    )
 
     derived_permit_year = _derive_permit_year(
         issued_date=issued_date,
@@ -521,7 +557,22 @@ def _trimmed_text(value: Optional[str]) -> Optional[str]:
     trimmed = value.strip()
     if not trimmed:
         return None
+    if trimmed.lower() in _NULL_TOKENS:
+        return None
     return trimmed
+
+
+def _row_shape_warnings(
+    *,
+    source_column_count: int,
+    source_header_count: int,
+) -> list[str]:
+    warnings: list[str] = []
+    if source_column_count < source_header_count:
+        warnings.append("row_shorter_than_header")
+    if source_column_count > source_header_count:
+        warnings.append("row_has_extra_columns")
+    return warnings
 
 
 def _collapsed_text(value: Optional[str]) -> Optional[str]:
@@ -828,6 +879,8 @@ def _parse_optional_amount(
         return None, None
 
     normalized = trimmed.replace("$", "").replace(",", "")
+    if normalized.startswith("(") and normalized.endswith(")"):
+        normalized = f"-{normalized[1:-1]}"
     try:
         amount = Decimal(normalized).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except InvalidOperation:

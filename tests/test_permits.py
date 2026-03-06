@@ -222,6 +222,133 @@ def test_ingest_permits_upserts_rows_when_reimporting_same_file(
     assert count == 1
 
 
+def test_ingest_permits_treats_common_null_tokens_as_missing_values(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "permit_import_null_tokens.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_null_tokens.csv"
+    csv_path.write_text(
+        (
+            "Parcel Number,Address,Issued Date,Permit Year,Permit Status,"
+            "Declared Valuation\n"
+            "N/A,4519 Field Ave,n/a,2025,N/A,N/A\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_permits_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 0
+    assert summary.rejection_reason_counts == {}
+    assert summary.warning_counts == {}
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.import_warnings is None
+    assert row.parcel_number_raw is None
+    assert row.parcel_number_norm is None
+    assert row.site_address_norm == "4519 FIELD AVE"
+    assert row.issued_date is None
+    assert row.permit_year == 2025
+    assert row.permit_status_raw is None
+    assert row.permit_status_norm is None
+    assert row.declared_valuation is None
+
+
+def test_ingest_permits_records_row_shape_warnings_and_summary_counters(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "permit_import_shape_warnings.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_shape_warnings.csv"
+    csv_path.write_text(
+        (
+            "Parcel Number,Issued Date,Permit Year,Declared Valuation\n"
+            "06-10-0139-151-1\n"
+            "06-10-0139-151-1,2025-01-20,2025,($12345.67),EXTRA\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_permits_csv(session, csv_path)
+
+    assert summary.total_rows == 2
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 1
+    assert summary.inserted_rows == 2
+    assert summary.updated_rows == 0
+    assert summary.rejection_reason_counts == {
+        "At least one temporal anchor is required: applied_date, issued_date, "
+        "finaled_date, status_date, or permit_year.": 1
+    }
+    assert summary.warning_counts == {
+        "row_has_extra_columns": 1,
+        "row_shorter_than_header": 1,
+    }
+
+    with session_scope(database_url) as session:
+        rows = session.execute(
+            select(PermitEvent).order_by(PermitEvent.source_row_number)
+        ).scalars()
+        rejected_row, loaded_row = list(rows)
+
+    assert rejected_row.import_status == "rejected"
+    assert rejected_row.import_warnings == ["row_shorter_than_header"]
+
+    assert loaded_row.import_status == "loaded"
+    assert loaded_row.import_warnings == ["row_has_extra_columns"]
+    assert loaded_row.raw_row["_extra_columns"] == ["EXTRA"]
+    assert str(loaded_row.declared_valuation) == "-12345.67"
+
+
+def test_ingest_permits_cli_prints_rejection_and_warning_breakdowns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "permit_import_breakdown_output.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_breakdown_output.csv"
+    csv_path.write_text(
+        (
+            "Parcel Number,Issued Date,Permit Year\n"
+            "06-10-0139-151-1\n"
+            "06-10-0139-151-1,2025-01-20,2025,EXTRA\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-permits", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "Permit import summary: total=2 loaded=1 rejected=1 inserted=2 updated=0"
+        in result.stdout
+    )
+    assert "Permit rejection counts:" in result.stdout
+    assert "At least one temporal anchor is required:" in result.stdout
+    assert (
+        "Permit warning counts: row_has_extra_columns=1, row_shorter_than_header=1"
+        in result.stdout
+    )
+
+
 def test_ingest_permits_rejects_duplicate_headers_after_normalization(
     tmp_path: Path,
 ) -> None:
