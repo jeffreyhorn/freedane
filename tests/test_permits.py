@@ -155,7 +155,7 @@ def test_ingest_permits_parses_common_datetime_date_variants(
     database_url = f"sqlite:///{db_path}"
     csv_path = tmp_path / "permits_datetime_variants.csv"
     csv_path.write_text(
-        ("Parcel Number,Issued Date\n" "06-10-0139-151-1,2025-01-20T14:30:00Z\n"),
+        ("Parcel Number,Issued Date\n06-10-0139-151-1,2025-01-20T14:30:00Z\n"),
         encoding="utf-8",
     )
 
@@ -720,3 +720,35 @@ def test_ingest_permits_prefers_exact_parcel_number_over_ambiguous_address_match
     assert row.parcel_id == "0601001391511"
     assert row.parcel_link_method == "exact_parcel_number"
     assert str(row.parcel_link_confidence) == "1.0000"
+
+
+def test_permit_template_headers_are_ingest_compatible(tmp_path: Path) -> None:
+    db_path = tmp_path / "permit_template_compat.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    template_path = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "templates"
+        / "permit_events_template.csv"
+    )
+
+    assert template_path.exists()
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_permits_csv(session, template_path)
+
+    assert summary.total_rows == 0
+    assert summary.loaded_rows == 0
+    assert summary.rejected_rows == 0
+    assert summary.inserted_rows == 0
+    assert summary.updated_rows == 0
+    assert summary.rejection_reason_counts == {}
+    assert summary.warning_counts == {}
+
+    with session_scope(database_url) as session:
+        count = session.execute(
+            select(func.count()).select_from(PermitEvent)
+        ).scalar_one()
+
+    assert count == 0
