@@ -56,6 +56,7 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             "sales_parcel_matches",
             "sales_exclusions",
             "permit_events",
+            "appeal_events",
         }.issubset(tables)
 
         with engine.connect() as conn:
@@ -172,6 +173,33 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         assert permit_event_indexes["ix_permit_events_permit_status_norm"] == (
             "permit_status_norm",
         )
+        appeal_event_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("appeal_events")
+        }
+        assert appeal_event_indexes["ix_appeal_events_source_file_sha256"] == (
+            "source_file_sha256",
+        )
+        assert appeal_event_indexes[
+            "ux_appeal_events_source_file_sha256_source_row_number"
+        ] == ("source_file_sha256", "source_row_number")
+        assert appeal_event_indexes["ix_appeal_events_import_status"] == (
+            "import_status",
+        )
+        assert appeal_event_indexes["ix_appeal_events_parcel_number_norm"] == (
+            "parcel_number_norm",
+        )
+        assert appeal_event_indexes["ix_appeal_events_site_address_norm"] == (
+            "site_address_norm",
+        )
+        assert appeal_event_indexes["ix_appeal_events_parcel_id"] == ("parcel_id",)
+        assert appeal_event_indexes["ix_appeal_events_tax_year"] == ("tax_year",)
+        assert appeal_event_indexes["ix_appeal_events_outcome_norm"] == (
+            "outcome_norm",
+        )
+        assert appeal_event_indexes["ix_appeal_events_hearing_date"] == (
+            "hearing_date",
+        )
         with engine.connect() as conn:
             partial_index_sql = conn.execute(
                 text(
@@ -220,6 +248,7 @@ def test_init_db_stamps_compatible_legacy_schema_before_upgrading(
         assert "sales_parcel_matches" in set(inspector.get_table_names())
         assert "sales_exclusions" in set(inspector.get_table_names())
         assert "permit_events" in set(inspector.get_table_names())
+        assert "appeal_events" in set(inspector.get_table_names())
     finally:
         engine.dispose()
 
@@ -256,6 +285,7 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
         assert "sales_parcel_matches" in set(inspector.get_table_names())
         assert "sales_exclusions" in set(inspector.get_table_names())
         assert "permit_events" in set(inspector.get_table_names())
+        assert "appeal_events" in set(inspector.get_table_names())
         with engine.connect() as conn:
             revision = conn.execute(
                 text("SELECT version_num FROM alembic_version")

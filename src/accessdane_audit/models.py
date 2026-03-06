@@ -564,3 +564,85 @@ class PermitEvent(Base):
         Numeric(14, 2), nullable=True
     )
     permit_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class AppealEvent(Base):
+    __tablename__ = "appeal_events"
+    __table_args__ = (
+        Index("ix_appeal_events_source_file_sha256", "source_file_sha256"),
+        Index(
+            "ux_appeal_events_source_file_sha256_source_row_number",
+            "source_file_sha256",
+            "source_row_number",
+            unique=True,
+        ),
+        Index("ix_appeal_events_import_status", "import_status"),
+        Index("ix_appeal_events_parcel_number_norm", "parcel_number_norm"),
+        Index("ix_appeal_events_site_address_norm", "site_address_norm"),
+        Index("ix_appeal_events_parcel_id", "parcel_id"),
+        Index("ix_appeal_events_tax_year", "tax_year"),
+        Index("ix_appeal_events_outcome_norm", "outcome_norm"),
+        Index("ix_appeal_events_hearing_date", "hearing_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    source_system: Mapped[str] = mapped_column(String, nullable=False)
+    source_file_name: Mapped[str] = mapped_column(String, nullable=False)
+    source_file_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_headers: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    raw_row: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    import_status: Mapped[str] = mapped_column(String, nullable=False)
+    import_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    import_warnings: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
+    loaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    parcel_number_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parcel_number_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    site_address_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    site_address_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    owner_name_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    owner_name_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parcel_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=True
+    )
+    parcel_link_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    parcel_link_confidence: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+
+    appeal_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    docket_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    appeal_level_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    appeal_level_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    appeal_reason_raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    appeal_reason_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    filing_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    hearing_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    decision_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    tax_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    outcome_raw: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    outcome_norm: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    assessed_value_before: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    requested_assessed_value: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    decided_assessed_value: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    value_change_amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    representative_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
