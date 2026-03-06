@@ -655,11 +655,11 @@ def _normalize_appeal_reason(value: Optional[str]) -> Optional[str]:
         return None
 
     normalized = collapsed.lower()
-    if "value" in normalized or "valuation" in normalized:
+    if "value" in normalized or "valuat" in normalized:
         return "valuation"
-    if "class" in normalized or "classification" in normalized:
+    if "class" in normalized:
         return "classification"
-    if "exempt" in normalized or "exemption" in normalized:
+    if "exempt" in normalized:
         return "exemption"
     if "clerical" in normalized or "error" in normalized:
         return "clerical_error"

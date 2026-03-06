@@ -114,6 +114,47 @@ def test_ingest_appeals_rejects_row_without_appeal_signal(
     )
 
 
+def test_ingest_appeals_rejects_row_without_parcel_locator(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "appeal_import_missing_parcel.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_missing_parcel.csv"
+    csv_path.write_text(
+        (
+            "Parcel Number,Filing Date,Outcome,Requested Value,Final Value\n"
+            ",01/15/2025,denial,100000,90000\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-appeals", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "Appeal import summary: total=1 loaded=0 rejected=1 inserted=1 updated=0"
+        in result.stdout
+    )
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "rejected"
+    assert (
+        row.import_error
+        == "At least one parcel locator is required: parcel number or site address."
+    )
+
+
 def test_ingest_appeals_outcome_mapping_prioritizes_denial_over_partial_keyword(
     tmp_path: Path,
 ) -> None:
