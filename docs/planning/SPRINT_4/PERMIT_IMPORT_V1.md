@@ -254,7 +254,14 @@ File-level failure conditions:
 ### Address
 
 - `site_address_raw`: preserve trimmed source value
-- `site_address_norm`: uppercase + collapse spaces + normalize punctuation to spaces
+- `site_address_norm`: apply the following algorithm, in order:
+  1. start from `site_address_raw`
+  2. convert to uppercase
+  3. replace each occurrence of the following characters with a single ASCII space:
+     `,` `.` `:` `;` `#` `@` `-` `/` `\` `(` `)` `'` `"`
+  4. treat all ASCII whitespace characters (space, tab, carriage return, line feed) as spaces
+  5. collapse any run of one or more whitespace characters into a single ASCII space
+  6. trim leading and trailing whitespace
 - do not drop unit/suite identifiers
 
 ### Dates
