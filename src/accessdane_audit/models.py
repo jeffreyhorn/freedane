@@ -227,6 +227,77 @@ class ParcelYearFact(Base):
         Boolean, nullable=True
     )
 
+    permit_event_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    permit_declared_valuation_known_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_declared_valuation_sum: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    permit_estimated_cost_known_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_estimated_cost_sum: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    permit_status_applied_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_status_issued_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_status_finaled_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_status_cancelled_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_status_expired_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_status_unknown_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_recent_1y_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_recent_2y_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    permit_has_recent_1y: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    permit_has_recent_2y: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    appeal_event_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    appeal_reduction_granted_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    appeal_partial_reduction_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    appeal_denied_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    appeal_withdrawn_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    appeal_dismissed_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    appeal_pending_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    appeal_unknown_outcome_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    appeal_value_change_known_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    appeal_value_change_total: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    appeal_value_change_reduction_total: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    appeal_value_change_increase_total: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+
     built_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
