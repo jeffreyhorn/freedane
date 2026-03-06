@@ -56,7 +56,11 @@ Notes:
 
 - This fallback is required because appeals v1 currently preserves parcel locator fields
   but does not yet populate `appeal_events.parcel_id` during import.
-- The two-stage normalized lookup is intentionally aligned with permit matching behavior.
+- For this integration step, we intentionally stop after those two normalized parcel-number
+  lookups; we do not attempt slash-based crosswalk candidate generation or address-based
+  fallback matching before marking an event unresolved.
+- The alignment with permit matching behavior is limited to using the same normalized
+  parcel-number indexes on `parcels` and `parcel_characteristics`.
 - Unresolved events remain auditable in event tables and are intentionally not dropped.
 
 ### Year resolution
@@ -167,9 +171,18 @@ Counts and booleans:
 
 - keep nullable to align with existing `parcel_year_facts` rollups
   (for example `payment_event_count` and `payment_has_placeholder_row`)
-- set to null when no matching permit/appeal events exist for that parcel-year
-- use numeric zero / false only when at least one contributing event exists and the
-  true computed value is actually zero / false
+- evaluate null vs zero/false per metric event set:
+  - annual metrics use events where `event_year = year`
+  - recent-window metrics use their own defined windows
+- set a count/boolean to null when no matching events exist for that metric event set
+  and parcel-year
+- use numeric zero / false only when at least one contributing event exists in that
+  metric event set and the true computed value is actually zero / false
+- valid combinations include:
+  - `permit_event_count = null` with `permit_has_recent_1y = true` when only `year - 1`
+    permits exist
+  - `permit_event_count = null` with `permit_recent_2y_count > 0` when only `year - 1`
+    and/or `year - 2` permits exist
 
 Numeric sums:
 
