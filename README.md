@@ -97,6 +97,7 @@ accessdane profile-data
 accessdane ingest-retr --file data/sample_retr.csv
 accessdane match-sales
 accessdane report-sales-matches --out data/sales_match_audit.json
+accessdane spatial-support --out data/spatial_support.json
 accessdane anomalies --out data/anomalies.json
 ```
 
@@ -110,6 +111,7 @@ Operational notes:
 - `check-data-quality` and `profile-data` both support `--ids` to limit runs to a parcel subset and `--out` to write JSON for later review.
 - `check-data-quality --fail-on-issues` exits with status code `1` when any check fails, which is useful for CI or repeatable local gates.
 - `report-sales-matches` emits a JSON audit snapshot of sales-match confidence tiers, method counts, and unresolved/ambiguous/low-confidence review queues.
+- `spatial-support` reports whether runtime is in `point_only` mode or `geometry_postgis` mode without requiring PostGIS in non-spatial environments.
 - `run-all --skip-anomalies` skips the final anomaly JSON step for faster parser iteration.
 - `parse` supports `--resume-after-fetch-id` and `--limit` so long reparses can resume in smaller chunks.
 - `run-all --parse-only` supports `--parse-resume-after-fetch-id` and `--parse-limit` for the same chunked parse-stage control.

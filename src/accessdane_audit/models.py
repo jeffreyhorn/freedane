@@ -365,6 +365,14 @@ class ParcelCharacteristic(Base):
         Integer, nullable=True
     )
 
+    centroid_latitude: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(9, 6), nullable=True
+    )
+    centroid_longitude: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(9, 6), nullable=True
+    )
+    geometry_wkt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     is_exempt_style_page: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     has_empty_valuation_breakout: Mapped[Optional[bool]] = mapped_column(
         Boolean, nullable=True
