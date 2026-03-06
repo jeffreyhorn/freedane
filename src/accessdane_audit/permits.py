@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -13,7 +13,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session, load_only
 
-from .models import PermitEvent
+from .models import Parcel, ParcelCharacteristic, ParcelSummary, PermitEvent
 
 PERMIT_SOURCE_SYSTEM = "manual_permit_csv"
 _EXTRA_COLUMNS_KEY = "_extra_columns"
@@ -22,6 +22,12 @@ _HEADER_SEPARATOR_RE = re.compile(r"[ _-]+")
 _HEADER_SPACE_TAB_RE = re.compile(r"[ \t]+")
 _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"""[,.:;#@\-\/\\()'"]""")
+EXACT_PARCEL_NUMBER_MATCH_METHOD = "exact_parcel_number"
+PARCEL_NUMBER_CROSSWALK_MATCH_METHOD = "parcel_number_crosswalk"
+NORMALIZED_ADDRESS_MATCH_METHOD = "normalized_address"
+EXACT_MATCH_CONFIDENCE = Decimal("1.0000")
+PARCEL_NUMBER_CROSSWALK_CONFIDENCE = Decimal("0.9500")
+ADDRESS_MATCH_CONFIDENCE = Decimal("0.9000")
 _STATUS_MAP = {
     "applied": "applied",
     "application received": "applied",
@@ -96,11 +102,16 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
                 raise PermitImportFileError(
                     "CSV file is missing a header row."
                 ) from exc
+            if not source_headers:
+                raise PermitImportFileError("CSV file is missing a header row.")
 
             _validate_headers(source_headers)
             normalized_header_to_raw = _build_normalized_header_map(source_headers)
             header_binding = _resolve_header_binding(normalized_header_to_raw)
             _validate_permit_shape_headers(header_binding)
+            parcel_number_index, address_index = _build_permit_parcel_link_indexes(
+                session
+            )
 
             total_rows = 0
             loaded_rows = 0
@@ -118,6 +129,8 @@ def ingest_permits_csv(session: Session, csv_path: Path) -> PermitImportSummary:
                     source_row_number=source_row_number,
                     source_headers=source_headers,
                     header_binding=header_binding,
+                    parcel_number_index=parcel_number_index,
+                    address_index=address_index,
                 )
 
                 existing = existing_rows.get(source_row_number)
@@ -254,6 +267,8 @@ def _build_permit_event_values(
     source_row_number: int,
     source_headers: list[str],
     header_binding: dict[str, Optional[str]],
+    parcel_number_index: dict[str, set[str]],
+    address_index: dict[str, set[str]],
 ) -> dict[str, object]:
     warnings: list[str] = []
     raw_row = _build_raw_row(row)
@@ -264,9 +279,6 @@ def _build_permit_event_values(
         "source_row_number": source_row_number,
         "source_headers": source_headers,
         "raw_row": raw_row,
-        "parcel_id": None,
-        "parcel_link_method": None,
-        "parcel_link_confidence": None,
     }
 
     parcel_number_raw = _preserved_raw_text(
@@ -378,6 +390,20 @@ def _build_permit_event_values(
             "permit_year": permit_year,
             "declared_valuation": declared_valuation,
             "estimated_cost": estimated_cost,
+        }
+    )
+    parcel_id, parcel_link_method, parcel_link_confidence = _resolve_permit_parcel_link(
+        parcel_number_raw=parcel_number_raw,
+        parcel_number_norm=values["parcel_number_norm"],
+        site_address_norm=values["site_address_norm"],
+        parcel_number_index=parcel_number_index,
+        address_index=address_index,
+    )
+    values.update(
+        {
+            "parcel_id": parcel_id,
+            "parcel_link_method": parcel_link_method,
+            "parcel_link_confidence": parcel_link_confidence,
         }
     )
 
@@ -500,6 +526,25 @@ def _normalize_parcel_number(value: Optional[str]) -> Optional[str]:
     return _PARCEL_SEPARATOR_RE.sub("", collapsed.upper())
 
 
+def _parcel_number_crosswalk_candidates(value: Optional[str]) -> tuple[str, ...]:
+    collapsed = _collapsed_text(value)
+    if collapsed is None or "/" not in collapsed:
+        return ()
+
+    prefix, suffix = collapsed.split("/", 1)
+    suffix_digits = "".join(char for char in suffix if char.isdigit())
+    if len(suffix_digits) != 12:
+        return ()
+
+    swapped = prefix + suffix_digits[:2] + suffix_digits[3] + suffix_digits[2]
+    swapped += suffix_digits[4:]
+
+    normalized = _normalize_parcel_number(f"{prefix}/{swapped[len(prefix):]}")
+    if normalized is None:
+        return ()
+    return (normalized,)
+
+
 def _normalize_site_address(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -509,6 +554,85 @@ def _normalize_site_address(value: Optional[str]) -> Optional[str]:
     normalized = normalized.replace("\t", " ").replace("\r", " ").replace("\n", " ")
     normalized = _SPACE_RE.sub(" ", normalized).strip()
     return normalized or None
+
+
+def _build_permit_parcel_link_indexes(
+    session: Session,
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    parcel_number_index: dict[str, set[str]] = defaultdict(set)
+    address_index: dict[str, set[str]] = defaultdict(set)
+
+    for parcel_id in session.execute(select(Parcel.id)).scalars():
+        normalized_parcel_id = _normalize_parcel_number(parcel_id)
+        if normalized_parcel_id is not None:
+            parcel_number_index[normalized_parcel_id].add(parcel_id)
+
+    for row in session.execute(
+        select(
+            ParcelCharacteristic.parcel_id,
+            ParcelCharacteristic.formatted_parcel_number,
+        ).where(ParcelCharacteristic.formatted_parcel_number.is_not(None))
+    ):
+        normalized = _normalize_parcel_number(row.formatted_parcel_number)
+        if normalized is not None:
+            parcel_number_index[normalized].add(row.parcel_id)
+
+    for row in session.execute(
+        select(ParcelSummary.parcel_id, ParcelSummary.primary_address).where(
+            ParcelSummary.primary_address.is_not(None)
+        )
+    ):
+        normalized = _normalize_site_address(row.primary_address)
+        if normalized is not None:
+            address_index[normalized].add(row.parcel_id)
+
+    return dict(parcel_number_index), dict(address_index)
+
+
+def _resolve_permit_parcel_link(
+    *,
+    parcel_number_raw: Optional[str],
+    parcel_number_norm: object,
+    site_address_norm: object,
+    parcel_number_index: dict[str, set[str]],
+    address_index: dict[str, set[str]],
+) -> tuple[Optional[str], Optional[str], Optional[Decimal]]:
+    normalized_parcel = (
+        parcel_number_norm if isinstance(parcel_number_norm, str) else None
+    )
+    normalized_address = (
+        site_address_norm if isinstance(site_address_norm, str) else None
+    )
+
+    if normalized_parcel:
+        direct_matches = parcel_number_index.get(normalized_parcel, set())
+        if len(direct_matches) == 1:
+            return (
+                next(iter(direct_matches)),
+                EXACT_PARCEL_NUMBER_MATCH_METHOD,
+                EXACT_MATCH_CONFIDENCE,
+            )
+
+        crosswalk_matches: set[str] = set()
+        for candidate in _parcel_number_crosswalk_candidates(parcel_number_raw):
+            crosswalk_matches.update(parcel_number_index.get(candidate, set()))
+        if len(crosswalk_matches) == 1:
+            return (
+                next(iter(crosswalk_matches)),
+                PARCEL_NUMBER_CROSSWALK_MATCH_METHOD,
+                PARCEL_NUMBER_CROSSWALK_CONFIDENCE,
+            )
+
+    if normalized_address:
+        address_matches = address_index.get(normalized_address, set())
+        if len(address_matches) == 1:
+            return (
+                next(iter(address_matches)),
+                NORMALIZED_ADDRESS_MATCH_METHOD,
+                ADDRESS_MATCH_CONFIDENCE,
+            )
+
+    return None, None, None
 
 
 def _normalize_permit_status(value: Optional[str]) -> Optional[str]:

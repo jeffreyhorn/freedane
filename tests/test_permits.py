@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from accessdane_audit import cli
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import PermitEvent
+from accessdane_audit.models import Fetch, Parcel, ParcelCharacteristic, PermitEvent
 from accessdane_audit.permits import PermitImportFileError, ingest_permits_csv
 
 
@@ -239,3 +239,67 @@ def test_ingest_permits_rejects_duplicate_headers_after_normalization(
         "duplicate headers after normalization: permit year"
         in str(exc_info.value).lower()
     )
+
+
+def test_ingest_permits_rejects_empty_header_row(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "permit_import_blank_header.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_blank_header.csv"
+    csv_path.write_text(
+        "\nPermit Number,Parcel Number,Issued Date\nP-1,06-10-0139-151-1,01/15/2025\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with pytest.raises(PermitImportFileError, match="missing a header row"):
+        with session_scope(database_url) as session:
+            ingest_permits_csv(session, csv_path)
+
+
+def test_ingest_permits_links_unique_exact_parcel_number_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "permit_import_exact_link.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_exact_link.csv"
+    csv_path.write_text(
+        "Parcel Number,Issued Date\n06-10-0139-151-1,01/15/2025\n",
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="0601001391511",
+                    formatted_parcel_number="06-10-0139-151-1",
+                ),
+            ]
+        )
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["ingest-permits", "--file", str(csv_path)])
+
+    assert result.exit_code == 0, result.stdout
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.parcel_id == "0601001391511"
+    assert row.parcel_link_method == "exact_parcel_number"
+    assert str(row.parcel_link_confidence) == "1.0000"
