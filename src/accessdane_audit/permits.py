@@ -5,7 +5,7 @@ import hashlib
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterator, Optional, TypeVar
@@ -13,6 +13,7 @@ from typing import Iterator, Optional, TypeVar
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, load_only
 
+from .date_parsing import parse_flexible_date
 from .models import Parcel, ParcelCharacteristic, ParcelSummary, PermitEvent
 
 PERMIT_SOURCE_SYSTEM = "manual_permit_csv"
@@ -846,12 +847,7 @@ def _parse_optional_date(
 
 
 def _parse_date(value: str) -> Optional[date]:
-    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(value, fmt).date()
-        except ValueError:
-            continue
-    return None
+    return parse_flexible_date(value)
 
 
 def _parse_optional_year(value: Optional[str]) -> tuple[Optional[int], Optional[str]]:

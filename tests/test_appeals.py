@@ -307,6 +307,112 @@ def test_ingest_appeals_treats_common_null_tokens_as_missing_values(
     assert row.import_warnings is None
 
 
+def test_ingest_appeals_parses_common_datetime_date_variants(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_datetime_variants.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_datetime_variants.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Hearing Date,Decision Date\n"
+            "A-1,06-10-0139-151-1,2025-01-15T14:30:00Z,2025/02/01,02/10/25\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_appeals_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 0
+    assert summary.warning_counts == {}
+    assert summary.rejection_reason_counts == {}
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.filing_date and row.filing_date.isoformat() == "2025-01-15"
+    assert row.hearing_date and row.hearing_date.isoformat() == "2025-02-01"
+    assert row.decision_date and row.decision_date.isoformat() == "2025-02-10"
+    assert row.import_warnings is None
+
+
+def test_ingest_appeals_parses_tax_year_from_spreadsheet_like_tokens(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_tax_year_token.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_tax_year_token.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Tax Year\n"
+            "A-1,06-10-0139-151-1,Tax Year 2025.0\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_appeals_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 0
+    assert summary.warning_counts == {}
+    assert summary.rejection_reason_counts == {}
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.tax_year == 2025
+    assert row.import_warnings is None
+
+
+def test_ingest_appeals_rejects_when_temporal_values_are_unparseable(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_unparseable_temporal.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_unparseable_temporal.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Tax Year\n"
+            "A-1,06-10-0139-151-1,not-a-date,FY20X5\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_appeals_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 0
+    assert summary.rejected_rows == 1
+    assert summary.rejection_reason_counts == {
+        "No valid temporal anchor remains after parsing.": 1
+    }
+    assert summary.warning_counts == {
+        "filing_date_unparseable": 1,
+        "tax_year_unparseable": 1,
+    }
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(AppealEvent)).scalar_one()
+
+    assert row.import_status == "rejected"
+    assert row.import_error == "No valid temporal anchor remains after parsing."
+    assert row.import_warnings == [
+        "filing_date_unparseable",
+        "tax_year_unparseable",
+    ]
+
+
 def test_ingest_appeals_rejects_file_without_appeal_signal_headers(
     tmp_path: Path,
 ) -> None:
@@ -395,6 +501,54 @@ def test_ingest_appeals_parses_parenthesized_amount_with_internal_spaces(
 
     assert row.import_status == "loaded"
     assert str(row.requested_assessed_value) == "-10000.00"
+
+
+def test_ingest_appeals_records_row_shape_warnings_and_summary_counters(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "appeal_import_shape_warnings.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "appeals_shape_warnings.csv"
+    csv_path.write_text(
+        (
+            "Appeal Number,Parcel Number,Filing Date,Requested Value\n"
+            "A-1,06-10-0139-151-1\n"
+            "A-2,06-10-0139-151-1,2025-01-20,( $12345.67 ),EXTRA\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_appeals_csv(session, csv_path)
+
+    assert summary.total_rows == 2
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 1
+    assert summary.inserted_rows == 2
+    assert summary.updated_rows == 0
+    assert summary.rejection_reason_counts == {
+        "At least one temporal anchor is required: filing_date, hearing_date, "
+        "decision_date, or tax_year.": 1
+    }
+    assert summary.warning_counts == {
+        "row_has_extra_columns": 1,
+        "row_shorter_than_header": 1,
+    }
+
+    with session_scope(database_url) as session:
+        rows = session.execute(
+            select(AppealEvent).order_by(AppealEvent.source_row_number)
+        ).scalars()
+        rejected_row, loaded_row = list(rows)
+
+    assert rejected_row.import_status == "rejected"
+    assert rejected_row.import_warnings == ["row_shorter_than_header"]
+
+    assert loaded_row.import_status == "loaded"
+    assert loaded_row.import_warnings == ["row_has_extra_columns"]
+    assert loaded_row.raw_row["_extra_columns"] == ["EXTRA"]
+    assert str(loaded_row.requested_assessed_value) == "-12345.67"
 
 
 def test_ingest_appeals_upserts_rows_when_reimporting_same_file(

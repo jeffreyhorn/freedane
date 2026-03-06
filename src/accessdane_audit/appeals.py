@@ -5,7 +5,7 @@ import hashlib
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
@@ -13,6 +13,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session, load_only
 
+from .date_parsing import parse_flexible_date
 from .models import AppealEvent
 
 APPEAL_SOURCE_SYSTEM = "manual_appeal_csv"
@@ -22,6 +23,7 @@ _HEADER_SEPARATOR_RE = re.compile(r"[ _-]+")
 _HEADER_SPACE_TAB_RE = re.compile(r"[ \t]+")
 _PARCEL_SEPARATOR_RE = re.compile(r"[\s./_-]+")
 _ADDRESS_PUNCTUATION_RE = re.compile(r"""[,.:;#@\-\/\\()'"]""")
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
 _NULL_TOKENS = {
     "n/a",
     "na",
@@ -691,12 +693,7 @@ def _parse_optional_date(
 
 
 def _parse_date(value: str) -> Optional[date]:
-    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(value, fmt).date()
-        except ValueError:
-            continue
-    return None
+    return parse_flexible_date(value)
 
 
 def _parse_optional_year(value: Optional[str]) -> tuple[Optional[int], Optional[str]]:
@@ -707,7 +704,14 @@ def _parse_optional_year(value: Optional[str]) -> tuple[Optional[int], Optional[
     try:
         parsed = int(trimmed)
     except ValueError:
-        return None, "tax_year_unparseable"
+        candidate_values = {
+            parsed
+            for token in _YEAR_TOKEN_RE.findall(trimmed)
+            if 1000 <= (parsed := int(token)) <= 9999
+        }
+        if len(candidate_values) != 1:
+            return None, "tax_year_unparseable"
+        parsed = candidate_values.pop()
 
     if parsed < 1000 or parsed > 9999:
         return None, "tax_year_unparseable"

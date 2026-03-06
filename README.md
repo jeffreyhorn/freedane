@@ -254,6 +254,10 @@ They currently resolve to a PDF print flow rather than a cleaner machine-readabl
 
 More detailed operational guidance lives in [docs/planning/SPRINT_1/OPERATIONS.md](docs/planning/SPRINT_1/OPERATIONS.md).
 Sprint 3 RETR-specific operations live in [docs/planning/SPRINT_3/RETR_OPERATIONS.md](docs/planning/SPRINT_3/RETR_OPERATIONS.md).
+Sprint 4 permit and appeal import operations live in
+[docs/planning/SPRINT_4/PERMIT_OPERATIONS.md](docs/planning/SPRINT_4/PERMIT_OPERATIONS.md)
+and
+[docs/planning/SPRINT_4/APPEAL_OPERATIONS.md](docs/planning/SPRINT_4/APPEAL_OPERATIONS.md).
 
 ## Notes
 

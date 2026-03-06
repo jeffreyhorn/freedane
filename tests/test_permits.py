@@ -148,6 +148,36 @@ def test_ingest_permits_keeps_row_loaded_when_other_temporal_anchor_exists(
     assert row.import_warnings == ["issued_date_unparseable"]
 
 
+def test_ingest_permits_parses_common_datetime_date_variants(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "permit_import_datetime_variants.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_datetime_variants.csv"
+    csv_path.write_text(
+        ("Parcel Number,Issued Date\n" "06-10-0139-151-1,2025-01-20T14:30:00Z\n"),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_permits_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 0
+    assert summary.rejection_reason_counts == {}
+    assert summary.warning_counts == {}
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.issued_date and row.issued_date.isoformat() == "2025-01-20"
+    assert row.permit_year == 2025
+    assert row.import_warnings is None
+
+
 def test_ingest_permits_records_year_anchor_mismatch_warning(
     tmp_path: Path,
     monkeypatch,
