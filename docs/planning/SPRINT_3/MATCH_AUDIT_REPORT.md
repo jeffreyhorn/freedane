@@ -49,6 +49,16 @@ Generate the report for a scoped transaction-ID subset:
   - `ambiguous_count`
   - `low_confidence_count`
   - `sample_transaction_ids` for each queue category
+- `context_signals`
+  - matched-sale context coverage and first-pass permit/appeal + sale/assessment
+    divergence flags using transfer-year `parcel_year_facts`
+- `parcel_timeline_samples`
+  - parcel-year timeline snippets for sampled matched transactions
+  - includes nearby year context for assessment/tax/permit/appeal signals
+- `neighborhood_context_aggregates`
+  - municipality-level first-pass aggregates for matched transactions with transfer-year
+    parcel context
+  - includes permit/appeal signal rates and sale/assessment gap-flag rates
 
 ## Interpretation
 

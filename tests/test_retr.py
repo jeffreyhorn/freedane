@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from accessdane_audit.models import (
     Parcel,
     ParcelCharacteristic,
     ParcelSummary,
+    ParcelYearFact,
     SalesExclusion,
     SalesParcelMatch,
     SalesTransaction,
@@ -1138,6 +1140,199 @@ def test_report_sales_matches_summarizes_confidence_tiers_and_review_queue(
     assert unresolved_ids == [unresolved_transaction_id]
     assert low_confidence_ids == [low_confidence_transaction_id]
     assert unresolved_ids[0] != low_confidence_ids[0]
+    assert payload["context_signals"] == {
+        "matched_transactions_with_any_context": 0,
+        "matched_transactions_with_transfer_year_context": 0,
+        "with_recent_permit_signal": 0,
+        "with_appeal_activity_signal": 0,
+        "with_sale_assessment_gap_flag": 0,
+    }
+    assert payload["parcel_timeline_samples"] == []
+    assert payload["neighborhood_context_aggregates"] == []
+
+
+def test_report_sales_matches_surfaces_context_timeline_and_neighborhood_rollups(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_match_report_context.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "sales_match_report_context.csv"
+    csv_path.write_text(
+        (
+            "Transfer Date,Consideration,Parcel Number,"
+            "Property Address,Legal Description\n"
+            "01/15/2025,100000,06-10-0139-151-1,100 Main St,\n"
+            '01/16/2025,150000,,,"Lot Twenty-three (23), Block Four (4), Sixth '
+            "Addition to Autumn Grove, in the Village of McFarland, Dane County, "
+            'Wisconsin."\n'
+            "01/17/2025,90000,,999 Not Found Ave,\n"
+        ),
+        encoding="utf-8",
+    )
+
+    db_module.init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        session.add_all(
+            [
+                Parcel(id="0601001391511"),
+                Fetch(
+                    id=1,
+                    parcel_id="0601001391511",
+                    url="https://example.test/parcel/0601001391511",
+                ),
+                ParcelCharacteristic(
+                    parcel_id="0601001391511",
+                    formatted_parcel_number="06-10-0139-151-1",
+                ),
+                ParcelSummary(
+                    parcel_id="0601001391511",
+                    fetch_id=1,
+                    primary_address="123 Wrong Ave",
+                ),
+                Parcel(id="parcel-legal"),
+                Fetch(
+                    id=2,
+                    parcel_id="parcel-legal",
+                    url="https://example.test/parcel/parcel-legal",
+                ),
+                ParcelSummary(
+                    parcel_id="parcel-legal",
+                    fetch_id=2,
+                    parcel_description="AUTUMN GROVE BLOCK 4 LOT 23",
+                ),
+                ParcelYearFact(
+                    parcel_id="0601001391511",
+                    year=2025,
+                    municipality_name="MCFARLAND",
+                    assessment_total_value=Decimal("40000.00"),
+                    permit_event_count=1,
+                    permit_has_recent_2y=True,
+                    appeal_event_count=0,
+                ),
+                ParcelYearFact(
+                    parcel_id="0601001391511",
+                    year=2024,
+                    municipality_name="MCFARLAND",
+                    assessment_total_value=Decimal("39500.00"),
+                    permit_event_count=2,
+                    permit_has_recent_2y=True,
+                    appeal_event_count=0,
+                ),
+                ParcelYearFact(
+                    parcel_id="parcel-legal",
+                    year=2025,
+                    municipality_name="MADISON",
+                    assessment_total_value=Decimal("180000.00"),
+                    permit_event_count=0,
+                    permit_has_recent_2y=False,
+                    appeal_event_count=2,
+                    appeal_reduction_granted_count=1,
+                    appeal_partial_reduction_count=1,
+                ),
+                ParcelYearFact(
+                    parcel_id="parcel-legal",
+                    year=2024,
+                    municipality_name="MADISON",
+                    assessment_total_value=Decimal("175000.00"),
+                    permit_event_count=0,
+                    permit_has_recent_2y=False,
+                    appeal_event_count=1,
+                ),
+            ]
+        )
+
+    runner = CliRunner()
+    import_result = runner.invoke(cli.app, ["ingest-retr", "--file", str(csv_path)])
+    match_result = runner.invoke(cli.app, ["match-sales"])
+    report_result = runner.invoke(
+        cli.app, ["report-sales-matches", "--sample-size", "10"]
+    )
+
+    assert import_result.exit_code == 0, import_result.stdout
+    assert match_result.exit_code == 0, match_result.stdout
+    assert report_result.exit_code == 0, report_result.stdout
+
+    payload = json.loads(report_result.stdout)
+
+    with session_scope(database_url) as session:
+        transaction_rows = session.execute(
+            select(
+                SalesTransaction.id,
+                SalesTransaction.official_parcel_number_norm,
+                SalesTransaction.legal_description_raw,
+            )
+        ).all()
+
+    exact_transaction_id = next(
+        transaction_id
+        for transaction_id, parcel_number_norm, _ in transaction_rows
+        if parcel_number_norm == "061001391511"
+    )
+    legal_transaction_id = next(
+        transaction_id
+        for transaction_id, _, legal_description_raw in transaction_rows
+        if legal_description_raw is not None
+    )
+
+    assert payload["context_signals"] == {
+        "matched_transactions_with_any_context": 2,
+        "matched_transactions_with_transfer_year_context": 2,
+        "with_recent_permit_signal": 1,
+        "with_appeal_activity_signal": 1,
+        "with_sale_assessment_gap_flag": 1,
+    }
+
+    timeline_samples = {
+        sample["transaction_id"]: sample
+        for sample in payload["parcel_timeline_samples"]
+    }
+    assert set(timeline_samples) == {exact_transaction_id, legal_transaction_id}
+    assert timeline_samples[exact_transaction_id]["context_flags"] == {
+        "has_recent_permit_signal": True,
+        "has_appeal_activity_signal": False,
+        "has_sale_assessment_gap_flag": True,
+    }
+    assert timeline_samples[legal_transaction_id]["context_flags"] == {
+        "has_recent_permit_signal": False,
+        "has_appeal_activity_signal": True,
+        "has_sale_assessment_gap_flag": False,
+    }
+    exact_year_context = timeline_samples[exact_transaction_id]["year_context"]
+    assert exact_year_context[0]["year"] == 2025
+    assert exact_year_context[0]["assessment_total_value"] == "40000.00"
+    assert exact_year_context[0]["permit_has_recent_2y"] is True
+
+    neighborhood_aggregates = {
+        row["municipality_name"]: row
+        for row in payload["neighborhood_context_aggregates"]
+    }
+    assert neighborhood_aggregates["MCFARLAND"] == {
+        "municipality_name": "MCFARLAND",
+        "transaction_count": 1,
+        "with_recent_permit_signal_count": 1,
+        "with_appeal_activity_signal_count": 0,
+        "with_sale_assessment_gap_flag_count": 1,
+        "recent_permit_signal_rate": 1.0,
+        "appeal_activity_signal_rate": 0.0,
+        "sale_assessment_gap_flag_rate": 1.0,
+    }
+    assert neighborhood_aggregates["MADISON"] == {
+        "municipality_name": "MADISON",
+        "transaction_count": 1,
+        "with_recent_permit_signal_count": 0,
+        "with_appeal_activity_signal_count": 1,
+        "with_sale_assessment_gap_flag_count": 0,
+        "recent_permit_signal_rate": 0.0,
+        "appeal_activity_signal_rate": 1.0,
+        "sale_assessment_gap_flag_rate": 0.0,
+    }
 
 
 def test_ingest_retr_records_rejected_rows_and_reuses_existing_same_file_rows(
@@ -1621,7 +1816,7 @@ def test_ingest_retr_treats_whitespace_only_rows_as_blank(
     database_url = f"sqlite:///{db_path}"
     csv_path = tmp_path / "whitespace_blank.csv"
     csv_path.write_text(
-        ("Transfer Date,Consideration,Property Address\n" "   ,   ,   \n"),
+        ("Transfer Date,Consideration,Property Address\n   ,   ,   \n"),
         encoding="utf-8",
     )
 
