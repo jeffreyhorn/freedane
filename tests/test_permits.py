@@ -310,6 +310,38 @@ def test_ingest_permits_records_row_shape_warnings_and_summary_counters(
     assert str(loaded_row.declared_valuation) == "-12345.67"
 
 
+def test_ingest_permits_parses_parenthesized_amount_with_internal_spaces(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "permit_import_parenthesized_amount.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    csv_path = tmp_path / "permits_parenthesized_amount.csv"
+    csv_path.write_text(
+        (
+            "Parcel Number,Issued Date,Declared Valuation\n"
+            "06-10-0139-151-1,2025-01-20,( $12345.67 )\n"
+        ),
+        encoding="utf-8",
+    )
+
+    init_db(database_url)
+    with session_scope(database_url) as session:
+        summary = ingest_permits_csv(session, csv_path)
+
+    assert summary.total_rows == 1
+    assert summary.loaded_rows == 1
+    assert summary.rejected_rows == 0
+    assert summary.warning_counts == {}
+    assert summary.rejection_reason_counts == {}
+
+    with session_scope(database_url) as session:
+        row = session.execute(select(PermitEvent)).scalar_one()
+
+    assert row.import_status == "loaded"
+    assert row.import_warnings is None
+    assert str(row.declared_valuation) == "-12345.67"
+
+
 def test_ingest_permits_cli_prints_rejection_and_warning_breakdowns(
     tmp_path: Path,
     monkeypatch,
@@ -342,11 +374,13 @@ def test_ingest_permits_cli_prints_rejection_and_warning_breakdowns(
         in result.stdout
     )
     assert "Permit rejection counts:" in result.stdout
-    assert "At least one temporal anchor is required:" in result.stdout
     assert (
-        "Permit warning counts: row_has_extra_columns=1, row_shorter_than_header=1"
-        in result.stdout
-    )
+        "  At least one temporal anchor is required: applied_date, issued_date, "
+        "finaled_date, status_date, or permit_year.=1"
+    ) in result.stdout
+    assert "Permit warning counts:" in result.stdout
+    assert "  row_has_extra_columns=1" in result.stdout
+    assert "  row_shorter_than_header=1" in result.stdout
 
 
 def test_ingest_permits_rejects_duplicate_headers_after_normalization(

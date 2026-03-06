@@ -8,7 +8,7 @@ Provide a repeatable operator workflow for loading manual or records-request per
 
 ## Prerequisites
 
-- virtualenv dependencies installed (`pip install -e .[dev]`)
+- virtualenv dependencies installed (`pip install -e '.[dev]'`)
 - database initialized (`.venv/bin/accessdane init-db`)
 - a UTF-8 permit CSV file with at least:
   - one parcel locator header (`Parcel Number` or `Address` alias)

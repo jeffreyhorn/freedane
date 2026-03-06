@@ -880,7 +880,10 @@ def _parse_optional_amount(
 
     normalized = trimmed.replace("$", "").replace(",", "")
     if normalized.startswith("(") and normalized.endswith(")"):
-        normalized = f"-{normalized[1:-1]}"
+        inner = normalized[1:-1].strip()
+        inner = inner.replace(" ", "")
+        normalized = f"-{inner}"
+    normalized = normalized.strip().replace(" ", "")
     try:
         amount = Decimal(normalized).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except InvalidOperation:
