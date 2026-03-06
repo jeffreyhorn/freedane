@@ -68,3 +68,19 @@ Date parsing tolerates common spreadsheet/operator forms:
 2. If many rows are rejected, inspect `appeal_events.import_error` and command-level rejection counts.
 3. If warning counts are high, inspect `appeal_events.import_warnings` and `raw_row` for source-specific cleanup rules.
 4. Re-run the same file safely: rows are idempotently upserted by `(source_file_sha256, source_row_number)`.
+
+## After Import: Refresh Parcel-Year Context
+
+After appeal ingest, rebuild `parcel_year_facts` so appeal context appears in parcel-year outputs:
+
+```bash
+.venv/bin/accessdane build-parcel-year-facts
+```
+
+For scoped refresh:
+
+```bash
+.venv/bin/accessdane build-parcel-year-facts --ids <parcel_ids.txt>
+```
+
+See the consolidated Sprint 4 runbook in [OPERATIONS.md](OPERATIONS.md) for the full permit + appeal + parcel-year workflow.
