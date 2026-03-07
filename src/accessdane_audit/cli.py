@@ -369,7 +369,14 @@ def sales_ratio_study_cmd(
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
 ) -> None:
     settings = load_settings()
-    parcel_ids = _collect_ids(ids, ids_file) if (ids or ids_file) else None
+    if ids or ids_file:
+        parcel_ids = _collect_ids(ids, ids_file)
+        if not parcel_ids:
+            raise typer.BadParameter(
+                "At least one parcel ID must be provided via --id or --ids."
+            )
+    else:
+        parcel_ids = None
     years = sorted(set(year)) if year else None
 
     with session_scope(settings.database_url) as session:

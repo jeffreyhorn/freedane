@@ -78,12 +78,7 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
     assert run_row.run_type == "sales_ratio_study"
     assert run_row.status == "succeeded"
     assert run_row.scope_hash is not None
-    assert run_row.output_summary_json == {
-        "group_count": 2,
-        "included_sales_count": 3,
-        "excluded_sales_count": 1,
-        "skipped_scope_filter_count": 0,
-    }
+    assert run_row.output_summary_json == payload["summary"]
 
 
 def test_sales_ratio_study_cli_supports_scope_and_output_file(
@@ -278,6 +273,32 @@ def test_build_sales_ratio_study_counts_scope_filter_skips(tmp_path: Path) -> No
     assert payload["summary"]["excluded_sales_count"] == 1
     assert payload["summary"]["skipped_scope_filter_count"] == 1
     assert payload["summary"]["group_count"] == 1
+
+
+def test_sales_ratio_study_cli_rejects_empty_ids_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_cli_empty_ids.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    ids_path = tmp_path / "empty_ids.txt"
+    ids_path.write_text(" \n\t\n", encoding="utf-8")
+    init_db(database_url)
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["sales-ratio-study", "--ids", str(ids_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "At least one parcel ID must be provided via --id or --ids." in result.output
 
 
 def _seed_sales_ratio_fixture(session) -> None:

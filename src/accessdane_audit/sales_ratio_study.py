@@ -127,14 +127,7 @@ def build_sales_ratio_study(
         run.input_summary_json = {
             "candidate_sales_count": payload["summary"]["candidate_sales_count"]
         }
-        run.output_summary_json = {
-            "group_count": payload["summary"]["group_count"],
-            "included_sales_count": payload["summary"]["included_sales_count"],
-            "excluded_sales_count": payload["summary"]["excluded_sales_count"],
-            "skipped_scope_filter_count": payload["summary"][
-                "skipped_scope_filter_count"
-            ],
-        }
+        run.output_summary_json = dict(payload["summary"])
         run.completed_at = datetime.now(timezone.utc)
         session.flush()
         payload["run"] = _run_payload(run)
@@ -300,6 +293,11 @@ def _load_candidate_rows(
     parcel_ids: Optional[list[str]],
     years: Optional[list[int]],
 ) -> list[SalesRatioStudyInputRow]:
+    if parcel_ids is not None and not parcel_ids:
+        return []
+    if years is not None and not years:
+        return []
+
     has_active_exclusion = exists(
         select(SalesExclusion.id).where(
             and_(
@@ -330,9 +328,9 @@ def _load_candidate_rows(
             SalesTransaction.consideration_amount > 0,
         )
     )
-    if parcel_ids:
+    if parcel_ids is not None:
         query = query.where(SalesParcelMatch.parcel_id.in_(parcel_ids))
-    if years:
+    if years is not None:
         year_ranges = [
             and_(
                 SalesTransaction.transfer_date >= date(year, 1, 1),
@@ -385,10 +383,10 @@ def _resolved_scope(
 ) -> ScopePayload:
     resolved_parcel_ids = (
         sorted({parcel_id.strip() for parcel_id in parcel_ids if parcel_id.strip()})
-        if parcel_ids
+        if parcel_ids is not None
         else None
     )
-    resolved_years = sorted(set(years)) if years else None
+    resolved_years = sorted(set(years)) if years is not None else None
     resolved_municipality = municipality.strip() if municipality else None
     resolved_classification = (
         valuation_classification.strip() if valuation_classification else None
