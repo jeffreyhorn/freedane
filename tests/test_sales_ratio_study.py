@@ -303,6 +303,30 @@ def test_sales_ratio_study_cli_rejects_empty_ids_scope(
     assert "At least one parcel ID must be provided via --id or --ids." in result.output
 
 
+def test_sales_ratio_study_cli_rejects_non_positive_year(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_cli_invalid_year.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["sales-ratio-study", "--year", "0"],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid value for '--year'" in result.output
+
+
 def test_build_sales_ratio_study_persists_failure_summary(
     tmp_path: Path, monkeypatch
 ) -> None:

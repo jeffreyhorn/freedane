@@ -350,6 +350,7 @@ def sales_ratio_study_cmd(
         [],
         "--year",
         help="Sale year filter (repeatable)",
+        min=1,
     ),
     municipality: Optional[str] = typer.Option(
         None,
