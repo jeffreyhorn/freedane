@@ -93,6 +93,10 @@ One row per command execution attempt.
 - `parent_run_id` links dependency chains (example: `score_fraud` run depends on a specific `build_features` run).
 - `scope_json` must preserve exact operator scope input (`ids`, years, or study grouping filters).
 - `scope_hash` enables cheap same-scope/idempotency checks.
+- score lineage source-of-truth in v1:
+  - `fraud_scores.feature_run_id` is the authoritative FK linking scored output back to feature generation
+  - for `run_type = score_fraud`, `scoring_runs.parent_run_id` should mirror `feature_run_id` as a run-level convenience pointer
+  - if both fields are present and differ, consumers should trust `fraud_scores.feature_run_id`
 
 ## Command Contracts
 
@@ -132,6 +136,16 @@ Command emits JSON payload to stdout or `--out` path:
   - `outlier_low_count`
   - `outlier_high_count`
   - `excluded_count`
+
+`area_key` definition in v1:
+
+- string key for the geographic grouping bucket used in ratio analysis
+- default derivation: `municipality_name`
+- optional derivation when supported by available source data: stable sub-area identifier (for example ward or assessor neighborhood)
+- nullability:
+  - non-null when a deterministic grouping key can be resolved
+  - null only when required geographic source fields are missing
+- stability rule: for the same input records and grouping config, `area_key` must be deterministic across reruns
 
 ### Failure behavior
 
@@ -252,11 +266,13 @@ One row per scored `(parcel_id, year, ruleset_version)`.
 - `id` (PK)
 - `run_id` (FK -> `scoring_runs.id`)
 - `feature_run_id` (FK -> `scoring_runs.id`, nullable)
+  - expected non-null for normal `score_fraud` command runs
+  - nullable only for explicit backfill/legacy repair operations
 - `parcel_id` (FK -> `parcels.id`)
 - `year` (integer)
 - `ruleset_version` (string)
 - `score_value` (numeric 0-100)
-- `risk_band` (string; `high`, `medium`, `low`, `informational`)
+- `risk_band` (string; `high`, `medium`, `low`)
 - `requires_review` (boolean)
 - `reason_code_count` (integer)
 - `score_summary_json` (JSON object)
@@ -294,6 +310,13 @@ One row per reason code attached to one `fraud_scores` row.
 - `explanation` (text; plain-language sentence)
 - `source_refs_json` (JSON object)
 - `flagged_at` (timestamp with timezone)
+
+Denormalized consistency rule:
+
+- `parcel_id`, `year`, and `ruleset_version` are intentionally repeated on `fraud_flags` for query/index ergonomics
+- Day 3 implementation must enforce consistency with parent `fraud_scores`:
+  - minimum requirement: write path derives these fields from the resolved `score_id`
+  - preferred hard guard: DB-level constraint/trigger that rejects mismatched values
 
 ### Keys and indexes
 
@@ -357,8 +380,10 @@ Plain-language requirement:
 
 ## Idempotency
 
-- rerunning same command with same version and same resolved scope must produce identical persisted rows and equivalent summaries (except timestamps/run IDs)
-- unique keys enforce no duplicate logical rows inside one version/scope
+- rerunning same command with same version and same resolved scope must produce the same set of logically equivalent rows and equivalent summaries
+  - logical equivalence is defined by unique keys plus equality of non-audit/business columns
+  - surrogate primary keys (`id`) and DB-managed fields (timestamps, run IDs, auto-generated defaults) are excluded from idempotency guarantees
+- unique keys enforce no duplicate logical rows inside one version/scope and are the idempotency basis (not surrogate PK values)
 
 ## Versioning Contract
 
