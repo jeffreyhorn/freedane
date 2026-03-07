@@ -108,7 +108,7 @@ Calculate sales-ratio metrics by year, class, and area for fairness diagnostics 
 
 ### Inputs
 
-- arms-length sales only by default (exclude rows with active exclusion rules)
+- arm's-length sales only by default (exclude rows with active exclusion rules)
 - matched sale-to-parcel relationships
 - parcel-year assessed values aligned to sale year
 - optional scope controls:
@@ -376,19 +376,26 @@ Plain-language requirement:
 
 ## Scoped And Full Rerun Semantics
 
+Logical version dimensions in v1:
+
+- `build-features`: `feature_version`
+- `score-fraud`: (`ruleset_version`, `feature_version`)
+- when `score-fraud` is executed with explicit `--feature-run-id`, treat `feature_run_id` as an additional replacement selector for that run
+
 ## Full rerun
 
 - command scope covers all eligible parcels/years
-- existing rows for the same version are replaced in-table before insert
+- existing rows for the same logical version are replaced in-table before insert
   - `parcel_features`: replace rows for `feature_version`
-  - `fraud_scores`/`fraud_flags`: replace rows for `ruleset_version`
+  - `fraud_scores`: replace rows for (`ruleset_version`, `feature_version`) and, when provided, matching `feature_run_id`
+  - `fraud_flags`: replace rows whose parent `fraud_scores` rows are being replaced
 - run summary records delete/insert counts
 
 ## Scoped rerun
 
 - scope defined by `--id`/`--ids` and optional `--year`
-- only rows within resolved scope and same version are replaced
-- out-of-scope rows for the same version are preserved
+- only rows within resolved scope and the same logical version are replaced
+- out-of-scope rows for the same logical version are preserved
 
 ## Idempotency
 
