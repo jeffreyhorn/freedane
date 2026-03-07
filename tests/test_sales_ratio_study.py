@@ -7,9 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import select
+from sqlalchemy.exc import PendingRollbackError
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import sales_ratio_study as sales_ratio_study_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     Parcel,
@@ -299,6 +301,87 @@ def test_sales_ratio_study_cli_rejects_empty_ids_scope(
 
     assert result.exit_code != 0
     assert "At least one parcel ID must be provided via --id or --ids." in result.output
+
+
+def test_build_sales_ratio_study_persists_failure_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_failure_summary.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    def _raise_runtime_error(*_args, **_kwargs):
+        raise RuntimeError("forced study failure")
+
+    monkeypatch.setattr(
+        sales_ratio_study_module,
+        "_load_candidate_rows",
+        _raise_runtime_error,
+    )
+    with session_scope(database_url) as session:
+        payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-forced-failure",
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["summary"] == {
+        "candidate_sales_count": 0,
+        "included_sales_count": 0,
+        "excluded_sales_count": 0,
+        "skipped_scope_filter_count": 0,
+        "skipped_missing_parcel_year_fact_count": 0,
+        "skipped_missing_assessment_count": 0,
+        "group_count": 0,
+    }
+
+    with session_scope(database_url) as session:
+        run_row = session.execute(
+            select(ScoringRun).where(
+                ScoringRun.version_tag == "ratio-v1-forced-failure"
+            )
+        ).scalar_one()
+
+    assert run_row.status == "failed"
+    assert run_row.output_summary_json == payload["summary"]
+
+
+def test_build_sales_ratio_study_handles_pending_rollback_on_failure_flush(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_pending_rollback.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    def _raise_runtime_error(*_args, **_kwargs):
+        raise RuntimeError("forced study failure")
+
+    monkeypatch.setattr(
+        sales_ratio_study_module,
+        "_load_candidate_rows",
+        _raise_runtime_error,
+    )
+
+    with session_scope(database_url) as session:
+        original_flush = session.flush
+        flush_call_count = {"count": 0}
+
+        def _flush_with_pending_rollback(*_args, **_kwargs):
+            flush_call_count["count"] += 1
+            if flush_call_count["count"] == 1:
+                return original_flush()
+            raise PendingRollbackError("forced pending rollback")
+
+        monkeypatch.setattr(session, "flush", _flush_with_pending_rollback)
+        payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-pending-rollback",
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["summary"]["group_count"] == 0
+    assert payload["error"] == "forced study failure"
 
 
 def _seed_sales_ratio_fixture(session) -> None:

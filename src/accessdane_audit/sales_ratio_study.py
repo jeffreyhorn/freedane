@@ -10,6 +10,7 @@ from statistics import median
 from typing import Optional, Sequence, TypedDict
 
 from sqlalchemy import and_, exists, or_, select
+from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -133,12 +134,6 @@ def build_sales_ratio_study(
         payload["run"] = _run_payload(run)
         return payload
     except Exception as exc:
-        run.status = "failed"
-        run.error_summary = str(exc)
-        run.input_summary_json = None
-        run.output_summary_json = {}
-        run.completed_at = datetime.now(timezone.utc)
-        session.flush()
         failure_summary: SalesRatioStudySummary = {
             "candidate_sales_count": 0,
             "included_sales_count": 0,
@@ -148,6 +143,16 @@ def build_sales_ratio_study(
             "skipped_missing_assessment_count": 0,
             "group_count": 0,
         }
+        run.status = "failed"
+        run.error_summary = str(exc)
+        run.input_summary_json = None
+        run.output_summary_json = dict(failure_summary)
+        run.completed_at = datetime.now(timezone.utc)
+        try:
+            session.flush()
+        except (PendingRollbackError, InvalidRequestError):
+            # If the original error invalidated the transaction, avoid masking it.
+            session.rollback()
         return {
             "run": _run_payload(run),
             "scope": resolved_scope,
