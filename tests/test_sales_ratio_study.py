@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import select
-from sqlalchemy.exc import PendingRollbackError
+from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
@@ -406,6 +406,30 @@ def test_build_sales_ratio_study_handles_pending_rollback_on_failure_flush(
     assert payload["run"]["status"] == "failed"
     assert payload["summary"]["group_count"] == 0
     assert payload["error"] == "forced study failure"
+
+
+def test_build_sales_ratio_study_handles_initial_run_flush_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_initial_flush_failure.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+
+        def _flush_always_fails(*_args, **_kwargs):
+            raise InvalidRequestError("forced initial run flush failure")
+
+        monkeypatch.setattr(session, "flush", _flush_always_fails)
+        payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-initial-flush-failure",
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["summary"]["group_count"] == 0
+    assert payload["error"] == "forced initial run flush failure"
 
 
 def _seed_sales_ratio_fixture(session) -> None:

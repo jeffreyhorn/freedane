@@ -106,10 +106,10 @@ def build_sales_ratio_study(
         scope_json=dict(resolved_scope),
         config_json=config_json,
     )
-    session.add(run)
-    session.flush()
 
     try:
+        session.add(run)
+        session.flush()
         rows = _load_candidate_rows(
             session,
             parcel_ids=resolved_scope["parcel_ids"],
