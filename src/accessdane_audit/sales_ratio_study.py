@@ -52,8 +52,9 @@ class ScopePayload(TypedDict):
     valuation_classification: Optional[str]
 
 
-class SalesRatioStudyRun(TypedDict, total=False):
-    run_id: int
+class SalesRatioStudyRun(TypedDict):
+    run_id: Optional[int]
+    run_persisted: bool
     run_type: str
     version_tag: str
     status: str
@@ -134,6 +135,7 @@ def build_sales_ratio_study(
         payload["run"] = _run_payload(run)
         return payload
     except Exception as exc:
+        run_persisted = True
         failure_summary: SalesRatioStudySummary = {
             "candidate_sales_count": 0,
             "included_sales_count": 0,
@@ -153,8 +155,9 @@ def build_sales_ratio_study(
         except (PendingRollbackError, InvalidRequestError):
             # If the original error invalidated the transaction, avoid masking it.
             session.rollback()
+            run_persisted = False
         return {
-            "run": _run_payload(run),
+            "run": _run_payload(run, run_persisted=run_persisted),
             "scope": resolved_scope,
             "summary": failure_summary,
             "groups": [],
@@ -413,15 +416,15 @@ def _scope_hash(scope_json: ScopePayload, config_json: dict[str, object]) -> str
     return sha256(digest_input).hexdigest()
 
 
-def _run_payload(run: ScoringRun) -> SalesRatioStudyRun:
-    payload: SalesRatioStudyRun = {
+def _run_payload(run: ScoringRun, *, run_persisted: bool = True) -> SalesRatioStudyRun:
+    run_id = run.id if (run_persisted and run.id is not None) else None
+    return {
+        "run_id": run_id,
+        "run_persisted": run_persisted,
         "run_type": run.run_type,
         "version_tag": run.version_tag,
         "status": run.status,
     }
-    if run.id is not None:
-        payload["run_id"] = run.id
-    return payload
 
 
 def _matches_text_filter(value: Optional[str], filter_value: Optional[str]) -> bool:

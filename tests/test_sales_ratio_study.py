@@ -39,6 +39,8 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
 
     assert payload["run"]["status"] == "succeeded"
     assert payload["run"]["run_type"] == "sales_ratio_study"
+    assert payload["run"]["run_persisted"] is True
+    assert payload["run"]["run_id"] is not None
     assert payload["summary"]["candidate_sales_count"] == 4
     assert payload["summary"]["included_sales_count"] == 3
     assert payload["summary"]["excluded_sales_count"] == 1
@@ -126,6 +128,8 @@ def test_sales_ratio_study_cli_supports_scope_and_output_file(
     assert result.exit_code == 0, result.stdout
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["run"]["status"] == "succeeded"
+    assert payload["run"]["run_persisted"] is True
+    assert payload["run"]["run_id"] is not None
     assert payload["scope"] == {
         "parcel_ids": ["parcel-res-1", "parcel-res-2"],
         "years": [2025],
@@ -349,6 +353,8 @@ def test_build_sales_ratio_study_persists_failure_summary(
         )
 
     assert payload["run"]["status"] == "failed"
+    assert payload["run"]["run_persisted"] is True
+    assert payload["run"]["run_id"] is not None
     assert payload["summary"] == {
         "candidate_sales_count": 0,
         "included_sales_count": 0,
@@ -404,6 +410,8 @@ def test_build_sales_ratio_study_handles_pending_rollback_on_failure_flush(
         )
 
     assert payload["run"]["status"] == "failed"
+    assert payload["run"]["run_persisted"] is False
+    assert payload["run"]["run_id"] is None
     assert payload["summary"]["group_count"] == 0
     assert payload["error"] == "forced study failure"
 
@@ -428,7 +436,8 @@ def test_build_sales_ratio_study_handles_initial_run_flush_failure(
         )
 
     assert payload["run"]["status"] == "failed"
-    assert "run_id" not in payload["run"]
+    assert payload["run"]["run_persisted"] is False
+    assert payload["run"]["run_id"] is None
     assert payload["summary"]["group_count"] == 0
     assert payload["error"] == "forced initial run flush failure"
 
