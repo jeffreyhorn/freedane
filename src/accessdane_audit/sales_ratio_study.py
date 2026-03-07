@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from statistics import median
 from typing import Optional, Sequence, TypedDict
 
-from sqlalchemy import and_, exists, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -322,21 +322,26 @@ def _load_candidate_rows(
     )
     if parcel_ids:
         query = query.where(SalesParcelMatch.parcel_id.in_(parcel_ids))
+    if years:
+        year_ranges = [
+            and_(
+                SalesTransaction.transfer_date >= date(year, 1, 1),
+                SalesTransaction.transfer_date < date(year + 1, 1, 1),
+            )
+            for year in years
+        ]
+        query = query.where(or_(*year_ranges))
 
     rows: list[SalesRatioStudyInputRow] = []
-    year_filter = set(years) if years else None
     for parcel_id, transfer_date, consideration_amount, excluded in session.execute(
         query
     ):
         if transfer_date is None or consideration_amount is None:
             continue
-        sale_year = transfer_date.year
-        if year_filter is not None and sale_year not in year_filter:
-            continue
         rows.append(
             SalesRatioStudyInputRow(
                 parcel_id=parcel_id,
-                year=sale_year,
+                year=transfer_date.year,
                 consideration_amount=consideration_amount,
                 has_active_exclusion=bool(excluded),
             )

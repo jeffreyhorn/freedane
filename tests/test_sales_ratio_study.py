@@ -162,6 +162,93 @@ def test_sales_ratio_study_cli_supports_scope_and_output_file(
     assert run_row.status == "succeeded"
 
 
+def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_missing_inputs.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+        session.add_all(
+            [
+                Parcel(id="parcel-missing-fact"),
+                Parcel(id="parcel-missing-assessment"),
+                ParcelYearFact(
+                    parcel_id="parcel-missing-assessment",
+                    year=2025,
+                    municipality_name="McFarland",
+                    assessment_valuation_classification="residential",
+                    assessment_total_value=None,
+                ),
+            ]
+        )
+        missing_sales = [
+            SalesTransaction(
+                source_system="wisconsin_dor_retr",
+                source_file_name="test.csv",
+                source_file_sha256="sha-test-1",
+                source_row_number=5,
+                source_headers=["Transfer Date", "Consideration"],
+                raw_row={"Transfer Date": "2025-04-01", "Consideration": "50000"},
+                import_status="loaded",
+                transfer_date=date(2025, 4, 1),
+                consideration_amount=Decimal("50000.00"),
+            ),
+            SalesTransaction(
+                source_system="wisconsin_dor_retr",
+                source_file_name="test.csv",
+                source_file_sha256="sha-test-1",
+                source_row_number=6,
+                source_headers=["Transfer Date", "Consideration"],
+                raw_row={"Transfer Date": "2025-04-05", "Consideration": "70000"},
+                import_status="loaded",
+                transfer_date=date(2025, 4, 5),
+                consideration_amount=Decimal("70000.00"),
+            ),
+        ]
+        session.add_all(missing_sales)
+        session.flush()
+        session.add_all(
+            [
+                SalesParcelMatch(
+                    sales_transaction_id=missing_sales[0].id,
+                    parcel_id="parcel-missing-fact",
+                    match_method="exact_parcel_number",
+                    confidence_score=Decimal("1.0000"),
+                    match_rank=1,
+                    is_primary=True,
+                    match_review_status="auto_accepted",
+                    matched_value="parcel-missing-fact",
+                    matcher_version="test",
+                ),
+                SalesParcelMatch(
+                    sales_transaction_id=missing_sales[1].id,
+                    parcel_id="parcel-missing-assessment",
+                    match_method="exact_parcel_number",
+                    confidence_score=Decimal("1.0000"),
+                    match_rank=1,
+                    is_primary=True,
+                    match_review_status="auto_accepted",
+                    matched_value="parcel-missing-assessment",
+                    matcher_version="test",
+                ),
+            ]
+        )
+
+    with session_scope(database_url) as session:
+        payload = build_sales_ratio_study(session, version_tag="ratio-v1-missing-cases")
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["summary"]["candidate_sales_count"] == 6
+    assert payload["summary"]["included_sales_count"] == 3
+    assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["skipped_missing_parcel_year_fact_count"] == 1
+    assert payload["summary"]["skipped_missing_assessment_count"] == 1
+    assert payload["summary"]["group_count"] == 2
+
+
 def _seed_sales_ratio_fixture(session) -> None:
     session.add_all(
         [

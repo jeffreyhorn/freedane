@@ -332,7 +332,7 @@ def spatial_support_cmd(
 
 @app.command("sales-ratio-study")
 def sales_ratio_study_cmd(
-    id: list[str] = typer.Option(
+    ids: list[str] = typer.Option(
         [],
         "--id",
         help="Parcel ID to include (repeatable)",
@@ -369,7 +369,7 @@ def sales_ratio_study_cmd(
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
 ) -> None:
     settings = load_settings()
-    parcel_ids = _collect_ids(id, ids_file) if (id or ids_file) else None
+    parcel_ids = _collect_ids(ids, ids_file) if (ids or ids_file) else None
     years = sorted(set(year)) if year else None
 
     with session_scope(settings.database_url) as session:
