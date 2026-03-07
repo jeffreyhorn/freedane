@@ -6,6 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from accessdane_audit.db import BASELINE_REVISION, HEAD_REVISION, init_db
 
@@ -254,6 +255,9 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         )
         assert scoring_run_indexes["ix_scoring_runs_status"] == ("status",)
         assert scoring_run_indexes["ix_scoring_runs_version_tag"] == ("version_tag",)
+        assert scoring_run_indexes[
+            "ix_scoring_runs_run_type_version_tag_scope_hash"
+        ] == ("run_type", "version_tag", "scope_hash")
         assert scoring_run_indexes["ix_scoring_runs_parent_run_id"] == (
             "parent_run_id",
         )
@@ -391,6 +395,20 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             ).scalar_one()
         assert partial_index_sql is not None
         assert "WHERE is_primary = 1" in partial_index_sql
+        with engine.connect() as conn:
+            trigger_names = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' AND tbl_name = 'fraud_flags'"
+                    )
+                )
+            }
+        assert {
+            "trg_fraud_flags_consistency_insert",
+            "trg_fraud_flags_consistency_update",
+        }.issubset(trigger_names)
     finally:
         engine.dispose()
 
@@ -480,6 +498,81 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
         assert revision == HEAD_REVISION
+    finally:
+        engine.dispose()
+
+
+def test_fraud_flags_trigger_enforces_parent_score_denormalized_fields(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "fraud_flags_trigger.sqlite"
+    database_url = _db_url(db_path)
+    init_db(database_url)
+
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO scoring_runs "
+                    "(id, run_type, status, version_tag, scope_json, config_json) "
+                    "VALUES (1, 'score_fraud', 'succeeded', 'ruleset-v1', '{}', '{}')"
+                )
+            )
+            conn.execute(text("INSERT INTO parcels (id) VALUES ('P1'), ('P2')"))
+            conn.execute(
+                text(
+                    "INSERT INTO fraud_scores "
+                    "(run_id, feature_run_id, parcel_id, year, ruleset_version, "
+                    "feature_version, score_value, risk_band, score_summary_json) "
+                    "VALUES (1, NULL, 'P1', 2025, 'ruleset-v1', 'features-v1', "
+                    "42.00, 'medium', '{}')"
+                )
+            )
+            score_id = conn.execute(
+                text(
+                    "SELECT id FROM fraud_scores "
+                    "WHERE parcel_id = 'P1' "
+                    "AND year = 2025 "
+                    "AND ruleset_version = 'ruleset-v1'"
+                )
+            ).scalar_one()
+
+            with pytest.raises(
+                IntegrityError,
+                match="fraud_flags row must match parent fraud_scores",
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO fraud_flags "
+                        "(run_id, score_id, parcel_id, year, ruleset_version, "
+                        "reason_code, reason_rank, severity_weight, metric_name, "
+                        "metric_value, threshold_value, comparison_operator, "
+                        "explanation, source_refs_json) "
+                        "VALUES "
+                        "(:run_id, :score_id, 'P2', 2025, 'ruleset-v1', "
+                        "'ratio_outlier', 1, 0.75, 'assessment_to_sale_ratio', "
+                        "'1.42', '1.20', 'gt', "
+                        "'Mismatch should be blocked by trigger', '{}')"
+                    ),
+                    {"run_id": 1, "score_id": score_id},
+                )
+
+            conn.execute(
+                text(
+                    "INSERT INTO fraud_flags "
+                    "(run_id, score_id, parcel_id, year, ruleset_version, "
+                    "reason_code, reason_rank, severity_weight, metric_name, "
+                    "metric_value, threshold_value, comparison_operator, "
+                    "explanation, source_refs_json) "
+                    "VALUES "
+                    "(:run_id, :score_id, 'P1', 2025, 'ruleset-v1', "
+                    "'ratio_outlier', 1, 0.75, 'assessment_to_sale_ratio', "
+                    "'1.42', '1.20', 'gt', "
+                    "'Consistent denormalized fields should pass', '{}')"
+                ),
+                {"run_id": 1, "score_id": score_id},
+            )
     finally:
         engine.dispose()
 

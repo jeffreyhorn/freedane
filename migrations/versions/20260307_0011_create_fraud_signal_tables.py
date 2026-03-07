@@ -16,6 +16,104 @@ branch_labels = None
 depends_on = None
 
 
+def _create_fraud_flag_consistency_triggers() -> None:
+    dialect = op.get_bind().dialect.name
+    if dialect == "postgresql":
+        op.execute(
+            """
+            CREATE FUNCTION enforce_fraud_flag_score_consistency()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM fraud_scores s
+                    WHERE s.id = NEW.score_id
+                      AND s.parcel_id = NEW.parcel_id
+                      AND s.year = NEW.year
+                      AND s.ruleset_version = NEW.ruleset_version
+                ) THEN
+                    RAISE EXCEPTION
+                        'fraud_flags row must match parent fraud_scores parcel_id/year/ruleset_version';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        op.execute(
+            """
+            CREATE TRIGGER trg_fraud_flags_score_consistency
+            BEFORE INSERT OR UPDATE OF score_id, parcel_id, year, ruleset_version
+            ON fraud_flags
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_fraud_flag_score_consistency();
+            """
+        )
+        return
+
+    op.execute(
+        """
+        CREATE TRIGGER trg_fraud_flags_consistency_insert
+        BEFORE INSERT ON fraud_flags
+        FOR EACH ROW
+        BEGIN
+            SELECT
+                CASE
+                    WHEN NOT EXISTS (
+                        SELECT 1
+                        FROM fraud_scores s
+                        WHERE s.id = NEW.score_id
+                          AND s.parcel_id = NEW.parcel_id
+                          AND s.year = NEW.year
+                          AND s.ruleset_version = NEW.ruleset_version
+                    ) THEN
+                        RAISE(
+                            ABORT,
+                            'fraud_flags row must match parent fraud_scores parcel_id/year/ruleset_version'
+                        )
+                END;
+        END;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_fraud_flags_consistency_update
+        BEFORE UPDATE OF score_id, parcel_id, year, ruleset_version ON fraud_flags
+        FOR EACH ROW
+        BEGIN
+            SELECT
+                CASE
+                    WHEN NOT EXISTS (
+                        SELECT 1
+                        FROM fraud_scores s
+                        WHERE s.id = NEW.score_id
+                          AND s.parcel_id = NEW.parcel_id
+                          AND s.year = NEW.year
+                          AND s.ruleset_version = NEW.ruleset_version
+                    ) THEN
+                        RAISE(
+                            ABORT,
+                            'fraud_flags row must match parent fraud_scores parcel_id/year/ruleset_version'
+                        )
+                END;
+        END;
+        """
+    )
+
+
+def _drop_fraud_flag_consistency_triggers() -> None:
+    dialect = op.get_bind().dialect.name
+    if dialect == "postgresql":
+        op.execute(
+            "DROP TRIGGER IF EXISTS trg_fraud_flags_score_consistency ON fraud_flags"
+        )
+        op.execute("DROP FUNCTION IF EXISTS enforce_fraud_flag_score_consistency()")
+        return
+
+    op.execute("DROP TRIGGER IF EXISTS trg_fraud_flags_consistency_insert")
+    op.execute("DROP TRIGGER IF EXISTS trg_fraud_flags_consistency_update")
+
+
 def upgrade() -> None:
     op.create_table(
         "scoring_runs",
@@ -75,6 +173,12 @@ def upgrade() -> None:
         "ix_scoring_runs_version_tag",
         "scoring_runs",
         ["version_tag"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_scoring_runs_run_type_version_tag_scope_hash",
+        "scoring_runs",
+        ["run_type", "version_tag", "scope_hash"],
         unique=False,
     )
     op.create_index(
@@ -268,9 +372,12 @@ def upgrade() -> None:
         ["run_id"],
         unique=False,
     )
+    _create_fraud_flag_consistency_triggers()
 
 
 def downgrade() -> None:
+    _drop_fraud_flag_consistency_triggers()
+
     op.drop_index("ix_fraud_flags_run_id", table_name="fraud_flags")
     op.drop_index("ix_fraud_flags_parcel_id_year", table_name="fraud_flags")
     op.drop_index(
@@ -308,6 +415,10 @@ def downgrade() -> None:
     op.drop_table("parcel_features")
 
     op.drop_index("ix_scoring_runs_parent_run_id", table_name="scoring_runs")
+    op.drop_index(
+        "ix_scoring_runs_run_type_version_tag_scope_hash",
+        table_name="scoring_runs",
+    )
     op.drop_index("ix_scoring_runs_version_tag", table_name="scoring_runs")
     op.drop_index("ix_scoring_runs_status", table_name="scoring_runs")
     op.drop_index(

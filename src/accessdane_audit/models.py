@@ -734,6 +734,12 @@ class ScoringRun(Base):
         Index("ix_scoring_runs_run_type_started_at", "run_type", "started_at"),
         Index("ix_scoring_runs_status", "status"),
         Index("ix_scoring_runs_version_tag", "version_tag"),
+        Index(
+            "ix_scoring_runs_run_type_version_tag_scope_hash",
+            "run_type",
+            "version_tag",
+            "scope_hash",
+        ),
         Index("ix_scoring_runs_parent_run_id", "parent_run_id"),
         CheckConstraint(
             "run_type IN ('sales_ratio_study', 'build_features', 'score_fraud')",
