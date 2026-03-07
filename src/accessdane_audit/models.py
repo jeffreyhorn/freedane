@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -725,3 +726,227 @@ class AppealEvent(Base):
     )
     representative_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class ScoringRun(Base):
+    __tablename__ = "scoring_runs"
+    __table_args__ = (
+        Index("ix_scoring_runs_run_type_started_at", "run_type", "started_at"),
+        Index("ix_scoring_runs_status", "status"),
+        Index("ix_scoring_runs_version_tag", "version_tag"),
+        Index("ix_scoring_runs_parent_run_id", "parent_run_id"),
+        CheckConstraint(
+            "run_type IN ('sales_ratio_study', 'build_features', 'score_fraud')",
+            name="ck_scoring_runs_run_type",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_scoring_runs_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_type: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, server_default=text("'running'")
+    )
+    version_tag: Mapped[str] = mapped_column(String, nullable=False)
+    scope_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    scope_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    config_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    input_summary_json: Mapped[Optional[dict[str, object]]] = mapped_column(
+        JSON, nullable=True
+    )
+    output_summary_json: Mapped[Optional[dict[str, object]]] = mapped_column(
+        JSON, nullable=True
+    )
+    error_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parent_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("scoring_runs.id"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ParcelFeature(Base):
+    __tablename__ = "parcel_features"
+    __table_args__ = (
+        Index(
+            "ux_parcel_features_parcel_id_year_feature_version",
+            "parcel_id",
+            "year",
+            "feature_version",
+            unique=True,
+        ),
+        Index(
+            "ix_parcel_features_feature_version_year",
+            "feature_version",
+            "year",
+        ),
+        Index("ix_parcel_features_run_id", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("scoring_runs.id"), nullable=False
+    )
+    parcel_id: Mapped[str] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    feature_version: Mapped[str] = mapped_column(String, nullable=False)
+    assessment_to_sale_ratio: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 6), nullable=True
+    )
+    peer_percentile: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(6, 4), nullable=True
+    )
+    yoy_assessment_change_pct: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 6), nullable=True
+    )
+    permit_adjusted_expected_change: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    permit_adjusted_gap: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    appeal_value_delta_3y: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    appeal_success_rate_3y: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(6, 4), nullable=True
+    )
+    lineage_value_reset_delta: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    feature_quality_flags: Mapped[Optional[list[str]]] = mapped_column(
+        JSON, nullable=True
+    )
+    source_refs_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    built_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class FraudScore(Base):
+    __tablename__ = "fraud_scores"
+    __table_args__ = (
+        Index(
+            "ux_fraud_scores_parcel_id_year_ruleset_version_feature_version",
+            "parcel_id",
+            "year",
+            "ruleset_version",
+            "feature_version",
+            unique=True,
+        ),
+        Index(
+            "ix_fraud_scores_ruleset_version_feature_version_score_value",
+            "ruleset_version",
+            "feature_version",
+            "score_value",
+        ),
+        Index(
+            "ix_fraud_scores_requires_review_risk_band", "requires_review", "risk_band"
+        ),
+        Index("ix_fraud_scores_run_id", "run_id"),
+        Index("ix_fraud_scores_feature_run_id", "feature_run_id"),
+        CheckConstraint(
+            "risk_band IN ('high', 'medium', 'low')",
+            name="ck_fraud_scores_risk_band",
+        ),
+        CheckConstraint(
+            "score_value >= 0 AND score_value <= 100",
+            name="ck_fraud_scores_score_value_range",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("scoring_runs.id"), nullable=False
+    )
+    feature_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("scoring_runs.id"), nullable=True
+    )
+    parcel_id: Mapped[str] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    ruleset_version: Mapped[str] = mapped_column(String, nullable=False)
+    feature_version: Mapped[str] = mapped_column(String, nullable=False)
+    score_value: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
+    risk_band: Mapped[str] = mapped_column(String, nullable=False)
+    requires_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    reason_code_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    score_summary_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    scored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class FraudFlag(Base):
+    __tablename__ = "fraud_flags"
+    __table_args__ = (
+        Index(
+            "ux_fraud_flags_score_id_reason_code",
+            "score_id",
+            "reason_code",
+            unique=True,
+        ),
+        Index(
+            "ix_fraud_flags_reason_code_ruleset_version",
+            "reason_code",
+            "ruleset_version",
+        ),
+        Index("ix_fraud_flags_parcel_id_year", "parcel_id", "year"),
+        Index("ix_fraud_flags_run_id", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("scoring_runs.id"), nullable=False
+    )
+    score_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("fraud_scores.id"), nullable=False
+    )
+    parcel_id: Mapped[str] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    ruleset_version: Mapped[str] = mapped_column(String, nullable=False)
+    reason_code: Mapped[str] = mapped_column(String, nullable=False)
+    reason_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    severity_weight: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+    metric_name: Mapped[str] = mapped_column(String, nullable=False)
+    metric_value: Mapped[str] = mapped_column(Text, nullable=False)
+    threshold_value: Mapped[str] = mapped_column(Text, nullable=False)
+    comparison_operator: Mapped[str] = mapped_column(String, nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    flagged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
