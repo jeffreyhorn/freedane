@@ -62,6 +62,7 @@ class SalesRatioStudySummary(TypedDict):
     candidate_sales_count: int
     included_sales_count: int
     excluded_sales_count: int
+    skipped_scope_filter_count: int
     skipped_missing_parcel_year_fact_count: int
     skipped_missing_assessment_count: int
     group_count: int
@@ -130,6 +131,9 @@ def build_sales_ratio_study(
             "group_count": payload["summary"]["group_count"],
             "included_sales_count": payload["summary"]["included_sales_count"],
             "excluded_sales_count": payload["summary"]["excluded_sales_count"],
+            "skipped_scope_filter_count": payload["summary"][
+                "skipped_scope_filter_count"
+            ],
         }
         run.completed_at = datetime.now(timezone.utc)
         session.flush()
@@ -146,6 +150,7 @@ def build_sales_ratio_study(
             "candidate_sales_count": 0,
             "included_sales_count": 0,
             "excluded_sales_count": 0,
+            "skipped_scope_filter_count": 0,
             "skipped_missing_parcel_year_fact_count": 0,
             "skipped_missing_assessment_count": 0,
             "group_count": 0,
@@ -176,6 +181,7 @@ def _build_payload(
 
     included_sales_count = 0
     excluded_sales_count = 0
+    skipped_scope_filter_count = 0
     skipped_missing_parcel_year_fact_count = 0
     skipped_missing_assessment_count = 0
 
@@ -188,8 +194,10 @@ def _build_payload(
         municipality_name = fact.municipality_name
         valuation_classification = fact.assessment_valuation_classification
         if not _matches_text_filter(municipality_name, municipality_filter):
+            skipped_scope_filter_count += 1
             continue
         if not _matches_text_filter(valuation_classification, valuation_class_filter):
+            skipped_scope_filter_count += 1
             continue
 
         area_key = municipality_name
@@ -199,8 +207,8 @@ def _build_payload(
             valuation_classification,
             area_key,
         )
-        group = groups[group_key]
         if row.has_active_exclusion:
+            group = groups[group_key]
             group.excluded_count += 1
             excluded_sales_count += 1
             continue
@@ -213,6 +221,7 @@ def _build_payload(
             skipped_missing_assessment_count += 1
             continue
 
+        group = groups[group_key]
         ratio = fact.assessment_total_value / row.consideration_amount
         group.included_ratios.append(ratio)
         group.included_ratio_sum += ratio
@@ -241,6 +250,7 @@ def _build_payload(
         "candidate_sales_count": len(rows),
         "included_sales_count": included_sales_count,
         "excluded_sales_count": excluded_sales_count,
+        "skipped_scope_filter_count": skipped_scope_filter_count,
         "skipped_missing_parcel_year_fact_count": (
             skipped_missing_parcel_year_fact_count
         ),

@@ -40,6 +40,7 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
     assert payload["summary"]["candidate_sales_count"] == 4
     assert payload["summary"]["included_sales_count"] == 3
     assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["skipped_scope_filter_count"] == 0
     assert payload["summary"]["group_count"] == 2
 
     groups = {
@@ -81,6 +82,7 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
         "group_count": 2,
         "included_sales_count": 3,
         "excluded_sales_count": 1,
+        "skipped_scope_filter_count": 0,
     }
 
 
@@ -136,6 +138,7 @@ def test_sales_ratio_study_cli_supports_scope_and_output_file(
     assert payload["summary"]["candidate_sales_count"] == 2
     assert payload["summary"]["included_sales_count"] == 1
     assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["skipped_scope_filter_count"] == 0
     assert payload["summary"]["group_count"] == 1
     assert payload["groups"] == [
         {
@@ -178,7 +181,7 @@ def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows
                 ParcelYearFact(
                     parcel_id="parcel-missing-assessment",
                     year=2025,
-                    municipality_name="McFarland",
+                    municipality_name="Sun Prairie",
                     assessment_valuation_classification="residential",
                     assessment_total_value=None,
                 ),
@@ -244,9 +247,37 @@ def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows
     assert payload["summary"]["candidate_sales_count"] == 6
     assert payload["summary"]["included_sales_count"] == 3
     assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["skipped_scope_filter_count"] == 0
     assert payload["summary"]["skipped_missing_parcel_year_fact_count"] == 1
     assert payload["summary"]["skipped_missing_assessment_count"] == 1
     assert payload["summary"]["group_count"] == 2
+    assert all(
+        group["municipality_name"] != "Sun Prairie" for group in payload["groups"]
+    )
+
+
+def test_build_sales_ratio_study_counts_scope_filter_skips(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_ratio_study_scope_filter.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    with session_scope(database_url) as session:
+        payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-scope-filter",
+            municipality="mcfarland",
+            valuation_classification="residential",
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["summary"]["candidate_sales_count"] == 4
+    assert payload["summary"]["included_sales_count"] == 2
+    assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["skipped_scope_filter_count"] == 1
+    assert payload["summary"]["group_count"] == 1
 
 
 def _seed_sales_ratio_fixture(session) -> None:
