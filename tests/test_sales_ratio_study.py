@@ -45,7 +45,12 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
     assert payload["summary"]["included_sales_count"] == 3
     assert payload["summary"]["excluded_sales_count"] == 1
     assert payload["summary"]["skipped_scope_filter_count"] == 0
+    assert payload["summary"]["skipped_missing_group_dimension_count"] == 0
+    assert payload["summary"]["insufficient_group_count"] == 1
     assert payload["summary"]["group_count"] == 2
+    assert payload["diagnostics"]["requested_years_without_candidate_sales"] == []
+    assert len(payload["diagnostics"]["insufficient_groups"]) == 1
+    assert len(payload["diagnostics"]["groups_with_exclusions"]) == 1
 
     groups = {
         (group["municipality_name"], group["valuation_classification"]): group
@@ -57,6 +62,8 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
     assert mcfarland_group["year"] == 2025
     assert mcfarland_group["area_key"] == "McFarland"
     assert mcfarland_group["sale_count"] == 2
+    assert mcfarland_group["is_insufficient_sample"] is False
+    assert mcfarland_group["minimum_required_sale_count"] == 2
     assert mcfarland_group["median_ratio"] == 0.75
     assert mcfarland_group["cod"] == 33.3333
     assert mcfarland_group["prd"] == 1.0
@@ -67,9 +74,11 @@ def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
     assert madison_group["year"] == 2025
     assert madison_group["area_key"] == "Madison"
     assert madison_group["sale_count"] == 1
+    assert madison_group["is_insufficient_sample"] is True
+    assert madison_group["minimum_required_sale_count"] == 2
     assert madison_group["median_ratio"] == 1.5
-    assert madison_group["cod"] == 0.0
-    assert madison_group["prd"] == 1.0
+    assert madison_group["cod"] is None
+    assert madison_group["prd"] is None
     assert madison_group["outlier_low_count"] == 0
     assert madison_group["outlier_high_count"] == 0
     assert madison_group["excluded_count"] == 0
@@ -140,7 +149,12 @@ def test_sales_ratio_study_cli_supports_scope_and_output_file(
     assert payload["summary"]["included_sales_count"] == 1
     assert payload["summary"]["excluded_sales_count"] == 1
     assert payload["summary"]["skipped_scope_filter_count"] == 0
+    assert payload["summary"]["skipped_missing_group_dimension_count"] == 0
+    assert payload["summary"]["insufficient_group_count"] == 1
     assert payload["summary"]["group_count"] == 1
+    assert payload["diagnostics"]["requested_years_without_candidate_sales"] == []
+    assert len(payload["diagnostics"]["insufficient_groups"]) == 1
+    assert len(payload["diagnostics"]["groups_with_exclusions"]) == 1
     assert payload["groups"] == [
         {
             "year": 2025,
@@ -148,9 +162,11 @@ def test_sales_ratio_study_cli_supports_scope_and_output_file(
             "valuation_classification": "residential",
             "area_key": "McFarland",
             "sale_count": 1,
+            "is_insufficient_sample": True,
+            "minimum_required_sale_count": 2,
             "median_ratio": 1.0,
-            "cod": 0.0,
-            "prd": 1.0,
+            "cod": None,
+            "prd": None,
             "outlier_low_count": 0,
             "outlier_high_count": 0,
             "excluded_count": 1,
@@ -179,12 +195,20 @@ def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows
             [
                 Parcel(id="parcel-missing-fact"),
                 Parcel(id="parcel-missing-assessment"),
+                Parcel(id="parcel-missing-grouping"),
                 ParcelYearFact(
                     parcel_id="parcel-missing-assessment",
                     year=2025,
                     municipality_name="Sun Prairie",
                     assessment_valuation_classification="residential",
                     assessment_total_value=None,
+                ),
+                ParcelYearFact(
+                    parcel_id="parcel-missing-grouping",
+                    year=2025,
+                    municipality_name=None,
+                    assessment_valuation_classification=None,
+                    assessment_total_value=Decimal("80000.00"),
                 ),
             ]
         )
@@ -210,6 +234,17 @@ def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows
                 import_status="loaded",
                 transfer_date=date(2025, 4, 5),
                 consideration_amount=Decimal("70000.00"),
+            ),
+            SalesTransaction(
+                source_system="wisconsin_dor_retr",
+                source_file_name="test.csv",
+                source_file_sha256="sha-test-1",
+                source_row_number=7,
+                source_headers=["Transfer Date", "Consideration"],
+                raw_row={"Transfer Date": "2025-04-11", "Consideration": "80000"},
+                import_status="loaded",
+                transfer_date=date(2025, 4, 11),
+                consideration_amount=Decimal("80000.00"),
             ),
         ]
         session.add_all(missing_sales)
@@ -238,6 +273,17 @@ def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows
                     matched_value="parcel-missing-assessment",
                     matcher_version="test",
                 ),
+                SalesParcelMatch(
+                    sales_transaction_id=missing_sales[2].id,
+                    parcel_id="parcel-missing-grouping",
+                    match_method="exact_parcel_number",
+                    confidence_score=Decimal("1.0000"),
+                    match_rank=1,
+                    is_primary=True,
+                    match_review_status="auto_accepted",
+                    matched_value="parcel-missing-grouping",
+                    matcher_version="test",
+                ),
             ]
         )
 
@@ -245,12 +291,14 @@ def test_build_sales_ratio_study_counts_skipped_missing_fact_and_assessment_rows
         payload = build_sales_ratio_study(session, version_tag="ratio-v1-missing-cases")
 
     assert payload["run"]["status"] == "succeeded"
-    assert payload["summary"]["candidate_sales_count"] == 6
+    assert payload["summary"]["candidate_sales_count"] == 7
     assert payload["summary"]["included_sales_count"] == 3
     assert payload["summary"]["excluded_sales_count"] == 1
     assert payload["summary"]["skipped_scope_filter_count"] == 0
+    assert payload["summary"]["skipped_missing_group_dimension_count"] == 1
     assert payload["summary"]["skipped_missing_parcel_year_fact_count"] == 1
     assert payload["summary"]["skipped_missing_assessment_count"] == 1
+    assert payload["summary"]["insufficient_group_count"] == 1
     assert payload["summary"]["group_count"] == 2
     assert all(
         group["municipality_name"] != "Sun Prairie" for group in payload["groups"]
@@ -278,6 +326,8 @@ def test_build_sales_ratio_study_counts_scope_filter_skips(tmp_path: Path) -> No
     assert payload["summary"]["included_sales_count"] == 2
     assert payload["summary"]["excluded_sales_count"] == 1
     assert payload["summary"]["skipped_scope_filter_count"] == 1
+    assert payload["summary"]["skipped_missing_group_dimension_count"] == 0
+    assert payload["summary"]["insufficient_group_count"] == 0
     assert payload["summary"]["group_count"] == 1
 
 
@@ -324,6 +374,59 @@ def test_build_sales_ratio_study_normalizes_scope_text_for_hash(tmp_path: Path) 
     assert mixed_case_run.scope_hash == lower_case_run.scope_hash
 
 
+def test_build_sales_ratio_study_reports_sparse_requested_years(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_ratio_study_sparse_years.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    with session_scope(database_url) as session:
+        payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-sparse-years",
+            years=[2024, 2025, 2026],
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["summary"]["candidate_sales_count"] == 4
+    assert payload["summary"]["included_sales_count"] == 3
+    assert payload["summary"]["group_count"] == 2
+    assert payload["diagnostics"]["requested_years_without_candidate_sales"] == [
+        2024,
+        2026,
+    ]
+
+
+def test_build_sales_ratio_study_is_deterministic_for_same_scope(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_deterministic.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    with session_scope(database_url) as session:
+        first_payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-deterministic-a",
+            years=[2025],
+        )
+        second_payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-deterministic-b",
+            years=[2025],
+        )
+
+    assert first_payload["scope"] == second_payload["scope"]
+    assert first_payload["summary"] == second_payload["summary"]
+    assert first_payload["diagnostics"] == second_payload["diagnostics"]
+    assert first_payload["groups"] == second_payload["groups"]
+
+
 def test_build_sales_ratio_study_batches_in_clause_filters(
     tmp_path: Path,
     monkeypatch,
@@ -348,6 +451,8 @@ def test_build_sales_ratio_study_batches_in_clause_filters(
     assert payload["summary"]["candidate_sales_count"] == 3
     assert payload["summary"]["included_sales_count"] == 2
     assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["skipped_missing_group_dimension_count"] == 0
+    assert payload["summary"]["insufficient_group_count"] == 0
     assert payload["summary"]["group_count"] == 1
 
 
@@ -454,8 +559,10 @@ def test_build_sales_ratio_study_persists_failure_summary(
         "included_sales_count": 0,
         "excluded_sales_count": 0,
         "skipped_scope_filter_count": 0,
+        "skipped_missing_group_dimension_count": 0,
         "skipped_missing_parcel_year_fact_count": 0,
         "skipped_missing_assessment_count": 0,
+        "insufficient_group_count": 0,
         "group_count": 0,
     }
 
