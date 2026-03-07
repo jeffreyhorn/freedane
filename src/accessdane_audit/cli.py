@@ -45,6 +45,7 @@ from .retr import (
     ingest_retr_csv,
     match_sales_transactions,
 )
+from .sales_ratio_study import build_sales_ratio_study
 from .scrape import fetch_page
 from .search import search_trs
 from .spatial import detect_spatial_support, spatial_support_status_to_dict
@@ -327,6 +328,77 @@ def spatial_support_cmd(
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("sales-ratio-study")
+def sales_ratio_study_cmd(
+    ids: list[str] = typer.Option(
+        [],
+        "--id",
+        help="Parcel ID to include (repeatable)",
+    ),
+    ids_file: Optional[Path] = typer.Option(
+        None,
+        "--ids",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="File with parcel IDs (one parcel ID per line)",
+    ),
+    year: list[int] = typer.Option(
+        [],
+        "--year",
+        help="Sale year filter (repeatable)",
+        min=1,
+    ),
+    municipality: Optional[str] = typer.Option(
+        None,
+        "--municipality",
+        help="Filter groups to this municipality name",
+    ),
+    valuation_class: Optional[str] = typer.Option(
+        None,
+        "--class",
+        help="Filter groups to this valuation classification",
+    ),
+    version_tag: str = typer.Option(
+        "sales_ratio_v1",
+        "--version-tag",
+        help="Version tag recorded in scoring_runs",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    settings = load_settings()
+    if ids or ids_file:
+        parcel_ids = _collect_ids(ids, ids_file)
+        if not parcel_ids:
+            raise typer.BadParameter(
+                "At least one parcel ID must be provided via --id or --ids."
+            )
+    else:
+        parcel_ids = None
+    years = sorted(set(year)) if year else None
+
+    with session_scope(settings.database_url) as session:
+        payload = build_sales_ratio_study(
+            session,
+            version_tag=version_tag,
+            parcel_ids=parcel_ids,
+            years=years,
+            municipality=municipality,
+            valuation_classification=valuation_class,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
 
 
 @app.command("enumerate-trs")
@@ -1036,7 +1108,13 @@ def build_parcel_year_facts_cmd(
     ids_file: Optional[Path] = typer.Option(None, "--ids", help="File with parcel IDs"),
 ) -> None:
     settings = load_settings()
-    parcel_ids = _collect_ids(ids, ids_file) or None
+    parcel_ids: Optional[list[str]] = _collect_ids(ids, ids_file)
+    if (ids or ids_file is not None) and not parcel_ids:
+        raise typer.BadParameter(
+            "At least one parcel ID must be provided via --id or --ids."
+        )
+    if not parcel_ids:
+        parcel_ids = None
     with session_scope(settings.database_url) as session:
         row_count = rebuild_parcel_year_facts(session, parcel_ids=parcel_ids)
     typer.echo(f"parcel_year_facts rows built: {row_count}")
@@ -1557,7 +1635,7 @@ def profile_data_cmd(
 def _collect_ids(ids: Iterable[str], ids_file: Optional[Path]) -> list[str]:
     collected: list[str] = []
     if ids:
-        collected.extend(ids)
+        collected.extend([parcel_id.strip() for parcel_id in ids if parcel_id.strip()])
     if ids_file:
         lines = ids_file.read_text(encoding="utf-8").splitlines()
         collected.extend([line.strip() for line in lines if line.strip()])
