@@ -360,8 +360,6 @@ def _load_candidate_rows(
         for parcel_id, transfer_date, consideration_amount, excluded in session.execute(
             query
         ):
-            if transfer_date is None or consideration_amount is None:
-                continue
             rows.append(
                 SalesRatioStudyInputRow(
                     parcel_id=parcel_id,
@@ -405,10 +403,8 @@ def _resolved_scope(
         else None
     )
     resolved_years = sorted(set(years)) if years is not None else None
-    resolved_municipality = municipality.strip() if municipality else None
-    resolved_classification = (
-        valuation_classification.strip() if valuation_classification else None
-    )
+    resolved_municipality = _normalized_scope_text(municipality)
+    resolved_classification = _normalized_scope_text(valuation_classification)
     return {
         "parcel_ids": resolved_parcel_ids,
         "years": resolved_years,
@@ -443,6 +439,15 @@ def _matches_text_filter(value: Optional[str], filter_value: Optional[str]) -> b
     if value is None:
         return False
     return value.casefold() == filter_value.casefold()
+
+
+def _normalized_scope_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return stripped.casefold()
 
 
 def _median_ratio(ratios: Sequence[Decimal]) -> Optional[Decimal]:

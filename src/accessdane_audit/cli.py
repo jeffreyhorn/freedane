@@ -1629,7 +1629,7 @@ def profile_data_cmd(
 def _collect_ids(ids: Iterable[str], ids_file: Optional[Path]) -> list[str]:
     collected: list[str] = []
     if ids:
-        collected.extend(ids)
+        collected.extend([parcel_id.strip() for parcel_id in ids if parcel_id.strip()])
     if ids_file:
         lines = ids_file.read_text(encoding="utf-8").splitlines()
         collected.extend([line.strip() for line in lines if line.strip()])

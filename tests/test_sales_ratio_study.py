@@ -281,6 +281,49 @@ def test_build_sales_ratio_study_counts_scope_filter_skips(tmp_path: Path) -> No
     assert payload["summary"]["group_count"] == 1
 
 
+def test_build_sales_ratio_study_normalizes_scope_text_for_hash(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_ratio_study_scope_normalization.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    with session_scope(database_url) as session:
+        payload_mixed_case = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-scope-mixed-case",
+            municipality=" McFarland ",
+            valuation_classification=" Residential ",
+        )
+        payload_lower_case = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-scope-lower-case",
+            municipality="mcfarland",
+            valuation_classification="residential",
+        )
+
+    assert payload_mixed_case["scope"]["municipality"] == "mcfarland"
+    assert payload_mixed_case["scope"]["valuation_classification"] == "residential"
+    assert payload_lower_case["scope"]["municipality"] == "mcfarland"
+    assert payload_lower_case["scope"]["valuation_classification"] == "residential"
+
+    with session_scope(database_url) as session:
+        mixed_case_run = session.execute(
+            select(ScoringRun).where(
+                ScoringRun.version_tag == "ratio-v1-scope-mixed-case"
+            )
+        ).scalar_one()
+        lower_case_run = session.execute(
+            select(ScoringRun).where(
+                ScoringRun.version_tag == "ratio-v1-scope-lower-case"
+            )
+        ).scalar_one()
+
+    assert mixed_case_run.scope_json == lower_case_run.scope_json
+    assert mixed_case_run.scope_hash == lower_case_run.scope_hash
+
+
 def test_build_sales_ratio_study_batches_in_clause_filters(
     tmp_path: Path,
     monkeypatch,
@@ -328,6 +371,30 @@ def test_sales_ratio_study_cli_rejects_empty_ids_scope(
     result = runner.invoke(
         cli.app,
         ["sales-ratio-study", "--ids", str(ids_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "At least one parcel ID must be provided via --id or --ids." in result.output
+
+
+def test_sales_ratio_study_cli_rejects_whitespace_id_option(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_cli_whitespace_id.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["sales-ratio-study", "--id", "  ", "--id", "\t"],
     )
 
     assert result.exit_code != 0
