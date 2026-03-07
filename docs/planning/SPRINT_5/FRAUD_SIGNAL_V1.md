@@ -198,6 +198,11 @@ Apply transparent rules to feature rows and persist explainable score outputs.
 - optional explicit `--feature-run-id` to pin source feature batch
 - optional scoped controls (`--id`, `--ids`, `--year`)
 
+Version interaction rule:
+
+- the same `ruleset_version` may be executed against different `feature_version` values
+- score rows must preserve that dimension so operators can compare outcomes across feature versions without overwrite
+
 ### Output contract
 
 Command emits JSON payload to stdout or `--out` path:
@@ -259,7 +264,7 @@ One row per `(parcel_id, year, feature_version)` in v1.
 
 ### Grain
 
-One row per scored `(parcel_id, year, ruleset_version)`.
+One row per scored `(parcel_id, year, ruleset_version, feature_version)`.
 
 ### Required columns
 
@@ -271,6 +276,7 @@ One row per scored `(parcel_id, year, ruleset_version)`.
 - `parcel_id` (FK -> `parcels.id`)
 - `year` (integer)
 - `ruleset_version` (string)
+- `feature_version` (string)
 - `score_value` (numeric 0-100)
 - `risk_band` (string; `high`, `medium`, `low`)
 - `requires_review` (boolean)
@@ -281,8 +287,8 @@ One row per scored `(parcel_id, year, ruleset_version)`.
 
 ### Keys and indexes
 
-- unique key: `(parcel_id, year, ruleset_version)`
-- index: `(ruleset_version, score_value)`
+- unique key: `(parcel_id, year, ruleset_version, feature_version)`
+- index: `(ruleset_version, feature_version, score_value)`
 - index: `(requires_review, risk_band)`
 - index: `(run_id)`
 
@@ -291,6 +297,7 @@ One row per scored `(parcel_id, year, ruleset_version)`.
 ### Grain
 
 One row per reason code attached to one `fraud_scores` row.
+Each v1 reason code row carries exactly one primary evidence metric (`metric_name` + value/threshold pair).
 
 ### Required columns
 
@@ -304,12 +311,17 @@ One row per reason code attached to one `fraud_scores` row.
 - `reason_rank` (integer; 1 = strongest contributor)
 - `severity_weight` (numeric, nullable)
 - `metric_name` (string)
-- `metric_value` (numeric/text serialized)
-- `threshold_value` (numeric/text serialized)
+- `metric_value` (text; serialized metric value, numeric values stored as decimal strings)
+- `threshold_value` (text; serialized threshold value, numeric values stored as decimal strings)
 - `comparison_operator` (string; e.g. `<`, `>`, `between`)
 - `explanation` (text; plain-language sentence)
 - `source_refs_json` (JSON object)
 - `flagged_at` (timestamp with timezone)
+
+Evidence cardinality rule:
+
+- v1 allows one primary evidence metric per `(score_id, reason_code)` row
+- if a future rule needs multiple metrics for one reason family, emit distinct reason codes or introduce a schema contract revision
 
 Denormalized consistency rule:
 
