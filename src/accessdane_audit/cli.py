@@ -45,6 +45,7 @@ from .retr import (
     ingest_retr_csv,
     match_sales_transactions,
 )
+from .sales_ratio_study import build_sales_ratio_study
 from .scrape import fetch_page
 from .search import search_trs
 from .spatial import detect_spatial_support, spatial_support_status_to_dict
@@ -327,6 +328,69 @@ def spatial_support_cmd(
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("sales-ratio-study")
+def sales_ratio_study_cmd(
+    id: list[str] = typer.Option(
+        [],
+        "--id",
+        help="Parcel ID to include (repeatable)",
+    ),
+    ids_file: Optional[Path] = typer.Option(
+        None,
+        "--ids",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="File with parcel IDs (one parcel ID per line)",
+    ),
+    year: list[int] = typer.Option(
+        [],
+        "--year",
+        help="Sale year filter (repeatable)",
+    ),
+    municipality: Optional[str] = typer.Option(
+        None,
+        "--municipality",
+        help="Filter groups to this municipality name",
+    ),
+    valuation_class: Optional[str] = typer.Option(
+        None,
+        "--class",
+        help="Filter groups to this valuation classification",
+    ),
+    version_tag: str = typer.Option(
+        "sales_ratio_v1",
+        "--version-tag",
+        help="Version tag recorded in scoring_runs",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    settings = load_settings()
+    parcel_ids = _collect_ids(id, ids_file) if (id or ids_file) else None
+    years = sorted(set(year)) if year else None
+
+    with session_scope(settings.database_url) as session:
+        payload = build_sales_ratio_study(
+            session,
+            version_tag=version_tag,
+            parcel_ids=parcel_ids,
+            years=years,
+            municipality=municipality,
+            valuation_classification=valuation_class,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
 
 
 @app.command("enumerate-trs")

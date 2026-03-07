@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+import json
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+
+from sqlalchemy import select
+from typer.testing import CliRunner
+
+from accessdane_audit import cli
+from accessdane_audit.db import init_db, session_scope
+from accessdane_audit.models import (
+    Parcel,
+    ParcelYearFact,
+    SalesExclusion,
+    SalesParcelMatch,
+    SalesTransaction,
+    ScoringRun,
+)
+from accessdane_audit.sales_ratio_study import build_sales_ratio_study
+
+
+def test_build_sales_ratio_study_computes_group_metrics_and_persists_run(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    with session_scope(database_url) as session:
+        payload = build_sales_ratio_study(session, version_tag="ratio-v1")
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["run"]["run_type"] == "sales_ratio_study"
+    assert payload["summary"]["candidate_sales_count"] == 4
+    assert payload["summary"]["included_sales_count"] == 3
+    assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["group_count"] == 2
+
+    groups = {
+        (group["municipality_name"], group["valuation_classification"]): group
+        for group in payload["groups"]
+    }
+    mcfarland_group = groups[("McFarland", "residential")]
+    madison_group = groups[("Madison", "commercial")]
+
+    assert mcfarland_group["year"] == 2025
+    assert mcfarland_group["area_key"] == "McFarland"
+    assert mcfarland_group["sale_count"] == 2
+    assert mcfarland_group["median_ratio"] == 0.75
+    assert mcfarland_group["cod"] == 33.3333
+    assert mcfarland_group["prd"] == 1.0
+    assert mcfarland_group["outlier_low_count"] == 0
+    assert mcfarland_group["outlier_high_count"] == 0
+    assert mcfarland_group["excluded_count"] == 1
+
+    assert madison_group["year"] == 2025
+    assert madison_group["area_key"] == "Madison"
+    assert madison_group["sale_count"] == 1
+    assert madison_group["median_ratio"] == 1.5
+    assert madison_group["cod"] == 0.0
+    assert madison_group["prd"] == 1.0
+    assert madison_group["outlier_low_count"] == 0
+    assert madison_group["outlier_high_count"] == 0
+    assert madison_group["excluded_count"] == 0
+
+    with session_scope(database_url) as session:
+        run_row = session.execute(
+            select(ScoringRun).where(ScoringRun.version_tag == "ratio-v1")
+        ).scalar_one()
+
+    assert run_row.run_type == "sales_ratio_study"
+    assert run_row.status == "succeeded"
+    assert run_row.scope_hash is not None
+    assert run_row.output_summary_json == {
+        "group_count": 2,
+        "included_sales_count": 3,
+        "excluded_sales_count": 1,
+    }
+
+
+def test_sales_ratio_study_cli_supports_scope_and_output_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_cli.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    output_path = tmp_path / "sales_ratio_study.json"
+    ids_path = tmp_path / "parcel_ids.txt"
+    ids_path.write_text("parcel-res-1\nparcel-res-2\n", encoding="utf-8")
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "sales-ratio-study",
+            "--ids",
+            str(ids_path),
+            "--year",
+            "2025",
+            "--municipality",
+            "mcfarland",
+            "--class",
+            "residential",
+            "--version-tag",
+            "ratio-v1-scope",
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["scope"] == {
+        "parcel_ids": ["parcel-res-1", "parcel-res-2"],
+        "years": [2025],
+        "municipality": "mcfarland",
+        "valuation_classification": "residential",
+    }
+    assert payload["summary"]["candidate_sales_count"] == 2
+    assert payload["summary"]["included_sales_count"] == 1
+    assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["group_count"] == 1
+    assert payload["groups"] == [
+        {
+            "year": 2025,
+            "municipality_name": "McFarland",
+            "valuation_classification": "residential",
+            "area_key": "McFarland",
+            "sale_count": 1,
+            "median_ratio": 1.0,
+            "cod": 0.0,
+            "prd": 1.0,
+            "outlier_low_count": 0,
+            "outlier_high_count": 0,
+            "excluded_count": 1,
+        }
+    ]
+
+    with session_scope(database_url) as session:
+        run_row = session.execute(
+            select(ScoringRun).where(ScoringRun.version_tag == "ratio-v1-scope")
+        ).scalar_one()
+
+    assert run_row.scope_json == payload["scope"]
+    assert run_row.status == "succeeded"
+
+
+def _seed_sales_ratio_fixture(session) -> None:
+    session.add_all(
+        [
+            Parcel(id="parcel-res-1"),
+            Parcel(id="parcel-res-2"),
+            Parcel(id="parcel-res-3"),
+            Parcel(id="parcel-com-1"),
+        ]
+    )
+    session.add_all(
+        [
+            ParcelYearFact(
+                parcel_id="parcel-res-1",
+                year=2025,
+                municipality_name="McFarland",
+                assessment_valuation_classification="residential",
+                assessment_total_value=Decimal("100000.00"),
+            ),
+            ParcelYearFact(
+                parcel_id="parcel-res-2",
+                year=2025,
+                municipality_name="McFarland",
+                assessment_valuation_classification="residential",
+                assessment_total_value=Decimal("160000.00"),
+            ),
+            ParcelYearFact(
+                parcel_id="parcel-res-3",
+                year=2025,
+                municipality_name="McFarland",
+                assessment_valuation_classification="residential",
+                assessment_total_value=Decimal("50000.00"),
+            ),
+            ParcelYearFact(
+                parcel_id="parcel-com-1",
+                year=2025,
+                municipality_name="Madison",
+                assessment_valuation_classification="commercial",
+                assessment_total_value=Decimal("300000.00"),
+            ),
+        ]
+    )
+
+    sales_rows = [
+        SalesTransaction(
+            source_system="wisconsin_dor_retr",
+            source_file_name="test.csv",
+            source_file_sha256="sha-test-1",
+            source_row_number=1,
+            source_headers=["Transfer Date", "Consideration"],
+            raw_row={"Transfer Date": "2025-01-15", "Consideration": "100000"},
+            import_status="loaded",
+            transfer_date=date(2025, 1, 15),
+            consideration_amount=Decimal("100000.00"),
+        ),
+        SalesTransaction(
+            source_system="wisconsin_dor_retr",
+            source_file_name="test.csv",
+            source_file_sha256="sha-test-1",
+            source_row_number=2,
+            source_headers=["Transfer Date", "Consideration"],
+            raw_row={"Transfer Date": "2025-02-05", "Consideration": "100000"},
+            import_status="loaded",
+            transfer_date=date(2025, 2, 5),
+            consideration_amount=Decimal("100000.00"),
+        ),
+        SalesTransaction(
+            source_system="wisconsin_dor_retr",
+            source_file_name="test.csv",
+            source_file_sha256="sha-test-1",
+            source_row_number=3,
+            source_headers=["Transfer Date", "Consideration"],
+            raw_row={"Transfer Date": "2025-03-01", "Consideration": "100000"},
+            import_status="loaded",
+            transfer_date=date(2025, 3, 1),
+            consideration_amount=Decimal("100000.00"),
+        ),
+        SalesTransaction(
+            source_system="wisconsin_dor_retr",
+            source_file_name="test.csv",
+            source_file_sha256="sha-test-1",
+            source_row_number=4,
+            source_headers=["Transfer Date", "Consideration"],
+            raw_row={"Transfer Date": "2025-03-10", "Consideration": "200000"},
+            import_status="loaded",
+            transfer_date=date(2025, 3, 10),
+            consideration_amount=Decimal("200000.00"),
+        ),
+    ]
+    session.add_all(sales_rows)
+    session.flush()
+
+    session.add_all(
+        [
+            SalesParcelMatch(
+                sales_transaction_id=sales_rows[0].id,
+                parcel_id="parcel-res-1",
+                match_method="exact_parcel_number",
+                confidence_score=Decimal("1.0000"),
+                match_rank=1,
+                is_primary=True,
+                match_review_status="auto_accepted",
+                matched_value="parcel-res-1",
+                matcher_version="test",
+            ),
+            SalesParcelMatch(
+                sales_transaction_id=sales_rows[1].id,
+                parcel_id="parcel-res-2",
+                match_method="exact_parcel_number",
+                confidence_score=Decimal("1.0000"),
+                match_rank=1,
+                is_primary=True,
+                match_review_status="auto_accepted",
+                matched_value="parcel-res-2",
+                matcher_version="test",
+            ),
+            SalesParcelMatch(
+                sales_transaction_id=sales_rows[2].id,
+                parcel_id="parcel-res-3",
+                match_method="exact_parcel_number",
+                confidence_score=Decimal("1.0000"),
+                match_rank=1,
+                is_primary=True,
+                match_review_status="auto_accepted",
+                matched_value="parcel-res-3",
+                matcher_version="test",
+            ),
+            SalesParcelMatch(
+                sales_transaction_id=sales_rows[3].id,
+                parcel_id="parcel-com-1",
+                match_method="exact_parcel_number",
+                confidence_score=Decimal("1.0000"),
+                match_rank=1,
+                is_primary=True,
+                match_review_status="auto_accepted",
+                matched_value="parcel-com-1",
+                matcher_version="test",
+            ),
+        ]
+    )
+    session.add(
+        SalesExclusion(
+            sales_transaction_id=sales_rows[1].id,
+            exclusion_code="non_arms_length",
+            exclusion_reason="Not arm's-length",
+            is_active=True,
+            excluded_by_rule="test_rule",
+        )
+    )
