@@ -107,6 +107,7 @@ def build_sales_ratio_study(
     config_json = {
         "exclude_active_sales_exclusions": True,
         "area_key_mode": "municipality_name",
+        "minimum_group_sale_count": MIN_GROUP_SALE_COUNT,
         "outlier_low_ratio_threshold": str(OUTLIER_LOW_RATIO_THRESHOLD),
         "outlier_high_ratio_threshold": str(OUTLIER_HIGH_RATIO_THRESHOLD),
     }
@@ -275,15 +276,7 @@ def _build_payload(
             accumulator,
             minimum_required_sale_count=MIN_GROUP_SALE_COUNT,
         )
-        for group_key, accumulator in sorted(
-            grouped_items,
-            key=lambda item: (
-                item[0][0],
-                item[0][1] or "",
-                item[0][2] or "",
-                item[0][3] or "",
-            ),
-        )
+        for group_key, accumulator in grouped_items
     ]
     insufficient_groups: list[dict[str, object]] = [
         {
