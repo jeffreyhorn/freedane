@@ -6,6 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from accessdane_audit.db import BASELINE_REVISION, HEAD_REVISION, init_db
 
@@ -57,6 +58,10 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             "sales_exclusions",
             "permit_events",
             "appeal_events",
+            "scoring_runs",
+            "parcel_features",
+            "fraud_scores",
+            "fraud_flags",
         }.issubset(tables)
 
         with engine.connect() as conn:
@@ -240,6 +245,146 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
         assert appeal_event_indexes["ix_appeal_events_hearing_date"] == (
             "hearing_date",
         )
+        scoring_run_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("scoring_runs")
+        }
+        assert scoring_run_indexes["ix_scoring_runs_run_type_started_at"] == (
+            "run_type",
+            "started_at",
+        )
+        assert scoring_run_indexes["ix_scoring_runs_status"] == ("status",)
+        assert scoring_run_indexes["ix_scoring_runs_version_tag"] == ("version_tag",)
+        assert scoring_run_indexes[
+            "ix_scoring_runs_run_type_version_tag_scope_hash"
+        ] == ("run_type", "version_tag", "scope_hash")
+        assert scoring_run_indexes["ix_scoring_runs_parent_run_id"] == (
+            "parent_run_id",
+        )
+        scoring_run_columns = {
+            column["name"] for column in inspector.get_columns("scoring_runs")
+        }
+        assert {
+            "run_type",
+            "status",
+            "version_tag",
+            "scope_hash",
+            "scope_json",
+            "config_json",
+            "input_summary_json",
+            "output_summary_json",
+            "error_summary",
+            "parent_run_id",
+            "started_at",
+            "completed_at",
+            "created_at",
+        }.issubset(scoring_run_columns)
+        parcel_feature_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("parcel_features")
+        }
+        assert parcel_feature_indexes[
+            "ux_parcel_features_parcel_id_year_feature_version"
+        ] == ("parcel_id", "year", "feature_version")
+        assert parcel_feature_indexes["ix_parcel_features_feature_version_year"] == (
+            "feature_version",
+            "year",
+        )
+        assert parcel_feature_indexes["ix_parcel_features_run_id"] == ("run_id",)
+        parcel_feature_columns = {
+            column["name"] for column in inspector.get_columns("parcel_features")
+        }
+        assert {
+            "run_id",
+            "parcel_id",
+            "year",
+            "feature_version",
+            "assessment_to_sale_ratio",
+            "peer_percentile",
+            "yoy_assessment_change_pct",
+            "permit_adjusted_expected_change",
+            "permit_adjusted_gap",
+            "appeal_value_delta_3y",
+            "appeal_success_rate_3y",
+            "lineage_value_reset_delta",
+            "feature_quality_flags",
+            "source_refs_json",
+            "built_at",
+            "updated_at",
+        }.issubset(parcel_feature_columns)
+        fraud_score_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("fraud_scores")
+        }
+        assert fraud_score_indexes[
+            "ux_fraud_scores_parcel_id_year_ruleset_version_feature_version"
+        ] == ("parcel_id", "year", "ruleset_version", "feature_version")
+        assert fraud_score_indexes[
+            "ix_fraud_scores_ruleset_version_feature_version_score_value"
+        ] == ("ruleset_version", "feature_version", "score_value")
+        assert fraud_score_indexes["ix_fraud_scores_requires_review_risk_band"] == (
+            "requires_review",
+            "risk_band",
+        )
+        assert fraud_score_indexes["ix_fraud_scores_run_id"] == ("run_id",)
+        assert fraud_score_indexes["ix_fraud_scores_feature_run_id"] == (
+            "feature_run_id",
+        )
+        fraud_score_columns = {
+            column["name"] for column in inspector.get_columns("fraud_scores")
+        }
+        assert {
+            "run_id",
+            "feature_run_id",
+            "parcel_id",
+            "year",
+            "ruleset_version",
+            "feature_version",
+            "score_value",
+            "risk_band",
+            "requires_review",
+            "reason_code_count",
+            "score_summary_json",
+            "scored_at",
+            "updated_at",
+        }.issubset(fraud_score_columns)
+        fraud_flag_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("fraud_flags")
+        }
+        assert fraud_flag_indexes["ux_fraud_flags_score_id_reason_code"] == (
+            "score_id",
+            "reason_code",
+        )
+        assert fraud_flag_indexes["ix_fraud_flags_reason_code_ruleset_version"] == (
+            "reason_code",
+            "ruleset_version",
+        )
+        assert fraud_flag_indexes["ix_fraud_flags_parcel_id_year"] == (
+            "parcel_id",
+            "year",
+        )
+        assert fraud_flag_indexes["ix_fraud_flags_run_id"] == ("run_id",)
+        fraud_flag_columns = {
+            column["name"] for column in inspector.get_columns("fraud_flags")
+        }
+        assert {
+            "run_id",
+            "score_id",
+            "parcel_id",
+            "year",
+            "ruleset_version",
+            "reason_code",
+            "reason_rank",
+            "severity_weight",
+            "metric_name",
+            "metric_value",
+            "threshold_value",
+            "comparison_operator",
+            "explanation",
+            "source_refs_json",
+            "flagged_at",
+        }.issubset(fraud_flag_columns)
         with engine.connect() as conn:
             partial_index_sql = conn.execute(
                 text(
@@ -250,6 +395,20 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             ).scalar_one()
         assert partial_index_sql is not None
         assert "WHERE is_primary = 1" in partial_index_sql
+        with engine.connect() as conn:
+            trigger_names = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' AND tbl_name = 'fraud_flags'"
+                    )
+                )
+            }
+        assert {
+            "trg_fraud_flags_consistency_insert",
+            "trg_fraud_flags_consistency_update",
+        }.issubset(trigger_names)
     finally:
         engine.dispose()
 
@@ -289,6 +448,10 @@ def test_init_db_stamps_compatible_legacy_schema_before_upgrading(
         assert "sales_exclusions" in set(inspector.get_table_names())
         assert "permit_events" in set(inspector.get_table_names())
         assert "appeal_events" in set(inspector.get_table_names())
+        assert "scoring_runs" in set(inspector.get_table_names())
+        assert "parcel_features" in set(inspector.get_table_names())
+        assert "fraud_scores" in set(inspector.get_table_names())
+        assert "fraud_flags" in set(inspector.get_table_names())
     finally:
         engine.dispose()
 
@@ -326,11 +489,90 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
         assert "sales_exclusions" in set(inspector.get_table_names())
         assert "permit_events" in set(inspector.get_table_names())
         assert "appeal_events" in set(inspector.get_table_names())
+        assert "scoring_runs" in set(inspector.get_table_names())
+        assert "parcel_features" in set(inspector.get_table_names())
+        assert "fraud_scores" in set(inspector.get_table_names())
+        assert "fraud_flags" in set(inspector.get_table_names())
         with engine.connect() as conn:
             revision = conn.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
         assert revision == HEAD_REVISION
+    finally:
+        engine.dispose()
+
+
+def test_fraud_flags_trigger_enforces_parent_score_denormalized_fields(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "fraud_flags_trigger.sqlite"
+    database_url = _db_url(db_path)
+    init_db(database_url)
+
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO scoring_runs "
+                    "(id, run_type, status, version_tag, scope_json, config_json) "
+                    "VALUES (1, 'score_fraud', 'succeeded', 'ruleset-v1', '{}', '{}')"
+                )
+            )
+            conn.execute(text("INSERT INTO parcels (id) VALUES ('P1'), ('P2')"))
+            conn.execute(
+                text(
+                    "INSERT INTO fraud_scores "
+                    "(run_id, feature_run_id, parcel_id, year, ruleset_version, "
+                    "feature_version, score_value, risk_band, score_summary_json) "
+                    "VALUES (1, NULL, 'P1', 2025, 'ruleset-v1', 'features-v1', "
+                    "42.00, 'medium', '{}')"
+                )
+            )
+            score_id = conn.execute(
+                text(
+                    "SELECT id FROM fraud_scores "
+                    "WHERE parcel_id = 'P1' "
+                    "AND year = 2025 "
+                    "AND ruleset_version = 'ruleset-v1'"
+                )
+            ).scalar_one()
+
+            with pytest.raises(
+                IntegrityError,
+                match="fraud_flags row must match parent fraud_scores",
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO fraud_flags "
+                        "(run_id, score_id, parcel_id, year, ruleset_version, "
+                        "reason_code, reason_rank, severity_weight, metric_name, "
+                        "metric_value, threshold_value, comparison_operator, "
+                        "explanation, source_refs_json) "
+                        "VALUES "
+                        "(:run_id, :score_id, 'P2', 2025, 'ruleset-v1', "
+                        "'ratio_outlier', 1, 0.75, 'assessment_to_sale_ratio', "
+                        "'1.42', '1.20', 'gt', "
+                        "'Mismatch should be blocked by trigger', '{}')"
+                    ),
+                    {"run_id": 1, "score_id": score_id},
+                )
+
+            conn.execute(
+                text(
+                    "INSERT INTO fraud_flags "
+                    "(run_id, score_id, parcel_id, year, ruleset_version, "
+                    "reason_code, reason_rank, severity_weight, metric_name, "
+                    "metric_value, threshold_value, comparison_operator, "
+                    "explanation, source_refs_json) "
+                    "VALUES "
+                    "(:run_id, :score_id, 'P1', 2025, 'ruleset-v1', "
+                    "'ratio_outlier', 1, 0.75, 'assessment_to_sale_ratio', "
+                    "'1.42', '1.20', 'gt', "
+                    "'Consistent denormalized fields should pass', '{}')"
+                ),
+                {"run_id": 1, "score_id": score_id},
+            )
     finally:
         engine.dispose()
 
