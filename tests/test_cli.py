@@ -206,6 +206,23 @@ def test_run_all_can_skip_anomalies(
     assert not anomalies_path.exists()
 
 
+def test_build_parcel_year_facts_rejects_whitespace_only_ids(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url="sqlite:///:memory:"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["build-parcel-year-facts", "--id", "  ", "--id", "\t"],
+    )
+
+    assert result.exit_code != 0
+    assert "At least one parcel ID must be provided via --id or --ids." in result.output
+
+
 def test_parse_reparse_commits_successful_fetches_even_if_a_later_fetch_hits_db_error(
     load_raw_html,
     tmp_path: Path,

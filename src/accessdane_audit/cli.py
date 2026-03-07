@@ -1108,7 +1108,13 @@ def build_parcel_year_facts_cmd(
     ids_file: Optional[Path] = typer.Option(None, "--ids", help="File with parcel IDs"),
 ) -> None:
     settings = load_settings()
-    parcel_ids = _collect_ids(ids, ids_file) or None
+    parcel_ids: Optional[list[str]] = _collect_ids(ids, ids_file)
+    if (ids or ids_file is not None) and not parcel_ids:
+        raise typer.BadParameter(
+            "At least one parcel ID must be provided via --id or --ids."
+        )
+    if not parcel_ids:
+        parcel_ids = None
     with session_scope(settings.database_url) as session:
         row_count = rebuild_parcel_year_facts(session, parcel_ids=parcel_ids)
     typer.echo(f"parcel_year_facts rows built: {row_count}")
