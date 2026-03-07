@@ -24,6 +24,7 @@ from .models import (
 RUN_TYPE_SALES_RATIO_STUDY = "sales_ratio_study"
 OUTLIER_LOW_RATIO_THRESHOLD = Decimal("0.5000")
 OUTLIER_HIGH_RATIO_THRESHOLD = Decimal("1.5000")
+IN_CLAUSE_BATCH_SIZE = 800
 
 
 @dataclass(frozen=True)
@@ -314,7 +315,7 @@ def _load_candidate_rows(
             )
         )
     )
-    query = (
+    base_query = (
         select(
             SalesParcelMatch.parcel_id,
             SalesTransaction.transfer_date,
@@ -336,8 +337,6 @@ def _load_candidate_rows(
             SalesTransaction.consideration_amount > 0,
         )
     )
-    if parcel_ids is not None:
-        query = query.where(SalesParcelMatch.parcel_id.in_(parcel_ids))
     if years is not None:
         year_ranges = [
             and_(
@@ -346,22 +345,31 @@ def _load_candidate_rows(
             )
             for year in years
         ]
-        query = query.where(or_(*year_ranges))
+        base_query = base_query.where(or_(*year_ranges))
 
     rows: list[SalesRatioStudyInputRow] = []
-    for parcel_id, transfer_date, consideration_amount, excluded in session.execute(
-        query
-    ):
-        if transfer_date is None or consideration_amount is None:
-            continue
-        rows.append(
-            SalesRatioStudyInputRow(
-                parcel_id=parcel_id,
-                year=transfer_date.year,
-                consideration_amount=consideration_amount,
-                has_active_exclusion=bool(excluded),
+    queries = (
+        [
+            base_query.where(SalesParcelMatch.parcel_id.in_(batch_parcel_ids))
+            for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE)
+        ]
+        if parcel_ids is not None
+        else [base_query]
+    )
+    for query in queries:
+        for parcel_id, transfer_date, consideration_amount, excluded in session.execute(
+            query
+        ):
+            if transfer_date is None or consideration_amount is None:
+                continue
+            rows.append(
+                SalesRatioStudyInputRow(
+                    parcel_id=parcel_id,
+                    year=transfer_date.year,
+                    consideration_amount=consideration_amount,
+                    has_active_exclusion=bool(excluded),
+                )
             )
-        )
     return rows
 
 
@@ -373,13 +381,15 @@ def _parcel_year_fact_map(
 
     parcel_ids = sorted({row.parcel_id for row in rows})
     years = sorted({row.year for row in rows})
-    query = select(ParcelYearFact).where(
-        ParcelYearFact.parcel_id.in_(parcel_ids), ParcelYearFact.year.in_(years)
-    )
-    return {
-        (fact.parcel_id, fact.year): fact
-        for fact in session.execute(query).scalars().all()
-    }
+    facts_by_key: dict[tuple[str, int], ParcelYearFact] = {}
+    for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE):
+        query = select(ParcelYearFact).where(
+            ParcelYearFact.parcel_id.in_(batch_parcel_ids),
+            ParcelYearFact.year.in_(years),
+        )
+        for fact in session.execute(query).scalars().all():
+            facts_by_key[(fact.parcel_id, fact.year)] = fact
+    return facts_by_key
 
 
 def _resolved_scope(
@@ -474,3 +484,10 @@ def _decimal_as_float(value: Optional[Decimal], *, scale: int) -> Optional[float
         return None
     quantized = value.quantize(Decimal(10) ** -scale, rounding=ROUND_HALF_UP)
     return float(quantized)
+
+
+def _chunked(values: Sequence[str], batch_size: int) -> list[list[str]]:
+    return [
+        list(values[index : index + batch_size])
+        for index in range(0, len(values), batch_size)
+    ]

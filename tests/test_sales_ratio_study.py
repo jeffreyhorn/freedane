@@ -281,6 +281,33 @@ def test_build_sales_ratio_study_counts_scope_filter_skips(tmp_path: Path) -> No
     assert payload["summary"]["group_count"] == 1
 
 
+def test_build_sales_ratio_study_batches_in_clause_filters(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "sales_ratio_study_batched_in_clause.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_sales_ratio_fixture(session)
+
+    monkeypatch.setattr(sales_ratio_study_module, "IN_CLAUSE_BATCH_SIZE", 1)
+    with session_scope(database_url) as session:
+        payload = build_sales_ratio_study(
+            session,
+            version_tag="ratio-v1-batched-in-clause",
+            parcel_ids=["parcel-res-1", "parcel-res-2", "parcel-res-3"],
+            years=[2025],
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["summary"]["candidate_sales_count"] == 3
+    assert payload["summary"]["included_sales_count"] == 2
+    assert payload["summary"]["excluded_sales_count"] == 1
+    assert payload["summary"]["group_count"] == 1
+
+
 def test_sales_ratio_study_cli_rejects_empty_ids_scope(
     tmp_path: Path,
     monkeypatch,
