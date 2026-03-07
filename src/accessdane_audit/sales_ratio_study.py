@@ -52,7 +52,7 @@ class ScopePayload(TypedDict):
     valuation_classification: Optional[str]
 
 
-class SalesRatioStudyRun(TypedDict):
+class SalesRatioStudyRun(TypedDict, total=False):
     run_id: int
     run_type: str
     version_tag: str
@@ -414,12 +414,14 @@ def _scope_hash(scope_json: ScopePayload, config_json: dict[str, object]) -> str
 
 
 def _run_payload(run: ScoringRun) -> SalesRatioStudyRun:
-    return {
-        "run_id": run.id,
+    payload: SalesRatioStudyRun = {
         "run_type": run.run_type,
         "version_tag": run.version_tag,
         "status": run.status,
     }
+    if run.id is not None:
+        payload["run_id"] = run.id
+    return payload
 
 
 def _matches_text_filter(value: Optional[str], filter_value: Optional[str]) -> bool:

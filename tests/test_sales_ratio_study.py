@@ -428,6 +428,7 @@ def test_build_sales_ratio_study_handles_initial_run_flush_failure(
         )
 
     assert payload["run"]["status"] == "failed"
+    assert "run_id" not in payload["run"]
     assert payload["summary"]["group_count"] == 0
     assert payload["error"] == "forced initial run flush failure"
 
