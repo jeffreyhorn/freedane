@@ -23,6 +23,12 @@ In scope for v1:
 - explainable `source_refs_json` and `feature_quality_flags`
 - compatibility with `score-fraud` v1 contracts in `FRAUD_SIGNAL_V1.md`
 
+Compatibility note:
+
+- for `build_features`, `scoring_runs.scope_json` intentionally stores resolved/normalized scope for deterministic hashing/idempotency
+- exact raw operator input scope is captured separately via run-logging payloads (for example `input_summary_json`)
+- Sprint 5 docs must use this split consistently
+
 Out of scope for v1:
 
 - ML-derived features
@@ -177,6 +183,7 @@ Definition:
 Inputs:
 
 - non-null `assessment_to_sale_ratio` values in same peer key
+- this non-null population is `N` for percentile computation and is also the basis for `peer_percentile_min_group_size` and `source_refs_json.peer_group.group_size`
 
 Null/default semantics:
 
@@ -302,7 +309,7 @@ Definition:
 
 - lineage reset signal comparing current parcel value to related lineage baseline
 - baseline source:
-  - related parcel IDs from `parcel_lineage_links` for target parcel
+  - related parcel IDs from `parcel_lineage_links` for target parcel, de-duplicated by `related_parcel_id` before any aggregation
   - reference values from related parcels at `year - 1`
 - delta: `current_assessment_total_value - sum(related_prior_year_assessment_total_values)`
 
@@ -336,25 +343,26 @@ Each feature row must include a deterministic trace payload.
 
 Required top-level keys:
 
-- `assessment`: `{ "parcel_year_fact_id": <id>, "year": <year> }`
+- `assessment`: `{ "parcel_id": <id>, "year": <year> }`
 - `sales`: `{ "sales_transaction_id": <id|null>, "match_id": <id|null> }`
 - `peer_group`: `{ "year": <year>, "municipality": <text|null>, "classification": <text|null>, "group_size": <int|null> }`
   - `municipality` and `classification` MUST be the canonicalized (casefolded) values used in the peer grouping key, not raw source strings.
-  - `group_size` is the total count for the exact `(year, municipality, classification)` key used for percentile computation; null means no peer group key was resolvable.
-- `permits`: `{ "window_years": [year, year], "basis": "declared|estimated|none|unknown", "source_year_fact_ids": [<id>...] }`
-- `appeals`: `{ "window_years": [year-2, year], "source_year_fact_ids": [<id>...] }`
+  - `group_size` is the count of rows in the exact `(year, municipality, classification)` peer population with non-null `assessment_to_sale_ratio` (the same population used for percentile `N` and minimum-group-size checks); null means no peer group key was resolvable.
+- `permits`: `{ "window_years": [year, year], "basis": "declared|estimated|none|unknown", "source_parcel_year_keys": [{"parcel_id": <id>, "year": <year>}...] }`
+- `appeals`: `{ "window_years": [year-2, year], "source_parcel_year_keys": [{"parcel_id": <id>, "year": <year>}...] }`
 - `lineage`: `{ "relationship_count": <int>, "related_parcel_ids": [<id>...], "reference_year": <year-1> }`
+  - `relationship_count` is the count of unique `related_parcel_id` values after de-duplication (not raw lineage-link row count).
 
 Permit trace mapping:
 
 - `window_years`: inclusive `[start_year, end_year]`; for v1 permit features this is always `[year, year]`
-- `basis = declared`: direct declared valuation support for computed non-null permit feature value; `source_year_fact_ids` are sorted, de-duplicated supporting year-fact IDs.
-- `basis = estimated`: inferred from permit-related inputs (not directly declared); `source_year_fact_ids` are sorted, de-duplicated materially contributing year-fact IDs.
-- `basis = none`: no relevant permit activity for the window and deterministic zero-valued permit feature outcome; `source_year_fact_ids = []`.
-- `basis = unknown`: internally inconsistent permit context, so corresponding permit-based feature value is null; `source_year_fact_ids` are sorted, de-duplicated considered year-fact IDs (or `[]` if none resolvable).
-- `source_year_fact_ids` is never null in memory
+- `basis = declared`: direct declared valuation support for computed non-null permit feature value; `source_parcel_year_keys` are sorted, de-duplicated supporting parcel-year keys.
+- `basis = estimated`: inferred from permit-related inputs (not directly declared); `source_parcel_year_keys` are sorted, de-duplicated materially contributing parcel-year keys.
+- `basis = none`: no relevant permit activity for the window and deterministic zero-valued permit feature outcome; `source_parcel_year_keys = []`.
+- `basis = unknown`: internally inconsistent permit context, so corresponding permit-based feature value is null; `source_parcel_year_keys` are sorted, de-duplicated considered parcel-year keys (or `[]` if none resolvable).
+- `source_parcel_year_keys` is never null in memory
 
-IDs in arrays must be sorted for deterministic output.
+Composite key arrays must be sorted deterministically by `parcel_id` ascending, then `year` ascending.
 
 ## Idempotency And Write Strategy
 
