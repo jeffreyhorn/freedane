@@ -72,7 +72,8 @@ Scope normalization rules:
 - deduplicate years, sort ascending
 - reject empty normalized ID scope when user explicitly passed `--id/--ids`
 
-Resolved scope is persisted in `scoring_runs.scope_json`.
+Resolved, normalized scope is persisted in `scoring_runs.scope_json` (this is the scope used for candidate row selection and deterministic hashing/idempotency).
+Raw operator scope inputs (exact CLI flags/arguments) are recorded separately per the Sprint 5 run-logging contract (for example `scoring_runs.input_summary_json`) so original operator intent remains reconstructable.
 
 ## Deterministic Run Identity
 
@@ -338,6 +339,8 @@ Required top-level keys:
 - `assessment`: `{ "parcel_year_fact_id": <id>, "year": <year> }`
 - `sales`: `{ "sales_transaction_id": <id|null>, "match_id": <id|null> }`
 - `peer_group`: `{ "year": <year>, "municipality": <text|null>, "classification": <text|null>, "group_size": <int|null> }`
+  - `municipality` and `classification` MUST be the canonicalized (casefolded) values used in the peer grouping key, not raw source strings.
+  - `group_size` is the total count for the exact `(year, municipality, classification)` key used for percentile computation; null means no peer group key was resolvable.
 - `permits`: `{ "window_years": [year, year], "basis": "declared|estimated|none|unknown", "source_year_fact_ids": [<id>...] }`
 - `appeals`: `{ "window_years": [year-2, year], "source_year_fact_ids": [<id>...] }`
 - `lineage`: `{ "relationship_count": <int>, "related_parcel_ids": [<id>...], "reference_year": <year-1> }`
