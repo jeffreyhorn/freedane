@@ -101,6 +101,8 @@ Any formula or threshold change must modify `config_json` and therefore `scope_h
 
 ## Canonical Supporting Rules
 
+The following sections define canonical, deterministic rules shared across feature calculations to keep outputs reproducible across reruns and implementations.
+
 ## Eligible Sale Selection
 
 Eligible sales for parcel/year feature use:
@@ -131,6 +133,15 @@ Rows missing municipality or classification do not contribute to peer percentile
 ## Feature Definitions
 
 All decimals are quantized to destination column precision before write.
+
+Rounding and overflow rule:
+
+- quantize to destination scale using `ROUND_HALF_UP`
+- if a rounded value still exceeds destination `Numeric(p,s)` precision, clamp to nearest representable bound and add a quality flag
+
+Overflow quality flag:
+
+- `numeric_precision_clamped`
 
 ## 1) `assessment_to_sale_ratio` (`Numeric(10,6)`)
 
@@ -223,7 +234,7 @@ Null/default semantics:
 
 Note on current mart semantics:
 
-- current `parcel_year_facts` permit rollups may leave `permit_event_count` as null for zero-event years, so v1 treats "no observed permit basis" as `0.00` with a quality warning flag rather than requiring an explicit `0` materialization contract.
+- current `parcel_year_facts` permit rollups may leave `permit_event_count` as null for zero-event years, so v1 treats "no observed permit basis" as `0.00` and MUST emit `permit_zero_signal_inferred`.
 
 Quality flags:
 
@@ -274,10 +285,14 @@ Definition:
 
 Null/default semantics:
 
-- null if denominator `<= 0`
+- evaluate each year in `[year-2, year]` independently from that year's appeal context
+- if all 3 years have no appeal context, return null
+- otherwise treat missing yearly appeal counts as `0` in numerator/denominator rollups
+- after summing, return null if denominator `<= 0`
 
 Quality flags:
 
+- `missing_appeal_context_3y`
 - `no_appeals_in_window`
 
 ## 8) `lineage_value_reset_delta` (`Numeric(14,2)`)
@@ -326,6 +341,15 @@ Required top-level keys:
 - `permits`: `{ "window_years": [year, year], "basis": "declared|estimated|none|unknown", "source_year_fact_ids": [<id>...] }`
 - `appeals`: `{ "window_years": [year-2, year], "source_year_fact_ids": [<id>...] }`
 - `lineage`: `{ "relationship_count": <int>, "related_parcel_ids": [<id>...], "reference_year": <year-1> }`
+
+Permit trace mapping:
+
+- `window_years`: inclusive `[start_year, end_year]`; for v1 permit features this is always `[year, year]`
+- `basis = declared`: direct declared valuation support for computed non-null permit feature value; `source_year_fact_ids` are sorted, de-duplicated supporting year-fact IDs.
+- `basis = estimated`: inferred from permit-related inputs (not directly declared); `source_year_fact_ids` are sorted, de-duplicated materially contributing year-fact IDs.
+- `basis = none`: no relevant permit activity for the window and deterministic zero-valued permit feature outcome; `source_year_fact_ids = []`.
+- `basis = unknown`: internally inconsistent permit context, so corresponding permit-based feature value is null; `source_year_fact_ids` are sorted, de-duplicated considered year-fact IDs (or `[]` if none resolvable).
+- `source_year_fact_ids` is never null in memory
 
 IDs in arrays must be sorted for deterministic output.
 
