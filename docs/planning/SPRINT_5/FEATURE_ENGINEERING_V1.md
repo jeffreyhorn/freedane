@@ -116,10 +116,10 @@ The following sections define canonical, deterministic rules shared across featu
 Eligible sales for parcel/year feature use:
 
 - `sales_transactions.import_status = loaded`
-- primary match exists in `sales_parcel_matches` for parcel
+- primary match exists in `sales_parcel_matches` for parcel (`sales_parcel_matches.is_primary = true`)
 - `transfer_date` in target feature year
 - `consideration_amount > 0`
-- no active exclusion in `sales_exclusions`
+- no active exclusion row for the transaction in `sales_exclusions` (`sales_exclusions.is_active = true`)
 
 If multiple eligible sales exist for the same parcel/year:
 
@@ -345,7 +345,8 @@ Rules:
 - deduplicated
 - sorted lexicographically before persistence
 - empty list allowed
-- never null in memory; persist as a JSON array on disk, using `[]` when empty (never persist `null`)
+- never null in memory; normalize to `[]` for all in-process logic
+- `parcel_features.feature_quality_flags` column is nullable for compatibility, but `build_features` v1 always writes a JSON array (`[]` when empty); downstream readers should normalize any legacy/null values to `[]`
 
 `quality_warning_count` in run summary equals total flag count across inserted rows.
 
