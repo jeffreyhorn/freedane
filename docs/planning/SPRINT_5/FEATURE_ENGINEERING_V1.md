@@ -80,7 +80,13 @@ For each `build_features` run:
 
 - `scoring_runs.run_type = build_features`
 - `scoring_runs.version_tag = <feature_version>`
-- `scoring_runs.scope_hash = sha256({"scope": scope_json, "config": config_json})`
+- `scoring_runs.scope_hash = sha256(canonical_json({"scope": scope_json, "config": config_json}))`
+
+Canonical serialization requirement (must match existing `sales_ratio_study` `_scope_hash` behavior):
+
+- serialize with sorted keys (`sort_keys = true`)
+- serialize with compact separators (`separators = (",", ":")`)
+- encode serialized JSON as UTF-8 bytes before hashing
 
 `config_json` must include at least:
 
@@ -199,7 +205,7 @@ Definition:
 - basis selection order:
   1. `permit_declared_valuation_sum` when known count `> 0`
   2. `permit_estimated_cost_sum` when known count `> 0`
-  3. `0.00` when `permit_event_count = 0`
+  3. `0.00` when no permit valuation/cost basis is present for the year
 - expected change amount: `basis * permit_capture_rate`
 
 Inputs:
@@ -212,13 +218,18 @@ Inputs:
 
 Null/default semantics:
 
-- null when permit context exists but basis is unresolved
-- `0.00` when explicit no-permit signal (`permit_event_count = 0`)
+- `0.00` when permit basis fields are absent (`permit_event_count` and basis sums are null/zero for the year)
+- null only when row-level permit context is internally inconsistent (for example known count `> 0` with missing corresponding sum)
+
+Note on current mart semantics:
+
+- current `parcel_year_facts` permit rollups may leave `permit_event_count` as null for zero-event years, so v1 treats "no observed permit basis" as `0.00` with a quality warning flag rather than requiring an explicit `0` materialization contract.
 
 Quality flags:
 
 - `missing_permit_context`
 - `unresolved_permit_basis`
+- `permit_zero_signal_inferred`
 
 ## 5) `permit_adjusted_gap` (`Numeric(14,2)`)
 
@@ -312,7 +323,7 @@ Required top-level keys:
 - `assessment`: `{ "parcel_year_fact_id": <id>, "year": <year> }`
 - `sales`: `{ "sales_transaction_id": <id|null>, "match_id": <id|null> }`
 - `peer_group`: `{ "year": <year>, "municipality": <text|null>, "classification": <text|null>, "group_size": <int|null> }`
-- `permits`: `{ "window_years": [year-2, year], "basis": "declared|estimated|none|unknown", "source_year_fact_ids": [<id>...] }`
+- `permits`: `{ "window_years": [year, year], "basis": "declared|estimated|none|unknown", "source_year_fact_ids": [<id>...] }`
 - `appeals`: `{ "window_years": [year-2, year], "source_year_fact_ids": [<id>...] }`
 - `lineage`: `{ "relationship_count": <int>, "related_parcel_ids": [<id>...], "reference_year": <year-1> }`
 
