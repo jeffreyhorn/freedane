@@ -176,12 +176,14 @@ Quality flags:
 - `missing_eligible_sale`
 - `invalid_sale_amount`
 
-## 2) `peer_percentile` (`Numeric(6,4)`, range `(0,1)`)
+## 2) `peer_percentile` (`Numeric(6,4)`, persisted range `[0,1]`)
 
 Definition:
 
 - percentile rank of parcel `assessment_to_sale_ratio` within its peer key
 - formula: `(count(lower) + 0.5 * count(equal)) / N`
+- mathematical (pre-quantization) output is strictly `(0,1)` for valid `N`
+- persisted output is quantized to `Numeric(6,4)`, so stored values may be `0.0000` or `1.0000` after rounding
 
 Inputs:
 
@@ -343,7 +345,7 @@ Rules:
 - deduplicated
 - sorted lexicographically before persistence
 - empty list allowed
-- never null in memory; persisted as `[]` or nullable JSON per ORM behavior
+- never null in memory; persist as a JSON array on disk, using `[]` when empty (never persist `null`)
 
 `quality_warning_count` in run summary equals total flag count across inserted rows.
 
