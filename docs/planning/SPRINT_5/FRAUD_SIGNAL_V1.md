@@ -123,19 +123,27 @@ Command emits JSON payload to stdout or `--out` path:
 
 - `run`: run metadata (`run_id`, `run_type`, `version_tag`, `status`)
 - `scope`: resolved scope inputs
-- `summary`: row counts and coverage counters
+- `summary`: row counts and coverage counters, including:
+  - `skipped_missing_group_dimension_count`
+  - `insufficient_group_count`
 - `groups`: array of grouped metrics with fields:
   - `year`
   - `municipality_name`
   - `valuation_classification`
   - `area_key`
   - `sale_count`
+  - `is_insufficient_sample`
+  - `minimum_required_sale_count`
   - `median_ratio`
   - `cod`
   - `prd`
   - `outlier_low_count`
   - `outlier_high_count`
   - `excluded_count`
+- `diagnostics`: operator diagnostics including:
+  - `requested_years_without_candidate_sales`
+  - `insufficient_groups`
+  - `groups_with_exclusions`
 
 `area_key` definition in v1:
 

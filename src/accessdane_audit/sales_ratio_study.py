@@ -25,6 +25,7 @@ RUN_TYPE_SALES_RATIO_STUDY = "sales_ratio_study"
 OUTLIER_LOW_RATIO_THRESHOLD = Decimal("0.5000")
 OUTLIER_HIGH_RATIO_THRESHOLD = Decimal("1.5000")
 IN_CLAUSE_BATCH_SIZE = 800
+MIN_GROUP_SALE_COUNT = 2
 
 
 @dataclass(frozen=True)
@@ -66,15 +67,24 @@ class SalesRatioStudySummary(TypedDict):
     included_sales_count: int
     excluded_sales_count: int
     skipped_scope_filter_count: int
+    skipped_missing_group_dimension_count: int
     skipped_missing_parcel_year_fact_count: int
     skipped_missing_assessment_count: int
+    insufficient_group_count: int
     group_count: int
+
+
+class SalesRatioStudyDiagnostics(TypedDict):
+    requested_years_without_candidate_sales: list[int]
+    insufficient_groups: list[dict[str, object]]
+    groups_with_exclusions: list[dict[str, object]]
 
 
 class SalesRatioStudyPayload(TypedDict, total=False):
     run: SalesRatioStudyRun
     scope: ScopePayload
     summary: SalesRatioStudySummary
+    diagnostics: SalesRatioStudyDiagnostics
     groups: list[dict[str, object]]
     error: str
 
@@ -97,6 +107,7 @@ def build_sales_ratio_study(
     config_json = {
         "exclude_active_sales_exclusions": True,
         "area_key_mode": "municipality_name",
+        "minimum_group_sale_count": MIN_GROUP_SALE_COUNT,
         "outlier_low_ratio_threshold": str(OUTLIER_LOW_RATIO_THRESHOLD),
         "outlier_high_ratio_threshold": str(OUTLIER_HIGH_RATIO_THRESHOLD),
     }
@@ -142,8 +153,10 @@ def build_sales_ratio_study(
             "included_sales_count": 0,
             "excluded_sales_count": 0,
             "skipped_scope_filter_count": 0,
+            "skipped_missing_group_dimension_count": 0,
             "skipped_missing_parcel_year_fact_count": 0,
             "skipped_missing_assessment_count": 0,
+            "insufficient_group_count": 0,
             "group_count": 0,
         }
         run.status = "failed"
@@ -161,6 +174,11 @@ def build_sales_ratio_study(
             "run": _run_payload(run, run_persisted=run_persisted),
             "scope": resolved_scope,
             "summary": failure_summary,
+            "diagnostics": {
+                "requested_years_without_candidate_sales": [],
+                "insufficient_groups": [],
+                "groups_with_exclusions": [],
+            },
             "groups": [],
             "error": str(exc),
         }
@@ -184,6 +202,7 @@ def _build_payload(
     included_sales_count = 0
     excluded_sales_count = 0
     skipped_scope_filter_count = 0
+    skipped_missing_group_dimension_count = 0
     skipped_missing_parcel_year_fact_count = 0
     skipped_missing_assessment_count = 0
 
@@ -195,6 +214,12 @@ def _build_payload(
 
         municipality_name = fact.municipality_name
         valuation_classification = fact.assessment_valuation_classification
+        if municipality_name is None or not municipality_name.strip():
+            skipped_missing_group_dimension_count += 1
+            continue
+        if valuation_classification is None or not valuation_classification.strip():
+            skipped_missing_group_dimension_count += 1
+            continue
         if not _matches_text_filter(municipality_name, municipality_filter):
             skipped_scope_filter_count += 1
             continue
@@ -236,33 +261,82 @@ def _build_payload(
         if ratio > OUTLIER_HIGH_RATIO_THRESHOLD:
             group.outlier_high_count += 1
 
+    grouped_items = sorted(
+        groups.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1] or "",
+            item[0][2] or "",
+            item[0][3] or "",
+        ),
+    )
     grouped_payload = [
-        _group_payload(group_key, accumulator)
-        for group_key, accumulator in sorted(
-            groups.items(),
-            key=lambda item: (
-                item[0][0],
-                item[0][1] or "",
-                item[0][2] or "",
-                item[0][3] or "",
-            ),
+        _group_payload(
+            group_key,
+            accumulator,
+            minimum_required_sale_count=MIN_GROUP_SALE_COUNT,
         )
+        for group_key, accumulator in grouped_items
+    ]
+    insufficient_groups: list[dict[str, object]] = [
+        {
+            "year": group["year"],
+            "municipality_name": group["municipality_name"],
+            "valuation_classification": group["valuation_classification"],
+            "area_key": group["area_key"],
+            "sale_count": group["sale_count"],
+            "excluded_count": group["excluded_count"],
+            "minimum_required_sale_count": MIN_GROUP_SALE_COUNT,
+            "reason": "sale_count_below_minimum",
+        }
+        for group in grouped_payload
+        if bool(group["is_insufficient_sample"])
+    ]
+    groups_with_exclusions: list[dict[str, object]] = [
+        {
+            "year": year,
+            "municipality_name": municipality_name,
+            "valuation_classification": valuation_classification,
+            "area_key": area_key,
+            "excluded_count": accumulator.excluded_count,
+            "included_sale_count": len(accumulator.included_ratios),
+        }
+        for (
+            year,
+            municipality_name,
+            valuation_classification,
+            area_key,
+        ), accumulator in (grouped_items)
+        if accumulator.excluded_count > 0
     ]
     summary: SalesRatioStudySummary = {
         "candidate_sales_count": len(rows),
         "included_sales_count": included_sales_count,
         "excluded_sales_count": excluded_sales_count,
         "skipped_scope_filter_count": skipped_scope_filter_count,
+        "skipped_missing_group_dimension_count": skipped_missing_group_dimension_count,
         "skipped_missing_parcel_year_fact_count": (
             skipped_missing_parcel_year_fact_count
         ),
         "skipped_missing_assessment_count": skipped_missing_assessment_count,
+        "insufficient_group_count": len(insufficient_groups),
         "group_count": len(grouped_payload),
     }
+    requested_years_without_candidate_sales = _requested_years_without_candidate_sales(
+        requested_years=scope["years"],
+        rows=rows,
+    )
     return {
         "run": _run_payload(run),
         "scope": scope,
         "summary": summary,
+        "diagnostics": {
+            "requested_years_without_candidate_sales": (
+                requested_years_without_candidate_sales
+            ),
+            "insufficient_groups": insufficient_groups,
+            "groups_with_exclusions": groups_with_exclusions,
+        },
         "groups": grouped_payload,
     }
 
@@ -270,23 +344,32 @@ def _build_payload(
 def _group_payload(
     group_key: tuple[int, Optional[str], Optional[str], Optional[str]],
     accumulator: _GroupAccumulator,
+    *,
+    minimum_required_sale_count: int,
 ) -> dict[str, object]:
     year, municipality_name, valuation_classification, area_key = group_key
     ratios = accumulator.included_ratios
+    sale_count = len(ratios)
+    is_insufficient = sale_count < minimum_required_sale_count
     median_ratio = _median_ratio(ratios)
-    cod = _cod(ratios, median_ratio)
-    prd = _prd(
-        ratio_count=len(ratios),
-        ratio_sum=accumulator.included_ratio_sum,
-        assessed_sum=accumulator.included_assessed_sum,
-        sale_sum=accumulator.included_sale_sum,
-    )
+    cod = None
+    prd = None
+    if not is_insufficient:
+        cod = _cod(ratios, median_ratio)
+        prd = _prd(
+            ratio_count=sale_count,
+            ratio_sum=accumulator.included_ratio_sum,
+            assessed_sum=accumulator.included_assessed_sum,
+            sale_sum=accumulator.included_sale_sum,
+        )
     return {
         "year": year,
         "municipality_name": municipality_name,
         "valuation_classification": valuation_classification,
         "area_key": area_key,
-        "sale_count": len(ratios),
+        "sale_count": sale_count,
+        "is_insufficient_sample": is_insufficient,
+        "minimum_required_sale_count": minimum_required_sale_count,
         "median_ratio": _decimal_as_float(median_ratio, scale=6),
         "cod": _decimal_as_float(cod, scale=4),
         "prd": _decimal_as_float(prd, scale=4),
@@ -496,3 +579,12 @@ def _chunked(values: Sequence[str], batch_size: int) -> list[list[str]]:
         list(values[index : index + batch_size])
         for index in range(0, len(values), batch_size)
     ]
+
+
+def _requested_years_without_candidate_sales(
+    *, requested_years: Optional[Sequence[int]], rows: Sequence[SalesRatioStudyInputRow]
+) -> list[int]:
+    if requested_years is None:
+        return []
+    candidate_years = {row.year for row in rows}
+    return sorted(year for year in requested_years if year not in candidate_years)
