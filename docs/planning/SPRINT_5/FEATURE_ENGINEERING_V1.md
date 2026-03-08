@@ -164,16 +164,18 @@ Inputs:
 Null/default semantics:
 
 - null if assessment is null
+- null if assessment is negative
 - null if no eligible sale exists
 - null if sale amount is non-positive
 
 Quality flags:
 
 - `missing_assessment_total_value`
+- `invalid_assessment_total_value`
 - `missing_eligible_sale`
 - `invalid_sale_amount`
 
-## 2) `peer_percentile` (`Numeric(6,4)`, range `[0,1]`)
+## 2) `peer_percentile` (`Numeric(6,4)`, range `(0,1)`)
 
 Definition:
 
@@ -238,6 +240,7 @@ Inputs:
 Null/default semantics:
 
 - `0.00` when permit basis fields are absent (`permit_event_count` and basis sums are null/zero for the year)
+- null when permit activity exists but no declared/estimated valuation basis is known (for example `permit_event_count > 0` with both valuation known-count fields `<= 0`); emit `unresolved_permit_basis` and trace `permits.basis = unknown`
 - null only when row-level permit context is internally inconsistent (for example known count `> 0` with missing corresponding sum)
 
 Note on current mart semantics:
@@ -352,6 +355,7 @@ Required top-level keys:
 - `appeals`: `{ "window_years": [year-2, year], "source_parcel_year_keys": [{"parcel_id": <id>, "year": <year>}...] }`
 - `lineage`: `{ "relationship_count": <int>, "related_parcel_ids": [<id>...], "reference_year": <year-1> }`
   - `relationship_count` is the count of unique `related_parcel_id` values after de-duplication (not raw lineage-link row count).
+  - `related_parcel_ids` MUST be de-duplicated and sorted ascending before persistence.
 
 Permit trace mapping:
 
@@ -359,7 +363,7 @@ Permit trace mapping:
 - `basis = declared`: direct declared valuation support for computed non-null permit feature value; `source_parcel_year_keys` are sorted, de-duplicated supporting parcel-year keys.
 - `basis = estimated`: inferred from permit-related inputs (not directly declared); `source_parcel_year_keys` are sorted, de-duplicated materially contributing parcel-year keys.
 - `basis = none`: no relevant permit activity for the window and deterministic zero-valued permit feature outcome; `source_parcel_year_keys = []`.
-- `basis = unknown`: internally inconsistent permit context, so corresponding permit-based feature value is null; `source_parcel_year_keys` are sorted, de-duplicated considered parcel-year keys (or `[]` if none resolvable).
+- `basis = unknown`: permit activity exists but no resolvable declared/estimated basis (or other internally inconsistent permit context), so corresponding permit-based feature value is null; `source_parcel_year_keys` are sorted, de-duplicated considered parcel-year keys (or `[]` if none resolvable).
 - `source_parcel_year_keys` is never null in memory
 
 Composite key arrays must be sorted deterministically by `parcel_id` ascending, then `year` ascending.
