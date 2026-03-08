@@ -21,7 +21,7 @@ In scope for v1:
 - deterministic writes to `parcel_features`
 - one feature row per `(parcel_id, year, feature_version)`
 - explainable `source_refs_json` and `feature_quality_flags`
-- compatibility with `score-fraud` v1 contracts in `FRAUD_SIGNAL_V1.md`
+- compatibility with `score-fraud` v1 contracts in `FRAUD_SIGNAL_V1.md`, with `build_features` scope semantics defined in this spec (`scope_json` normalized; raw operator inputs recorded separately)
 
 Compatibility note:
 
@@ -94,6 +94,7 @@ Canonical serialization requirement (must match existing `sales_ratio_study` `_s
 - serialize with sorted keys (`sort_keys = true`)
 - serialize with compact separators (`separators = (",", ":")`)
 - encode serialized JSON as UTF-8 bytes before hashing
+- persist hash output as a lowercase hex digest string (`sha256(...).hexdigest()`)
 
 `config_json` must include at least:
 
@@ -241,7 +242,7 @@ Null/default semantics:
 
 - `0.00` when permit basis fields are absent (`permit_event_count` and basis sums are null/zero for the year)
 - null when permit activity exists but no declared/estimated valuation basis is known (for example `permit_event_count > 0` with both valuation known-count fields `<= 0`); emit `unresolved_permit_basis` and trace `permits.basis = unknown`
-- null only when row-level permit context is internally inconsistent (for example known count `> 0` with missing corresponding sum)
+- null when row-level permit context is internally inconsistent (for example known count `> 0` with missing corresponding sum); emit `missing_permit_context` and trace `permits.basis = unknown`
 
 Note on current mart semantics:
 
@@ -252,6 +253,12 @@ Quality flags:
 - `missing_permit_context`
 - `unresolved_permit_basis`
 - `permit_zero_signal_inferred`
+
+Permit quality-flag mapping:
+
+- `missing_permit_context`: permit context is internally inconsistent and cannot produce a deterministic non-null permit basis
+- `unresolved_permit_basis`: permit activity exists but both declared and estimated basis inputs are unresolved for value computation
+- `permit_zero_signal_inferred`: v1 inferred a deterministic zero signal from absent/null permit basis fields per current mart semantics
 
 ## 5) `permit_adjusted_gap` (`Numeric(14,2)`)
 
@@ -312,7 +319,7 @@ Definition:
 
 - lineage reset signal comparing current parcel value to related lineage baseline
 - baseline source:
-  - related parcel IDs from `parcel_lineage_links` for target parcel, de-duplicated by `related_parcel_id` before any aggregation
+  - related parcel IDs from `parcel_lineage_links` for target parcel, deduplicated by `related_parcel_id` before any aggregation
   - reference values from related parcels at `year - 1`
 - delta: `current_assessment_total_value - sum(related_prior_year_assessment_total_values)`
 
@@ -354,16 +361,16 @@ Required top-level keys:
 - `permits`: `{ "window_years": [year, year], "basis": "declared|estimated|none|unknown", "source_parcel_year_keys": [{"parcel_id": <id>, "year": <year>}...] }`
 - `appeals`: `{ "window_years": [year-2, year], "source_parcel_year_keys": [{"parcel_id": <id>, "year": <year>}...] }`
 - `lineage`: `{ "relationship_count": <int>, "related_parcel_ids": [<id>...], "reference_year": <year-1> }`
-  - `relationship_count` is the count of unique `related_parcel_id` values after de-duplication (not raw lineage-link row count).
-  - `related_parcel_ids` MUST be de-duplicated and sorted ascending before persistence.
+  - `relationship_count` is the count of unique `related_parcel_id` values after deduplication (not raw lineage-link row count).
+  - `related_parcel_ids` MUST be deduplicated and sorted ascending before persistence.
 
 Permit trace mapping:
 
 - `window_years`: inclusive `[start_year, end_year]`; for v1 permit features this is always `[year, year]`
-- `basis = declared`: direct declared valuation support for computed non-null permit feature value; `source_parcel_year_keys` are sorted, de-duplicated supporting parcel-year keys.
-- `basis = estimated`: inferred from permit-related inputs (not directly declared); `source_parcel_year_keys` are sorted, de-duplicated materially contributing parcel-year keys.
+- `basis = declared`: direct declared valuation support for computed non-null permit feature value; `source_parcel_year_keys` are sorted, deduplicated supporting parcel-year keys.
+- `basis = estimated`: inferred from permit-related inputs (not directly declared); `source_parcel_year_keys` are sorted, deduplicated materially contributing parcel-year keys.
 - `basis = none`: no relevant permit activity for the window and deterministic zero-valued permit feature outcome; `source_parcel_year_keys = []`.
-- `basis = unknown`: permit activity exists but no resolvable declared/estimated basis (or other internally inconsistent permit context), so corresponding permit-based feature value is null; `source_parcel_year_keys` are sorted, de-duplicated considered parcel-year keys (or `[]` if none resolvable).
+- `basis = unknown`: permit activity exists but no resolvable declared/estimated basis, or permit context is internally inconsistent (`unresolved_permit_basis` or `missing_permit_context`), so corresponding permit-based feature value is null; `source_parcel_year_keys` are sorted, deduplicated considered parcel-year keys (or `[]` if none resolvable).
 - `source_parcel_year_keys` is never null in memory
 
 Composite key arrays must be sorted deterministically by `parcel_id` ascending, then `year` ascending.
