@@ -440,7 +440,7 @@ def build_features_cmd(
             )
     else:
         parcel_ids = None
-    years = sorted(set(year)) if year else None
+    years = list(year) if year else None
 
     with session_scope(settings.database_url) as session:
         payload = build_features(

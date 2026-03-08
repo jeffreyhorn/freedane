@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
-from typing import Optional, Sequence, TypedDict
+from typing import Optional, Sequence, TypedDict, cast
 
-from sqlalchemy import and_, delete, exists, func, or_, select
+from sqlalchemy import and_, delete, exists, or_, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from sqlalchemy.orm import Session
 
@@ -84,6 +86,10 @@ def build_features(
     parcel_ids: Optional[Sequence[str]] = None,
     years: Optional[Sequence[int]] = None,
 ) -> BuildFeaturesPayload:
+    raw_scope: dict[str, object] = {
+        "requested_parcel_ids": list(parcel_ids) if parcel_ids is not None else None,
+        "requested_years": list(years) if years is not None else None,
+    }
     resolved_scope = _resolved_scope(parcel_ids=parcel_ids, years=years)
     config_json: dict[str, object] = {
         "feature_version": feature_version,
@@ -118,38 +124,33 @@ def build_features(
             parcel_ids=resolved_scope["parcel_ids"],
             years=resolved_scope["years"],
         )
-        selected_sales = _load_selected_sales(session, facts)
-        prior_assessments = _load_prior_assessments(session, facts)
-        feature_rows, quality_warning_count = _build_feature_rows(
-            run_id=run.id,
-            feature_version=feature_version,
-            facts=facts,
-            selected_sales=selected_sales,
-            prior_assessments=prior_assessments,
-        )
         rows_deleted = _delete_existing_feature_rows(
             session,
             feature_version=feature_version,
             parcel_ids=resolved_scope["parcel_ids"],
             years=resolved_scope["years"],
         )
-        session.add_all(feature_rows)
-        session.flush()
-
+        selected_sales = _load_selected_sales(session, facts)
+        prior_assessments = _load_prior_assessments(session, facts)
+        rows_inserted, quality_warning_count = _build_feature_rows(
+            session=session,
+            run_id=run.id,
+            feature_version=feature_version,
+            facts=facts,
+            selected_sales=selected_sales,
+            prior_assessments=prior_assessments,
+        )
         summary: BuildFeaturesSummary = {
             "selected_parcels": len({fact.parcel_id for fact in facts}),
             "selected_parcel_years": len(facts),
             "rows_deleted": rows_deleted,
-            "rows_inserted": len(feature_rows),
+            "rows_inserted": rows_inserted,
             "rows_skipped": 0,
             "quality_warning_count": quality_warning_count,
         }
         run.status = "succeeded"
         run.error_summary = None
-        run.input_summary_json = {
-            "requested_parcel_ids": resolved_scope["parcel_ids"],
-            "requested_years": resolved_scope["years"],
-        }
+        run.input_summary_json = raw_scope
         run.output_summary_json = dict(summary)
         run.completed_at = datetime.now(timezone.utc)
         session.flush()
@@ -163,10 +164,7 @@ def build_features(
         run_persisted = True
         run.status = "failed"
         run.error_summary = str(exc)
-        run.input_summary_json = {
-            "requested_parcel_ids": resolved_scope["parcel_ids"],
-            "requested_years": resolved_scope["years"],
-        }
+        run.input_summary_json = raw_scope
         run.output_summary_json = dict(failure_summary)
         run.completed_at = datetime.now(timezone.utc)
         try:
@@ -325,12 +323,13 @@ def _load_prior_assessments(
 
 def _build_feature_rows(
     *,
+    session: Session,
     run_id: int,
     feature_version: str,
     facts: Sequence[ParcelYearFact],
     selected_sales: dict[tuple[str, int], _SelectedSale],
     prior_assessments: dict[tuple[str, int], Optional[Decimal]],
-) -> tuple[list[ParcelFeature], int]:
+) -> tuple[int, int]:
     drafts: list[_FeatureDraft] = []
     for fact in facts:
         flags: list[str] = []
@@ -368,8 +367,21 @@ def _build_feature_rows(
     for ratios in peer_groups.values():
         ratios.sort()
 
-    rows: list[ParcelFeature] = []
+    rows_inserted = 0
     quality_warning_count = 0
+    batch_rows: list[ParcelFeature] = []
+
+    def _flush_batch() -> None:
+        nonlocal rows_inserted
+        if not batch_rows:
+            return
+        session.add_all(batch_rows)
+        session.flush()
+        rows_inserted += len(batch_rows)
+        for feature_row in batch_rows:
+            session.expunge(feature_row)
+        batch_rows.clear()
+
     for draft in drafts:
         peer_group_key = (
             (draft.year, draft.municipality_key, draft.classification_key)
@@ -443,9 +455,12 @@ def _build_feature_rows(
                 },
             },
         )
-        rows.append(row)
+        batch_rows.append(row)
+        if len(batch_rows) >= IN_CLAUSE_BATCH_SIZE:
+            _flush_batch()
 
-    return rows, quality_warning_count
+    _flush_batch()
+    return rows_inserted, quality_warning_count
 
 
 def _assessment_to_sale_ratio(
@@ -493,8 +508,8 @@ def _peer_percentile(
         flags.append("insufficient_peer_group")
         return None
 
-    lower_count = sum(1 for value in peer_group if value < ratio)
-    equal_count = sum(1 for value in peer_group if value == ratio)
+    lower_count = bisect_left(peer_group, ratio)
+    equal_count = bisect_right(peer_group, ratio) - lower_count
     numerator = Decimal(lower_count) + (Decimal("0.5") * Decimal(equal_count))
     raw_value = numerator / Decimal(len(peer_group))
     return _quantize_numeric(raw_value, precision=6, scale=4, flags=flags)
@@ -543,19 +558,26 @@ def _delete_existing_feature_rows(
     if years is not None and not years:
         return 0
 
+    bind = session.get_bind()
+    supports_sane_rowcount = bool(
+        bind is not None and getattr(bind.dialect, "supports_sane_rowcount", False)
+    )
+
     if parcel_ids is None:
         query = delete(ParcelFeature).where(
             ParcelFeature.feature_version == feature_version
         )
-        count_query = (
-            select(func.count())
-            .select_from(ParcelFeature)
-            .where(ParcelFeature.feature_version == feature_version)
-        )
         if years is not None:
             query = query.where(ParcelFeature.year.in_(years))
+        if supports_sane_rowcount:
+            result = cast(CursorResult[object], session.execute(query))
+            return int(result.rowcount or 0)
+        count_query = select(ParcelFeature.id).where(
+            ParcelFeature.feature_version == feature_version
+        )
+        if years is not None:
             count_query = count_query.where(ParcelFeature.year.in_(years))
-        to_delete = int(session.execute(count_query).scalar_one())
+        to_delete = len(session.execute(count_query).scalars().all())
         session.execute(query)
         return to_delete
 
@@ -565,18 +587,19 @@ def _delete_existing_feature_rows(
             ParcelFeature.feature_version == feature_version,
             ParcelFeature.parcel_id.in_(batch_parcel_ids),
         )
-        count_query = (
-            select(func.count())
-            .select_from(ParcelFeature)
-            .where(
-                ParcelFeature.feature_version == feature_version,
-                ParcelFeature.parcel_id.in_(batch_parcel_ids),
-            )
-        )
         if years is not None:
             query = query.where(ParcelFeature.year.in_(years))
+        if supports_sane_rowcount:
+            result = cast(CursorResult[object], session.execute(query))
+            deleted += int(result.rowcount or 0)
+            continue
+        count_query = select(ParcelFeature.id).where(
+            ParcelFeature.feature_version == feature_version,
+            ParcelFeature.parcel_id.in_(batch_parcel_ids),
+        )
+        if years is not None:
             count_query = count_query.where(ParcelFeature.year.in_(years))
-        to_delete = int(session.execute(count_query).scalar_one())
+        to_delete = len(session.execute(count_query).scalars().all())
         session.execute(query)
         deleted += to_delete
     return deleted
