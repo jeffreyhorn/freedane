@@ -74,7 +74,7 @@ General evaluation rules:
 Score formula:
 
 - `raw_score = sum(triggered_rule_weight)`
-- `score_value = min(100.00, raw_score)`
+- `score_value = max(0.00, min(100.00, raw_score))`
 
 ## Rule Catalog (`scoring_rules_v1`)
 
@@ -123,7 +123,11 @@ Score formula:
   - `yoy_assessment_change_pct >= 0.35` => `severity_weight = 16.0000`, `threshold_value = "0.35"`
   - `0.20 <= yoy_assessment_change_pct < 0.35` => `severity_weight = 10.0000`, `threshold_value = "0.20"`
 - Required input(s): `yoy_assessment_change_pct`
-- Secondary evidence fields: `permit_adjusted_expected_change`, `permit_adjusted_expected_change_threshold` (string, fixed value `"10000"`), permit basis from `source_refs_json.permits.basis`
+- Secondary evidence fields:
+  - `permit_adjusted_expected_change` (numeric; may be null)
+  - `permit_adjusted_expected_change_condition` (string enum: `"is_null"` when predicate passes due to null value, `"<=_cutoff"` when predicate passes due to numeric cutoff)
+  - `permit_adjusted_expected_change_cutoff` (string, fixed value `"10000"`)
+  - permit basis from `source_refs_json.permits.basis`
 - Skip when required input is null.
 
 ### R5: Appeal Pattern Suggesting Persistent Downward Pressure
@@ -215,7 +219,7 @@ Template patterns:
 - `permit_gap__assessment_increase_unexplained_by_permits`:
   - `Permit-adjusted gap {metric_value} exceeds threshold {threshold_value}, indicating unexplained assessed-value increase.`
 - `yoy__assessment_spike_without_support`:
-  - `Year-over-year assessment change {metric_value} exceeds threshold {threshold_value} without strong permit support.`
+  - `Year-over-year assessment change {metric_value} exceeds threshold {threshold_value} without strong permit support ({permit_adjusted_expected_change_condition} vs cutoff {permit_adjusted_expected_change_cutoff}).`
 - `appeal__recurring_successful_reductions`:
   - `Appeal success rate {metric_value} meets threshold {threshold_value} with net negative appeal value change over 3 years.`
 - `lineage__post_lineage_value_drop`:
