@@ -78,3 +78,12 @@ Scoring keeps rule-level missing-input handling, and additionally hardens struct
 3. Start analyst review from `rankings.top_parcels` and `top_flags`.
 4. Use `reason_code_breakdown` to identify dominant fraud-signal categories in scope.
 5. Re-run with identical version/scope and verify deterministic ranked output ordering.
+
+## Calibration Workflow
+
+After scoring is stable for a selected `(ruleset_version, feature_version)`, run the Day 13 calibration artifacts:
+
+- SQL workbook: `docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql`
+- usage notes: `docs/planning/SPRINT_5/CALIBRATION_NOTES.md`
+
+This workflow is for analyst threshold tuning and review queue sizing; any approved threshold changes must ship as a new `ruleset_version`.
