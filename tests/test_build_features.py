@@ -5,10 +5,12 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional, Sequence
 
 from sqlalchemy import select
 from typer.testing import CliRunner
 
+import accessdane_audit.build_features as build_features_module
 from accessdane_audit import cli
 from accessdane_audit.build_features import build_features
 from accessdane_audit.db import init_db, session_scope
@@ -68,7 +70,14 @@ def test_build_features_computes_core_features_and_persists_rows(
     assert run_row.status == "succeeded"
     assert run_row.scope_json == {"parcel_ids": None, "years": None}
     assert run_row.scope_hash is not None
-    assert run_row.output_summary_json == payload["summary"]
+    assert run_row.output_summary_json == {
+        "summary": payload["summary"],
+        "diagnostics": payload["diagnostics"],
+    }
+    assert payload["diagnostics"]["rows_with_quality_flags"] == 5
+    assert payload["diagnostics"]["validation_error_counts"] == {}
+    assert payload["diagnostics"]["quality_flag_counts"]["missing_eligible_sale"] == 3
+    assert payload["diagnostics"]["skipped_rows"] == []
     assert len(rows) == 6
 
     by_key = {(row.parcel_id, row.year): row for row in rows}
@@ -254,6 +263,72 @@ def test_build_features_scoped_rebuild_replaces_only_in_scope_rows(
     assert by_key[("parcel-res-2", 2025)].assessment_to_sale_ratio == Decimal(
         "1.600000"
     )
+
+
+def test_build_features_skips_rows_with_hard_validation_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "build_features_validation.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_build_features_fixture(session)
+
+    def _invalid_peer_percentile(
+        *,
+        ratio: Optional[Decimal],
+        municipality_key: Optional[str],
+        classification_key: Optional[str],
+        peer_group: Sequence[Decimal],
+        flags: list[str],
+    ) -> Optional[Decimal]:
+        del municipality_key, classification_key, peer_group, flags
+        if ratio is None:
+            return None
+        return Decimal("1.5000")
+
+    monkeypatch.setattr(
+        build_features_module,
+        "_peer_percentile",
+        _invalid_peer_percentile,
+    )
+
+    with session_scope(database_url) as session:
+        payload = build_features(session, feature_version="feature-v1-invalid")
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["summary"] == {
+        "selected_parcels": 4,
+        "selected_parcel_years": 6,
+        "rows_deleted": 0,
+        "rows_inserted": 3,
+        "rows_skipped": 3,
+        "quality_warning_count": 15,
+    }
+    assert payload["diagnostics"]["validation_error_counts"] == {
+        "out_of_bounds_peer_percentile": 3
+    }
+    assert len(payload["diagnostics"]["skipped_rows"]) == 3
+    assert payload["diagnostics"]["rows_with_quality_flags"] == 3
+
+    with session_scope(database_url) as session:
+        rows = (
+            session.execute(
+                select(ParcelFeature).where(
+                    ParcelFeature.feature_version == "feature-v1-invalid"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 3
+    assert {(row.parcel_id, row.year) for row in rows} == {
+        ("parcel-res-1", 2024),
+        ("parcel-res-2", 2024),
+        ("parcel-missing-sale", 2025),
+    }
 
 
 def test_build_features_cli_supports_scope_and_output_file(
