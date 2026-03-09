@@ -127,7 +127,7 @@ Score formula:
   - `permit_adjusted_expected_change` (numeric; may be null)
   - `permit_adjusted_expected_change_condition` (string enum: `"is_null"` when predicate passes due to null value, `"<=_cutoff"` when predicate passes due to numeric cutoff)
   - `permit_adjusted_expected_change_cutoff` (string, fixed value `"10000"`)
-  - permit basis from `source_refs_json.permits.basis`
+  - permit basis from `source_refs_json.feature_sources.permits.basis`
 - Skip when required input is null.
 
 ### R5: Appeal Pattern Suggesting Persistent Downward Pressure
@@ -167,7 +167,7 @@ Behavior:
 - score evaluation proceeds if required inputs are present
 - null required inputs skip the corresponding rule
 - `score_summary_json` must record:
-  - all source `feature_quality_flags`
+  - all source `feature_quality_flags`, serialized into `quality_flags` (that is, `score_summary_json.quality_flags` mirrors serialized `parcel_features.feature_quality_flags`)
   - skipped rule list with skip reasons (`missing_required_input`)
 
 No additional v1 down-weighting is applied solely due to quality flags. Any change to this rule requires a new `ruleset_version`.
