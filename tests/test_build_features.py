@@ -15,6 +15,7 @@ from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     Parcel,
     ParcelFeature,
+    ParcelLineageLink,
     ParcelYearFact,
     SalesExclusion,
     SalesParcelMatch,
@@ -45,7 +46,7 @@ def test_build_features_computes_core_features_and_persists_rows(
         "rows_deleted": 0,
         "rows_inserted": 6,
         "rows_skipped": 0,
-        "quality_warning_count": 8,
+        "quality_warning_count": 24,
     }
 
     with session_scope(database_url) as session:
@@ -76,31 +77,75 @@ def test_build_features_computes_core_features_and_persists_rows(
     assert p1_2025.assessment_to_sale_ratio == Decimal("0.833333")
     assert p1_2025.peer_percentile == Decimal("0.2500")
     assert p1_2025.yoy_assessment_change_pct == Decimal("0.111111")
-    assert p1_2025.permit_adjusted_expected_change is None
-    assert p1_2025.appeal_value_delta_3y is None
-    assert p1_2025.lineage_value_reset_delta is None
+    assert p1_2025.permit_adjusted_expected_change == Decimal("15000.00")
+    assert p1_2025.permit_adjusted_gap == Decimal("-5000.00")
+    assert p1_2025.appeal_value_delta_3y == Decimal("-3000.00")
+    assert p1_2025.appeal_success_rate_3y == Decimal("0.6667")
+    assert p1_2025.lineage_value_reset_delta == Decimal("-100000.00")
     assert p1_2025.feature_quality_flags == []
     assert p1_2025.source_refs_json["sales"] == {
         "sales_transaction_id": fixture["sales"]["p1_selected_sale_id"],
         "match_id": fixture["sales"]["p1_selected_match_id"],
+    }
+    assert p1_2025.source_refs_json["permits"] == {
+        "window_years": [2025, 2025],
+        "basis": "declared",
+        "source_parcel_year_keys": [{"parcel_id": "parcel-res-1", "year": 2025}],
+    }
+    assert p1_2025.source_refs_json["appeals"] == {
+        "window_years": [2023, 2025],
+        "source_parcel_year_keys": [
+            {"parcel_id": "parcel-res-1", "year": 2024},
+            {"parcel_id": "parcel-res-1", "year": 2025},
+        ],
+        "value_detail_status": "known",
+        "outcome_detail_status": "known",
+    }
+    assert p1_2025.source_refs_json["lineage"] == {
+        "relationship_count": 1,
+        "related_parcel_ids": ["parcel-res-2"],
+        "reference_year": 2024,
     }
 
     p2_2025 = by_key[("parcel-res-2", 2025)]
     assert p2_2025.assessment_to_sale_ratio == Decimal("1.600000")
     assert p2_2025.peer_percentile == Decimal("0.7500")
     assert p2_2025.yoy_assessment_change_pct == Decimal("-0.200000")
-    assert p2_2025.feature_quality_flags == []
+    assert p2_2025.permit_adjusted_expected_change is None
+    assert p2_2025.permit_adjusted_gap is None
+    assert p2_2025.appeal_value_delta_3y is None
+    assert p2_2025.appeal_success_rate_3y is None
+    assert p2_2025.lineage_value_reset_delta == Decimal("0.00")
+    assert p2_2025.feature_quality_flags == [
+        "missing_appeal_context_3y",
+        "missing_permit_adjusted_expected_change",
+        "unresolved_permit_basis",
+    ]
     assert p2_2025.source_refs_json["sales"] == {
         "sales_transaction_id": fixture["sales"]["p2_selected_sale_id"],
         "match_id": fixture["sales"]["p2_selected_match_id"],
     }
+    assert p2_2025.source_refs_json["permits"]["basis"] == "unknown"
+    assert p2_2025.source_refs_json["appeals"]["source_parcel_year_keys"] == []
+    assert p2_2025.source_refs_json["appeals"]["value_detail_status"] == "none"
+    assert p2_2025.source_refs_json["appeals"]["outcome_detail_status"] == "none"
+    assert p2_2025.source_refs_json["lineage"]["relationship_count"] == 0
 
     p3_2025 = by_key[("parcel-com-1", 2025)]
     assert p3_2025.assessment_to_sale_ratio == Decimal("1.500000")
     assert p3_2025.peer_percentile is None
     assert p3_2025.yoy_assessment_change_pct is None
+    assert p3_2025.permit_adjusted_expected_change == Decimal("37500.00")
+    assert p3_2025.permit_adjusted_gap is None
+    assert p3_2025.appeal_value_delta_3y is None
+    assert p3_2025.appeal_success_rate_3y is None
+    assert p3_2025.lineage_value_reset_delta is None
     assert p3_2025.feature_quality_flags == [
         "insufficient_peer_group",
+        "missing_appeal_outcome_detail_3y",
+        "missing_appeal_value_detail_3y",
+        "missing_assessment_for_permit_gap",
+        "missing_lineage_reference_values",
         "missing_prior_year_assessment",
     ]
     assert p3_2025.source_refs_json["peer_group"] == {
@@ -109,14 +154,29 @@ def test_build_features_computes_core_features_and_persists_rows(
         "classification": "commercial",
         "group_size": 1,
     }
+    assert p3_2025.source_refs_json["lineage"] == {
+        "relationship_count": 1,
+        "related_parcel_ids": ["parcel-missing-sale"],
+        "reference_year": 2024,
+    }
+    assert p3_2025.source_refs_json["appeals"]["value_detail_status"] == "missing"
+    assert p3_2025.source_refs_json["appeals"]["outcome_detail_status"] == "missing"
 
     p4_2025 = by_key[("parcel-missing-sale", 2025)]
     assert p4_2025.assessment_to_sale_ratio is None
     assert p4_2025.peer_percentile is None
     assert p4_2025.yoy_assessment_change_pct is None
+    assert p4_2025.permit_adjusted_expected_change == Decimal("0.00")
+    assert p4_2025.permit_adjusted_gap is None
+    assert p4_2025.appeal_value_delta_3y is None
+    assert p4_2025.appeal_success_rate_3y is None
+    assert p4_2025.lineage_value_reset_delta == Decimal("0.00")
     assert p4_2025.feature_quality_flags == [
+        "missing_appeal_context_3y",
+        "missing_assessment_for_permit_gap",
         "missing_eligible_sale",
         "missing_prior_year_assessment",
+        "permit_zero_signal_inferred",
     ]
     assert p4_2025.source_refs_json["sales"] == {
         "sales_transaction_id": None,
@@ -258,6 +318,16 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 municipality_name="McFarland",
                 assessment_valuation_classification="residential",
                 assessment_total_value=Decimal("90000.00"),
+                appeal_event_count=2,
+                appeal_reduction_granted_count=1,
+                appeal_partial_reduction_count=0,
+                appeal_denied_count=0,
+                appeal_withdrawn_count=0,
+                appeal_dismissed_count=0,
+                appeal_pending_count=0,
+                appeal_unknown_outcome_count=0,
+                appeal_value_change_known_count=1,
+                appeal_value_change_total=Decimal("-2000.00"),
             ),
             ParcelYearFact(
                 parcel_id="parcel-res-1",
@@ -265,6 +335,19 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 municipality_name="McFarland",
                 assessment_valuation_classification="residential",
                 assessment_total_value=Decimal("100000.00"),
+                permit_event_count=1,
+                permit_declared_valuation_known_count=1,
+                permit_declared_valuation_sum=Decimal("20000.00"),
+                appeal_event_count=1,
+                appeal_reduction_granted_count=1,
+                appeal_partial_reduction_count=0,
+                appeal_denied_count=0,
+                appeal_withdrawn_count=0,
+                appeal_dismissed_count=0,
+                appeal_pending_count=0,
+                appeal_unknown_outcome_count=0,
+                appeal_value_change_known_count=1,
+                appeal_value_change_total=Decimal("-1000.00"),
             ),
             ParcelYearFact(
                 parcel_id="parcel-res-2",
@@ -279,6 +362,11 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 municipality_name="McFarland",
                 assessment_valuation_classification="residential",
                 assessment_total_value=Decimal("160000.00"),
+                permit_event_count=2,
+                permit_declared_valuation_known_count=1,
+                permit_declared_valuation_sum=Decimal("10000.00"),
+                permit_estimated_cost_known_count=1,
+                permit_estimated_cost_sum=Decimal("5000.00"),
             ),
             ParcelYearFact(
                 parcel_id="parcel-com-1",
@@ -286,6 +374,19 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 municipality_name="Madison",
                 assessment_valuation_classification="commercial",
                 assessment_total_value=Decimal("300000.00"),
+                permit_event_count=1,
+                permit_declared_valuation_known_count=1,
+                permit_declared_valuation_sum=Decimal("50000.00"),
+                appeal_event_count=2,
+                appeal_reduction_granted_count=1,
+                appeal_partial_reduction_count=0,
+                appeal_denied_count=0,
+                appeal_withdrawn_count=0,
+                appeal_dismissed_count=0,
+                appeal_pending_count=0,
+                appeal_unknown_outcome_count=1,
+                appeal_value_change_known_count=0,
+                appeal_value_change_total=None,
             ),
             ParcelYearFact(
                 parcel_id="parcel-missing-sale",
@@ -345,6 +446,25 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
             is_active=True,
             excluded_by_rule="test_rule",
         )
+    )
+    session.add_all(
+        [
+            ParcelLineageLink(
+                parcel_id="parcel-res-1",
+                related_parcel_id="parcel-res-2",
+                relationship_type="parent",
+            ),
+            ParcelLineageLink(
+                parcel_id="parcel-res-1",
+                related_parcel_id="parcel-missing-sale",
+                relationship_type="child",
+            ),
+            ParcelLineageLink(
+                parcel_id="parcel-com-1",
+                related_parcel_id="parcel-missing-sale",
+                relationship_type="parent",
+            ),
+        ]
     )
 
     return {
