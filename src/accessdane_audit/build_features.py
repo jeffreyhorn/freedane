@@ -13,6 +13,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from sqlalchemy.orm import Session, load_only
 
+from .extraction_signals import LINEAGE_PARENT_RELATIONSHIP
 from .models import (
     ParcelFeature,
     ParcelLineageLink,
@@ -496,7 +497,10 @@ def _load_lineage_links(
         query = select(
             ParcelLineageLink.parcel_id,
             ParcelLineageLink.related_parcel_id,
-        ).where(ParcelLineageLink.parcel_id.in_(batch_parcel_ids))
+        ).where(
+            ParcelLineageLink.parcel_id.in_(batch_parcel_ids),
+            ParcelLineageLink.relationship_type == LINEAGE_PARENT_RELATIONSHIP,
+        )
         for parcel_id, related_parcel_id in session.execute(query):
             related_parcels_by_parcel.setdefault(parcel_id, set()).add(
                 related_parcel_id
@@ -924,6 +928,11 @@ def _appeal_window_features(
             total_value_delta += context.appeal_value_change_total
 
         if (
+            context.appeal_unknown_outcome_count is not None
+            and context.appeal_unknown_outcome_count > 0
+        ):
+            missing_outcome_detail = True
+        elif (
             context.appeal_event_count is None
             or context.appeal_reduction_granted_count is None
             or context.appeal_partial_reduction_count is None
