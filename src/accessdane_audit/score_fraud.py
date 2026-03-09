@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
-from typing import Optional, Sequence, TypedDict, TypeVar
+from typing import Callable, Optional, Sequence, TypedDict, TypeVar
 
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
@@ -17,6 +17,7 @@ RUN_TYPE_SCORE_FRAUD = "score_fraud"
 IN_CLAUSE_BATCH_SIZE = 800
 FEATURE_KEY_IN_CLAUSE_BATCH_SIZE = 400
 TOP_FLAGS_LIMIT = 20
+TOP_PARCELS_LIMIT = 20
 SCORE_INSERT_BATCH_SIZE = 200
 SCORE_MIN = Decimal("0.00")
 SCORE_MAX = Decimal("100.00")
@@ -48,6 +49,7 @@ class ScoreFraudSummary(TypedDict):
     high_risk_count: int
     medium_risk_count: int
     low_risk_count: int
+    skipped_feature_rows: int
 
 
 class ScoreFraudTopFlag(TypedDict):
@@ -61,11 +63,44 @@ class ScoreFraudTopFlag(TypedDict):
     explanation: str
 
 
+class ScoreFraudTopParcel(TypedDict):
+    parcel_id: str
+    year: int
+    score_value: str
+    risk_band: str
+    reason_code_count: int
+    primary_reason_code: Optional[str]
+    primary_reason_weight: str
+
+
+class ScoreFraudRiskBandBreakdown(TypedDict):
+    risk_band: str
+    parcel_count: int
+
+
+class ScoreFraudReasonCodeBreakdown(TypedDict):
+    reason_code: str
+    flag_count: int
+
+
+class ScoreFraudSkippedFeatureBreakdown(TypedDict):
+    reason: str
+    row_count: int
+
+
+class ScoreFraudRankings(TypedDict):
+    top_parcels: list[ScoreFraudTopParcel]
+    risk_band_breakdown: list[ScoreFraudRiskBandBreakdown]
+    reason_code_breakdown: list[ScoreFraudReasonCodeBreakdown]
+    skipped_feature_breakdown: list[ScoreFraudSkippedFeatureBreakdown]
+
+
 class ScoreFraudPayload(TypedDict, total=False):
     run: ScoreFraudRun
     scope: ScoreFraudScope
     summary: ScoreFraudSummary
     top_flags: list[ScoreFraudTopFlag]
+    rankings: ScoreFraudRankings
     error: str
 
 
@@ -96,7 +131,11 @@ class _RuleResult:
 
 @dataclass(frozen=True)
 class _PendingScoreBatchItem:
-    feature: ParcelFeature
+    parcel_id: str
+    year: int
+    feature_version: str
+    feature_run_id: Optional[int]
+    feature_sources: dict[str, object]
     score_row: FraudScore
     ranked_triggers: list[_RuleTrigger]
 
@@ -105,6 +144,12 @@ class _PendingScoreBatchItem:
 class _TopFlagCandidate:
     sort_key: tuple[Decimal, int, str, int, str]
     payload: ScoreFraudTopFlag
+
+
+@dataclass(frozen=True)
+class _TopParcelCandidate:
+    sort_key: tuple[Decimal, int, str, int]
+    payload: ScoreFraudTopParcel
 
 
 def score_fraud(
@@ -134,6 +179,7 @@ def score_fraud(
             ),
             "summary": _empty_summary(),
             "top_flags": [],
+            "rankings": _empty_rankings(),
             "error": (
                 f"Unsupported ruleset_version '{ruleset_version}'. "
                 f"Supported values: {supported_values}."
@@ -159,7 +205,9 @@ def score_fraud(
         "risk_band_medium_min": str(RISK_BAND_MEDIUM_MIN),
         "rounding_mode": "ROUND_HALF_UP",
         "top_flags_limit": TOP_FLAGS_LIMIT,
+        "top_parcels_limit": TOP_PARCELS_LIMIT,
         "tier_resolution": "descending_severity_first_match",
+        "top_parcels_ordering": "score_desc_reason_count_desc_parcel_id_year",
         "rule_ids": ["R1", "R2", "R3", "R4", "R5", "R6"],
     }
     run = ScoringRun(
@@ -173,6 +221,7 @@ def score_fraud(
     )
     failure_summary = _empty_summary()
     failure_top_flags: list[ScoreFraudTopFlag] = []
+    failure_rankings = _empty_rankings()
 
     try:
         session.add(run)
@@ -196,7 +245,7 @@ def score_fraud(
                 feature_version=feature_version,
                 features=features,
             )
-            summary, top_flags = _persist_scores_and_flags(
+            summary, top_flags, rankings = _persist_scores_and_flags(
                 session=session,
                 run_id=run.id,
                 ruleset_version=ruleset_version,
@@ -216,6 +265,7 @@ def score_fraud(
             "scope": resolved_scope,
             "summary": summary,
             "top_flags": top_flags,
+            "rankings": rankings,
         }
     except Exception as exc:
         run_persisted = True
@@ -234,6 +284,7 @@ def score_fraud(
             "scope": resolved_scope,
             "summary": failure_summary,
             "top_flags": failure_top_flags,
+            "rankings": failure_rankings,
             "error": str(exc),
         }
 
@@ -328,10 +379,21 @@ def _delete_existing_scored_rows(
 
 
 def _feature_keys(features: Sequence[ParcelFeature]) -> list[tuple[str, int]]:
-    return sorted(
-        {(feature.parcel_id, feature.year) for feature in features},
-        key=lambda item: (item[0], item[1]),
-    )
+    keys: set[tuple[str, int]] = set()
+    for feature in features:
+        parcel_id = feature.parcel_id
+        year = feature.year
+        if not isinstance(parcel_id, str):
+            continue
+        if not isinstance(year, int) or isinstance(year, bool):
+            continue
+        keys.add((parcel_id, year))
+        stripped_parcel_id = parcel_id.strip()
+        if stripped_parcel_id and stripped_parcel_id != parcel_id:
+            # Include legacy-normalized key to ensure stale rows from pre-guard
+            # normalization are deleted during reruns.
+            keys.add((stripped_parcel_id, year))
+    return sorted(keys, key=lambda item: (item[0], item[1]))
 
 
 def _load_existing_score_ids_for_feature_keys(
@@ -362,16 +424,36 @@ def _persist_scores_and_flags(
     ruleset_version: str,
     feature_version: str,
     features: Sequence[ParcelFeature],
-) -> tuple[ScoreFraudSummary, list[ScoreFraudTopFlag]]:
+) -> tuple[ScoreFraudSummary, list[ScoreFraudTopFlag], ScoreFraudRankings]:
     scores_inserted = 0
     flags_inserted = 0
     high_risk_count = 0
     medium_risk_count = 0
     low_risk_count = 0
+    skipped_feature_rows = 0
     top_flag_candidates: list[_TopFlagCandidate] = []
+    top_parcel_candidates: list[_TopParcelCandidate] = []
     pending_scores: list[_PendingScoreBatchItem] = []
+    reason_code_flag_counts: dict[str, int] = {}
+    skipped_feature_reason_counts: dict[str, int] = {}
 
     for feature in features:
+        guard_reason = _feature_row_guard_reason(feature)
+        if guard_reason is not None:
+            skipped_feature_rows += 1
+            skipped_feature_reason_counts[guard_reason] = (
+                skipped_feature_reason_counts.get(guard_reason, 0) + 1
+            )
+            continue
+
+        assert isinstance(feature.parcel_id, str)
+        assert feature.year is not None
+        parcel_id = feature.parcel_id
+        year = int(feature.year)
+        feature_sources, invalid_source_refs = _normalize_feature_sources(
+            feature.source_refs_json
+        )
+
         rule_results = [
             _evaluate_r1(feature),
             _evaluate_r2(feature),
@@ -403,19 +485,15 @@ def _persist_scores_and_flags(
         risk_band = _risk_band(score_value)
         requires_review = risk_band in {"high", "medium"}
         reason_codes = sorted({trigger.reason_code for trigger in ranked_triggers})
-        quality_flags = sorted(
-            {
-                flag
-                for flag in (feature.feature_quality_flags or [])
-                if isinstance(flag, str)
-            }
-        )
+        quality_flags = _normalized_feature_quality_flags(feature.feature_quality_flags)
+        if invalid_source_refs:
+            quality_flags = sorted({*quality_flags, "source_refs_json_invalid_shape"})
 
         score_row = FraudScore(
             run_id=run_id,
             feature_run_id=feature.run_id,
-            parcel_id=feature.parcel_id,
-            year=feature.year,
+            parcel_id=parcel_id,
+            year=year,
             ruleset_version=ruleset_version,
             feature_version=feature_version,
             score_value=score_value,
@@ -452,16 +530,23 @@ def _persist_scores_and_flags(
 
         pending_scores.append(
             _PendingScoreBatchItem(
-                feature=feature,
+                parcel_id=parcel_id,
+                year=year,
+                feature_version=feature.feature_version,
+                feature_run_id=feature.run_id,
+                feature_sources=feature_sources,
                 score_row=score_row,
                 ranked_triggers=ranked_triggers,
             )
         )
 
         for reason_rank, trigger in enumerate(ranked_triggers, start=1):
+            reason_code_flag_counts[trigger.reason_code] = (
+                reason_code_flag_counts.get(trigger.reason_code, 0) + 1
+            )
             top_flag_payload: ScoreFraudTopFlag = {
-                "parcel_id": feature.parcel_id,
-                "year": feature.year,
+                "parcel_id": parcel_id,
+                "year": year,
                 "score_value": _decimal_to_str(score_value),
                 "risk_band": risk_band,
                 "reason_code": trigger.reason_code,
@@ -477,13 +562,44 @@ def _persist_scores_and_flags(
                     sort_key=_top_flag_sort_key(
                         score_value=score_value,
                         reason_rank=reason_rank,
-                        parcel_id=feature.parcel_id,
-                        year=feature.year,
+                        parcel_id=parcel_id,
+                        year=year,
                         reason_code=trigger.reason_code,
                     ),
                     payload=top_flag_payload,
                 ),
             )
+
+        primary_reason_code = (
+            ranked_triggers[0].reason_code if ranked_triggers else None
+        )
+        primary_reason_weight = (
+            _decimal_to_str(
+                _quantize_decimal(ranked_triggers[0].severity_weight, scale=4)
+            )
+            if ranked_triggers
+            else "0.0000"
+        )
+        _consider_top_parcel_candidate(
+            top_parcel_candidates=top_parcel_candidates,
+            candidate=_TopParcelCandidate(
+                sort_key=_top_parcel_sort_key(
+                    score_value=score_value,
+                    reason_code_count=len(ranked_triggers),
+                    parcel_id=parcel_id,
+                    year=year,
+                ),
+                payload={
+                    "parcel_id": parcel_id,
+                    "year": year,
+                    "score_value": _decimal_to_str(score_value),
+                    "risk_band": risk_band,
+                    "reason_code_count": len(ranked_triggers),
+                    "primary_reason_code": primary_reason_code,
+                    "primary_reason_weight": primary_reason_weight,
+                },
+            ),
+        )
 
         if len(pending_scores) >= SCORE_INSERT_BATCH_SIZE:
             flags_inserted += _flush_score_batch(
@@ -501,6 +617,7 @@ def _persist_scores_and_flags(
         ruleset_version=ruleset_version,
     )
     ordered_top_flags = [item.payload for item in top_flag_candidates]
+    ordered_top_parcels = [item.payload for item in top_parcel_candidates]
     summary: ScoreFraudSummary = {
         "features_considered": len(features),
         "scores_inserted": scores_inserted,
@@ -508,8 +625,31 @@ def _persist_scores_and_flags(
         "high_risk_count": high_risk_count,
         "medium_risk_count": medium_risk_count,
         "low_risk_count": low_risk_count,
+        "skipped_feature_rows": skipped_feature_rows,
     }
-    return summary, ordered_top_flags
+    rankings: ScoreFraudRankings = {
+        "top_parcels": ordered_top_parcels,
+        "risk_band_breakdown": [
+            {"risk_band": "high", "parcel_count": high_risk_count},
+            {"risk_band": "medium", "parcel_count": medium_risk_count},
+            {"risk_band": "low", "parcel_count": low_risk_count},
+        ],
+        "reason_code_breakdown": [
+            {"reason_code": reason_code, "flag_count": flag_count}
+            for reason_code, flag_count in sorted(
+                reason_code_flag_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
+        "skipped_feature_breakdown": [
+            {"reason": reason, "row_count": row_count}
+            for reason, row_count in sorted(
+                skipped_feature_reason_counts.items(),
+                key=lambda item: item[0],
+            )
+        ],
+    }
+    return summary, ordered_top_flags, rankings
 
 
 def _consider_top_flag_candidate(
@@ -517,13 +657,44 @@ def _consider_top_flag_candidate(
     top_flag_candidates: list[_TopFlagCandidate],
     candidate: _TopFlagCandidate,
 ) -> None:
-    if len(top_flag_candidates) < TOP_FLAGS_LIMIT:
-        top_flag_candidates.append(candidate)
-        top_flag_candidates.sort(key=lambda item: item.sort_key)
+    _consider_top_candidate(
+        candidates=top_flag_candidates,
+        candidate=candidate,
+        limit=TOP_FLAGS_LIMIT,
+        key_fn=lambda item: item.sort_key,
+    )
+
+
+def _consider_top_parcel_candidate(
+    *,
+    top_parcel_candidates: list[_TopParcelCandidate],
+    candidate: _TopParcelCandidate,
+) -> None:
+    _consider_top_candidate(
+        candidates=top_parcel_candidates,
+        candidate=candidate,
+        limit=TOP_PARCELS_LIMIT,
+        key_fn=lambda item: item.sort_key,
+    )
+
+
+_TopCandidateT = TypeVar("_TopCandidateT")
+
+
+def _consider_top_candidate(
+    *,
+    candidates: list[_TopCandidateT],
+    candidate: _TopCandidateT,
+    limit: int,
+    key_fn: Callable[[_TopCandidateT], tuple[object, ...]],
+) -> None:
+    if len(candidates) < limit:
+        candidates.append(candidate)
+        candidates.sort(key=key_fn)
         return
-    if candidate.sort_key < top_flag_candidates[-1].sort_key:
-        top_flag_candidates[-1] = candidate
-        top_flag_candidates.sort(key=lambda item: item.sort_key)
+    if key_fn(candidate) < key_fn(candidates[-1]):
+        candidates[-1] = candidate
+        candidates.sort(key=key_fn)
 
 
 def _top_flag_sort_key(
@@ -543,6 +714,44 @@ def _top_flag_sort_key(
     )
 
 
+def _top_parcel_sort_key(
+    *,
+    score_value: Decimal,
+    reason_code_count: int,
+    parcel_id: str,
+    year: int,
+) -> tuple[Decimal, int, str, int]:
+    return (Decimal("0.00") - score_value, -reason_code_count, parcel_id, year)
+
+
+def _feature_row_guard_reason(feature: ParcelFeature) -> Optional[str]:
+    parcel_id = feature.parcel_id
+    if not isinstance(parcel_id, str) or not parcel_id.strip():
+        return "missing_parcel_id"
+    if parcel_id.strip() != parcel_id:
+        return "parcel_id_has_surrounding_whitespace"
+    year = feature.year
+    if not isinstance(year, int) or isinstance(year, bool) or year < 1:
+        return "invalid_year"
+    return None
+
+
+def _normalize_feature_sources(
+    source_refs_json: object,
+) -> tuple[dict[str, object], bool]:
+    if isinstance(source_refs_json, dict):
+        return source_refs_json, False
+    return {"invalid_source_refs_json_type": type(source_refs_json).__name__}, True
+
+
+def _normalized_feature_quality_flags(raw_flags: object) -> list[str]:
+    if not isinstance(raw_flags, Sequence) or isinstance(
+        raw_flags, (str, bytes, bytearray)
+    ):
+        return []
+    return sorted({flag for flag in raw_flags if isinstance(flag, str)})
+
+
 def _flush_score_batch(
     *,
     session: Session,
@@ -560,24 +769,23 @@ def _flush_score_batch(
     for batch_item in pending_scores:
         score_id = batch_item.score_row.id
         assert score_id is not None
-        feature = batch_item.feature
         for reason_rank, trigger in enumerate(batch_item.ranked_triggers, start=1):
             source_refs_json: dict[str, object] = {
                 "feature_row": {
-                    "parcel_id": feature.parcel_id,
-                    "year": feature.year,
-                    "feature_version": feature.feature_version,
+                    "parcel_id": batch_item.parcel_id,
+                    "year": batch_item.year,
+                    "feature_version": batch_item.feature_version,
                 },
-                "feature_run_id": feature.run_id,
-                "feature_sources": feature.source_refs_json,
+                "feature_run_id": batch_item.feature_run_id,
+                "feature_sources": batch_item.feature_sources,
             }
             if trigger.secondary_evidence:
                 source_refs_json["secondary_evidence"] = trigger.secondary_evidence
             flag_row = FraudFlag(
                 run_id=run_id,
                 score_id=score_id,
-                parcel_id=feature.parcel_id,
-                year=feature.year,
+                parcel_id=batch_item.parcel_id,
+                year=batch_item.year,
                 ruleset_version=ruleset_version,
                 reason_code=trigger.reason_code,
                 reason_rank=reason_rank,
@@ -609,6 +817,20 @@ def _empty_summary() -> ScoreFraudSummary:
         "high_risk_count": 0,
         "medium_risk_count": 0,
         "low_risk_count": 0,
+        "skipped_feature_rows": 0,
+    }
+
+
+def _empty_rankings() -> ScoreFraudRankings:
+    return {
+        "top_parcels": [],
+        "risk_band_breakdown": [
+            {"risk_band": "high", "parcel_count": 0},
+            {"risk_band": "medium", "parcel_count": 0},
+            {"risk_band": "low", "parcel_count": 0},
+        ],
+        "reason_code_breakdown": [],
+        "skipped_feature_breakdown": [],
     }
 
 
@@ -849,8 +1071,10 @@ def _evaluate_r6(feature: ParcelFeature) -> _RuleResult:
 
 
 def _permit_basis_from_feature_sources(
-    source_refs_json: dict[str, object],
+    source_refs_json: object,
 ) -> Optional[str]:
+    if not isinstance(source_refs_json, dict):
+        return None
     permits = source_refs_json.get("permits")
     if not isinstance(permits, dict):
         return None

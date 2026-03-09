@@ -279,6 +279,7 @@ Minimum command summary keys:
 - `high_risk_count`
 - `medium_risk_count`
 - `low_risk_count`
+- `skipped_feature_rows`
 
 `top_flags` output should be deterministic and ordered by:
 
@@ -287,20 +288,32 @@ Minimum command summary keys:
 3. parcel id ascending
 4. year ascending
 
+`rankings` output should include:
+
+- `top_parcels` ordered by:
+  1. score value descending
+  2. reason code count descending
+  3. parcel id ascending
+  4. year ascending
+- `risk_band_breakdown` (`high`, `medium`, `low` parcel counts)
+- `reason_code_breakdown` (triggered reason-code counts sorted by count desc then reason code asc)
+- `skipped_feature_breakdown` (structural safeguard skips by reason)
+
 ## Rerun And Replacement Semantics
 
 For `(ruleset_version, feature_version)` and a resolved scope defined as:
 
 - parcel/year scope filters
-- plus supplied `feature_run_id` / `--feature-run-id` filter when provided
+- plus supplied `feature_run_id` / `--feature-run-id` filter when provided (for feature-row selection only)
 
 Apply replacement as follows:
 
-- delete existing in-scope `fraud_scores` for the resolved scope (including `feature_run_id` filter when supplied)
+- resolve selected `parcel_features` rows first, then derive the exact `(parcel_id, year)` key set to be re-scored
+- delete existing in-scope `fraud_scores` for the derived key set within the same `(ruleset_version, feature_version)`
 - delete corresponding `fraud_flags` via parent-score replacement semantics within the same resolved scope
 - insert deterministic rebuilt rows for exactly the resolved scope
 
-Scoped reruns must preserve out-of-scope rows, including rows for other `feature_run_id` values or parcels outside the resolved scope.
+Scoped reruns must preserve out-of-scope rows, including parcels outside the resolved scope.
 
 ## Comparability Contract
 
