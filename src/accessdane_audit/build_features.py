@@ -825,30 +825,42 @@ def _permit_adjusted_expected_change(
     flags: list[str],
 ) -> tuple[Optional[Decimal], str, list[_ParcelYearKey]]:
     source_keys = [_source_parcel_year_key(parcel_id=parcel_id, year=year)]
+    event_count = permit_event_count
     declared_known_count = permit_declared_valuation_known_count or 0
     estimated_known_count = permit_estimated_cost_known_count or 0
 
-    if declared_known_count > 0:
-        if permit_declared_valuation_sum is None:
-            flags.append("missing_permit_context")
-            return None, "unknown", source_keys
-        raw_value = permit_declared_valuation_sum * PERMIT_CAPTURE_RATE
-        return (
-            _quantize_numeric(raw_value, precision=14, scale=2, flags=flags),
-            "declared",
-            source_keys,
-        )
+    if event_count is not None and event_count > 0:
+        declared_full = declared_known_count == event_count
+        estimated_full = estimated_known_count == event_count
 
-    if estimated_known_count > 0:
-        if permit_estimated_cost_sum is None:
-            flags.append("missing_permit_context")
-            return None, "unknown", source_keys
-        raw_value = permit_estimated_cost_sum * PERMIT_CAPTURE_RATE
-        return (
-            _quantize_numeric(raw_value, precision=14, scale=2, flags=flags),
-            "estimated",
-            source_keys,
-        )
+        if declared_full and not estimated_full:
+            if permit_declared_valuation_sum is None:
+                flags.append("missing_permit_context")
+                return None, "unknown", source_keys
+            raw_value = permit_declared_valuation_sum * PERMIT_CAPTURE_RATE
+            return (
+                _quantize_numeric(raw_value, precision=14, scale=2, flags=flags),
+                "declared",
+                source_keys,
+            )
+
+        if estimated_full and not declared_full:
+            if permit_estimated_cost_sum is None:
+                flags.append("missing_permit_context")
+                return None, "unknown", source_keys
+            raw_value = permit_estimated_cost_sum * PERMIT_CAPTURE_RATE
+            return (
+                _quantize_numeric(raw_value, precision=14, scale=2, flags=flags),
+                "estimated",
+                source_keys,
+            )
+
+        flags.append("unresolved_permit_basis")
+        return None, "unknown", source_keys
+
+    if declared_known_count > 0 or estimated_known_count > 0:
+        flags.append("missing_permit_context")
+        return None, "unknown", source_keys
 
     has_unattributed_sum = permit_declared_valuation_sum not in (
         None,

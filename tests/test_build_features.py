@@ -363,8 +363,10 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 assessment_valuation_classification="residential",
                 assessment_total_value=Decimal("160000.00"),
                 permit_event_count=2,
-                permit_declared_valuation_known_count=0,
-                permit_estimated_cost_known_count=0,
+                permit_declared_valuation_known_count=1,
+                permit_declared_valuation_sum=Decimal("10000.00"),
+                permit_estimated_cost_known_count=1,
+                permit_estimated_cost_sum=Decimal("5000.00"),
             ),
             ParcelYearFact(
                 parcel_id="parcel-com-1",
