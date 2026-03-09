@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, load_only
 
 from .models import (
     ParcelFeature,
+    ParcelLineageLink,
     ParcelYearFact,
     SalesExclusion,
     SalesParcelMatch,
@@ -75,8 +76,53 @@ class _FeatureDraft:
     ratio: Optional[Decimal]
     municipality_key: Optional[str]
     classification_key: Optional[str]
+    permit_event_count: Optional[int]
+    permit_declared_valuation_known_count: Optional[int]
+    permit_declared_valuation_sum: Optional[Decimal]
+    permit_estimated_cost_known_count: Optional[int]
+    permit_estimated_cost_sum: Optional[Decimal]
     sale: Optional[_SelectedSale]
     flags: list[str]
+
+
+@dataclass(frozen=True)
+class _AppealYearContext:
+    appeal_event_count: Optional[int]
+    appeal_reduction_granted_count: Optional[int]
+    appeal_partial_reduction_count: Optional[int]
+    appeal_denied_count: Optional[int]
+    appeal_withdrawn_count: Optional[int]
+    appeal_dismissed_count: Optional[int]
+    appeal_pending_count: Optional[int]
+    appeal_unknown_outcome_count: Optional[int]
+    appeal_value_change_known_count: Optional[int]
+    appeal_value_change_total: Optional[Decimal]
+    appeal_value_change_reduction_total: Optional[Decimal]
+    appeal_value_change_increase_total: Optional[Decimal]
+
+    def has_context(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.appeal_event_count,
+                self.appeal_reduction_granted_count,
+                self.appeal_partial_reduction_count,
+                self.appeal_denied_count,
+                self.appeal_withdrawn_count,
+                self.appeal_dismissed_count,
+                self.appeal_pending_count,
+                self.appeal_unknown_outcome_count,
+                self.appeal_value_change_known_count,
+                self.appeal_value_change_total,
+                self.appeal_value_change_reduction_total,
+                self.appeal_value_change_increase_total,
+            )
+        )
+
+
+class _ParcelYearKey(TypedDict):
+    parcel_id: str
+    year: int
 
 
 def build_features(
@@ -136,6 +182,13 @@ def build_features(
             )
             selected_sales = _load_selected_sales(session, facts)
             prior_assessments = _load_prior_assessments(session, facts)
+            appeal_contexts = _load_appeal_contexts(session, facts)
+            lineage_links = _load_lineage_links(session, facts)
+            lineage_reference_assessments = _load_lineage_reference_assessments(
+                session,
+                facts=facts,
+                lineage_links=lineage_links,
+            )
             rows_inserted, quality_warning_count = _build_feature_rows(
                 session=session,
                 run_id=run.id,
@@ -143,6 +196,9 @@ def build_features(
                 facts=facts,
                 selected_sales=selected_sales,
                 prior_assessments=prior_assessments,
+                appeal_contexts=appeal_contexts,
+                lineage_links=lineage_links,
+                lineage_reference_assessments=lineage_reference_assessments,
             )
         summary: BuildFeaturesSummary = {
             "selected_parcels": len({fact.parcel_id for fact in facts}),
@@ -204,6 +260,11 @@ def _load_candidate_facts(
                 ParcelYearFact.assessment_total_value,
                 ParcelYearFact.municipality_name,
                 ParcelYearFact.assessment_valuation_classification,
+                ParcelYearFact.permit_event_count,
+                ParcelYearFact.permit_declared_valuation_known_count,
+                ParcelYearFact.permit_declared_valuation_sum,
+                ParcelYearFact.permit_estimated_cost_known_count,
+                ParcelYearFact.permit_estimated_cost_sum,
             )
         )
         if years is not None:
@@ -229,6 +290,11 @@ def _load_candidate_facts(
                     ParcelYearFact.assessment_total_value,
                     ParcelYearFact.municipality_name,
                     ParcelYearFact.assessment_valuation_classification,
+                    ParcelYearFact.permit_event_count,
+                    ParcelYearFact.permit_declared_valuation_known_count,
+                    ParcelYearFact.permit_declared_valuation_sum,
+                    ParcelYearFact.permit_estimated_cost_known_count,
+                    ParcelYearFact.permit_estimated_cost_sum,
                 )
             )
             .where(ParcelYearFact.parcel_id.in_(batch_parcel_ids))
@@ -347,6 +413,134 @@ def _load_prior_assessments(
     return prior
 
 
+def _load_appeal_contexts(
+    session: Session, facts: Sequence[ParcelYearFact]
+) -> dict[tuple[str, int], _AppealYearContext]:
+    if not facts:
+        return {}
+
+    parcel_ids = sorted({fact.parcel_id for fact in facts})
+    window_years = sorted(
+        {
+            year
+            for fact in facts
+            for year in range(fact.year - (APPEAL_WINDOW_YEARS - 1), fact.year + 1)
+        }
+    )
+    if not window_years:
+        return {}
+
+    contexts: dict[tuple[str, int], _AppealYearContext] = {}
+    for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE):
+        query = select(
+            ParcelYearFact.parcel_id,
+            ParcelYearFact.year,
+            ParcelYearFact.appeal_event_count,
+            ParcelYearFact.appeal_reduction_granted_count,
+            ParcelYearFact.appeal_partial_reduction_count,
+            ParcelYearFact.appeal_denied_count,
+            ParcelYearFact.appeal_withdrawn_count,
+            ParcelYearFact.appeal_dismissed_count,
+            ParcelYearFact.appeal_pending_count,
+            ParcelYearFact.appeal_unknown_outcome_count,
+            ParcelYearFact.appeal_value_change_known_count,
+            ParcelYearFact.appeal_value_change_total,
+            ParcelYearFact.appeal_value_change_reduction_total,
+            ParcelYearFact.appeal_value_change_increase_total,
+        ).where(
+            ParcelYearFact.parcel_id.in_(batch_parcel_ids),
+            ParcelYearFact.year.in_(window_years),
+        )
+        for (
+            parcel_id,
+            year,
+            appeal_event_count,
+            appeal_reduction_granted_count,
+            appeal_partial_reduction_count,
+            appeal_denied_count,
+            appeal_withdrawn_count,
+            appeal_dismissed_count,
+            appeal_pending_count,
+            appeal_unknown_outcome_count,
+            appeal_value_change_known_count,
+            appeal_value_change_total,
+            appeal_value_change_reduction_total,
+            appeal_value_change_increase_total,
+        ) in session.execute(query):
+            contexts[(parcel_id, year)] = _AppealYearContext(
+                appeal_event_count=appeal_event_count,
+                appeal_reduction_granted_count=appeal_reduction_granted_count,
+                appeal_partial_reduction_count=appeal_partial_reduction_count,
+                appeal_denied_count=appeal_denied_count,
+                appeal_withdrawn_count=appeal_withdrawn_count,
+                appeal_dismissed_count=appeal_dismissed_count,
+                appeal_pending_count=appeal_pending_count,
+                appeal_unknown_outcome_count=appeal_unknown_outcome_count,
+                appeal_value_change_known_count=appeal_value_change_known_count,
+                appeal_value_change_total=appeal_value_change_total,
+                appeal_value_change_reduction_total=appeal_value_change_reduction_total,
+                appeal_value_change_increase_total=appeal_value_change_increase_total,
+            )
+    return contexts
+
+
+def _load_lineage_links(
+    session: Session, facts: Sequence[ParcelYearFact]
+) -> dict[str, list[str]]:
+    if not facts:
+        return {}
+
+    parcel_ids = sorted({fact.parcel_id for fact in facts})
+    related_parcels_by_parcel: dict[str, set[str]] = {}
+    for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE):
+        query = select(
+            ParcelLineageLink.parcel_id,
+            ParcelLineageLink.related_parcel_id,
+        ).where(ParcelLineageLink.parcel_id.in_(batch_parcel_ids))
+        for parcel_id, related_parcel_id in session.execute(query):
+            related_parcels_by_parcel.setdefault(parcel_id, set()).add(
+                related_parcel_id
+            )
+
+    return {
+        parcel_id: sorted(related_parcel_ids)
+        for parcel_id, related_parcel_ids in related_parcels_by_parcel.items()
+    }
+
+
+def _load_lineage_reference_assessments(
+    session: Session,
+    *,
+    facts: Sequence[ParcelYearFact],
+    lineage_links: dict[str, list[str]],
+) -> dict[tuple[str, int], Optional[Decimal]]:
+    if not facts or not lineage_links:
+        return {}
+
+    related_parcel_ids = sorted(
+        {parcel_id for values in lineage_links.values() for parcel_id in values}
+    )
+    reference_years = sorted(
+        {fact.year + LINEAGE_REFERENCE_YEAR_OFFSET for fact in facts}
+    )
+    if not related_parcel_ids or not reference_years:
+        return {}
+
+    reference_assessments: dict[tuple[str, int], Optional[Decimal]] = {}
+    for batch_parcel_ids in _chunked(related_parcel_ids, IN_CLAUSE_BATCH_SIZE):
+        query = select(
+            ParcelYearFact.parcel_id,
+            ParcelYearFact.year,
+            ParcelYearFact.assessment_total_value,
+        ).where(
+            ParcelYearFact.parcel_id.in_(batch_parcel_ids),
+            ParcelYearFact.year.in_(reference_years),
+        )
+        for parcel_id, year, assessment_total_value in session.execute(query):
+            reference_assessments[(parcel_id, year)] = assessment_total_value
+    return reference_assessments
+
+
 def _build_feature_rows(
     *,
     session: Session,
@@ -355,6 +549,9 @@ def _build_feature_rows(
     facts: Sequence[ParcelYearFact],
     selected_sales: dict[tuple[str, int], _SelectedSale],
     prior_assessments: dict[tuple[str, int], Optional[Decimal]],
+    appeal_contexts: dict[tuple[str, int], _AppealYearContext],
+    lineage_links: dict[str, list[str]],
+    lineage_reference_assessments: dict[tuple[str, int], Optional[Decimal]],
 ) -> tuple[int, int]:
     drafts: list[_FeatureDraft] = []
     for fact in facts:
@@ -375,6 +572,13 @@ def _build_feature_rows(
                 classification_key=_canonical_text(
                     fact.assessment_valuation_classification
                 ),
+                permit_event_count=fact.permit_event_count,
+                permit_declared_valuation_known_count=(
+                    fact.permit_declared_valuation_known_count
+                ),
+                permit_declared_valuation_sum=fact.permit_declared_valuation_sum,
+                permit_estimated_cost_known_count=fact.permit_estimated_cost_known_count,
+                permit_estimated_cost_sum=fact.permit_estimated_cost_sum,
                 sale=sale,
                 flags=flags,
             )
@@ -432,8 +636,45 @@ def _build_feature_rows(
             prior_assessment=prior_assessments.get((draft.parcel_id, draft.year - 1)),
             flags=draft.flags,
         )
+        permit_adjusted_expected_change, permit_basis, permit_source_keys = (
+            _permit_adjusted_expected_change(
+                parcel_id=draft.parcel_id,
+                year=draft.year,
+                permit_event_count=draft.permit_event_count,
+                permit_declared_valuation_known_count=(
+                    draft.permit_declared_valuation_known_count
+                ),
+                permit_declared_valuation_sum=draft.permit_declared_valuation_sum,
+                permit_estimated_cost_known_count=draft.permit_estimated_cost_known_count,
+                permit_estimated_cost_sum=draft.permit_estimated_cost_sum,
+                flags=draft.flags,
+            )
+        )
+        prior_assessment = prior_assessments.get((draft.parcel_id, draft.year - 1))
+        permit_adjusted_gap = _permit_adjusted_gap(
+            current_assessment=draft.assessment_total_value,
+            prior_assessment=prior_assessment,
+            permit_adjusted_expected_change=permit_adjusted_expected_change,
+            flags=draft.flags,
+        )
+        appeal_value_delta_3y, appeal_success_rate_3y, appeal_source_keys = (
+            _appeal_window_features(
+                parcel_id=draft.parcel_id,
+                year=draft.year,
+                appeal_contexts=appeal_contexts,
+                flags=draft.flags,
+            )
+        )
         appeal_start_year = draft.year - (APPEAL_WINDOW_YEARS - 1)
         lineage_reference_year = draft.year + LINEAGE_REFERENCE_YEAR_OFFSET
+        related_parcel_ids = lineage_links.get(draft.parcel_id, [])
+        lineage_value_reset_delta = _lineage_value_reset_delta(
+            current_assessment=draft.assessment_total_value,
+            related_parcel_ids=related_parcel_ids,
+            reference_year=lineage_reference_year,
+            lineage_reference_assessments=lineage_reference_assessments,
+            flags=draft.flags,
+        )
 
         feature_quality_flags = sorted(set(draft.flags))
         quality_warning_count += len(feature_quality_flags)
@@ -445,11 +686,11 @@ def _build_feature_rows(
             assessment_to_sale_ratio=draft.ratio,
             peer_percentile=peer_percentile,
             yoy_assessment_change_pct=yoy_change,
-            permit_adjusted_expected_change=None,
-            permit_adjusted_gap=None,
-            appeal_value_delta_3y=None,
-            appeal_success_rate_3y=None,
-            lineage_value_reset_delta=None,
+            permit_adjusted_expected_change=permit_adjusted_expected_change,
+            permit_adjusted_gap=permit_adjusted_gap,
+            appeal_value_delta_3y=appeal_value_delta_3y,
+            appeal_success_rate_3y=appeal_success_rate_3y,
+            lineage_value_reset_delta=lineage_value_reset_delta,
             feature_quality_flags=feature_quality_flags,
             source_refs_json={
                 "assessment": {"parcel_id": draft.parcel_id, "year": draft.year},
@@ -469,16 +710,16 @@ def _build_feature_rows(
                 },
                 "permits": {
                     "window_years": [draft.year, draft.year],
-                    "basis": "unknown",
-                    "source_parcel_year_keys": [],
+                    "basis": permit_basis,
+                    "source_parcel_year_keys": permit_source_keys,
                 },
                 "appeals": {
                     "window_years": [appeal_start_year, draft.year],
-                    "source_parcel_year_keys": [],
+                    "source_parcel_year_keys": appeal_source_keys,
                 },
                 "lineage": {
-                    "relationship_count": 0,
-                    "related_parcel_ids": [],
+                    "relationship_count": len(related_parcel_ids),
+                    "related_parcel_ids": related_parcel_ids,
                     "reference_year": lineage_reference_year,
                 },
             },
@@ -560,6 +801,163 @@ def _yoy_assessment_change_pct(
         return None
     raw_value = (current_assessment - prior_assessment) / prior_assessment
     return _quantize_numeric(raw_value, precision=10, scale=6, flags=flags)
+
+
+def _permit_adjusted_expected_change(
+    *,
+    parcel_id: str,
+    year: int,
+    permit_event_count: Optional[int],
+    permit_declared_valuation_known_count: Optional[int],
+    permit_declared_valuation_sum: Optional[Decimal],
+    permit_estimated_cost_known_count: Optional[int],
+    permit_estimated_cost_sum: Optional[Decimal],
+    flags: list[str],
+) -> tuple[Optional[Decimal], str, list[_ParcelYearKey]]:
+    source_keys = [_source_parcel_year_key(parcel_id=parcel_id, year=year)]
+    declared_known_count = permit_declared_valuation_known_count or 0
+    estimated_known_count = permit_estimated_cost_known_count or 0
+
+    if declared_known_count > 0:
+        if permit_declared_valuation_sum is None:
+            flags.append("missing_permit_context")
+            return None, "unknown", source_keys
+        raw_value = permit_declared_valuation_sum * PERMIT_CAPTURE_RATE
+        return (
+            _quantize_numeric(raw_value, precision=14, scale=2, flags=flags),
+            "declared",
+            source_keys,
+        )
+
+    if estimated_known_count > 0:
+        if permit_estimated_cost_sum is None:
+            flags.append("missing_permit_context")
+            return None, "unknown", source_keys
+        raw_value = permit_estimated_cost_sum * PERMIT_CAPTURE_RATE
+        return (
+            _quantize_numeric(raw_value, precision=14, scale=2, flags=flags),
+            "estimated",
+            source_keys,
+        )
+
+    has_unattributed_sum = permit_declared_valuation_sum not in (
+        None,
+        Decimal("0"),
+    ) or permit_estimated_cost_sum not in (None, Decimal("0"))
+    if has_unattributed_sum:
+        flags.append("missing_permit_context")
+        return None, "unknown", source_keys
+
+    if (permit_event_count or 0) > 0:
+        flags.append("unresolved_permit_basis")
+        return None, "unknown", source_keys
+
+    flags.append("permit_zero_signal_inferred")
+    zero_value = _quantize_numeric(Decimal("0"), precision=14, scale=2, flags=flags)
+    return zero_value, "none", []
+
+
+def _permit_adjusted_gap(
+    *,
+    current_assessment: Optional[Decimal],
+    prior_assessment: Optional[Decimal],
+    permit_adjusted_expected_change: Optional[Decimal],
+    flags: list[str],
+) -> Optional[Decimal]:
+    has_missing_input = False
+    if permit_adjusted_expected_change is None:
+        flags.append("missing_permit_adjusted_expected_change")
+        has_missing_input = True
+    if current_assessment is None or prior_assessment is None:
+        flags.append("missing_assessment_for_permit_gap")
+        has_missing_input = True
+    if has_missing_input:
+        return None
+    assert permit_adjusted_expected_change is not None
+    assert current_assessment is not None
+    assert prior_assessment is not None
+
+    raw_value = (
+        current_assessment - prior_assessment
+    ) - permit_adjusted_expected_change
+    return _quantize_numeric(raw_value, precision=14, scale=2, flags=flags)
+
+
+def _appeal_window_features(
+    *,
+    parcel_id: str,
+    year: int,
+    appeal_contexts: dict[tuple[str, int], _AppealYearContext],
+    flags: list[str],
+) -> tuple[Optional[Decimal], Optional[Decimal], list[_ParcelYearKey]]:
+    appeal_start_year = year - (APPEAL_WINDOW_YEARS - 1)
+    source_keys: list[_ParcelYearKey] = []
+    total_value_delta = Decimal("0")
+    success_numerator = 0
+    success_denominator = 0
+    has_any_appeal_context = False
+
+    for context_year in range(appeal_start_year, year + 1):
+        context = appeal_contexts.get((parcel_id, context_year))
+        if context is None or not context.has_context():
+            continue
+        has_any_appeal_context = True
+        source_keys.append(
+            _source_parcel_year_key(parcel_id=parcel_id, year=context_year)
+        )
+        total_value_delta += context.appeal_value_change_total or Decimal("0")
+        success_numerator += (context.appeal_reduction_granted_count or 0) + (
+            context.appeal_partial_reduction_count or 0
+        )
+        success_denominator += context.appeal_event_count or 0
+
+    if not has_any_appeal_context:
+        flags.append("missing_appeal_context_3y")
+        return None, None, []
+
+    appeal_value_delta_3y = _quantize_numeric(
+        total_value_delta, precision=14, scale=2, flags=flags
+    )
+    if success_denominator <= 0:
+        flags.append("no_appeals_in_window")
+        return appeal_value_delta_3y, None, source_keys
+
+    appeal_success_rate_3y = _quantize_numeric(
+        Decimal(success_numerator) / Decimal(success_denominator),
+        precision=6,
+        scale=4,
+        flags=flags,
+    )
+    return appeal_value_delta_3y, appeal_success_rate_3y, source_keys
+
+
+def _lineage_value_reset_delta(
+    *,
+    current_assessment: Optional[Decimal],
+    related_parcel_ids: Sequence[str],
+    reference_year: int,
+    lineage_reference_assessments: dict[tuple[str, int], Optional[Decimal]],
+    flags: list[str],
+) -> Optional[Decimal]:
+    if current_assessment is None:
+        flags.append("missing_current_assessment_for_lineage")
+        return None
+
+    if not related_parcel_ids:
+        return _quantize_numeric(Decimal("0"), precision=14, scale=2, flags=flags)
+
+    related_reference_total = Decimal("0")
+    for related_parcel_id in related_parcel_ids:
+        related_reference = lineage_reference_assessments.get(
+            (related_parcel_id, reference_year)
+        )
+        if related_reference is None:
+            flags.append("missing_lineage_reference_values")
+            return None
+        related_reference_total += related_reference
+
+    raw_value = current_assessment - related_reference_total
+    return _quantize_numeric(raw_value, precision=14, scale=2, flags=flags)
 
 
 def _quantize_numeric(
@@ -675,6 +1073,10 @@ def _canonical_text(value: Optional[str]) -> Optional[str]:
     if not stripped:
         return None
     return stripped.casefold()
+
+
+def _source_parcel_year_key(*, parcel_id: str, year: int) -> _ParcelYearKey:
+    return {"parcel_id": parcel_id, "year": year}
 
 
 def _chunked(values: Sequence[str], batch_size: int) -> list[list[str]]:
