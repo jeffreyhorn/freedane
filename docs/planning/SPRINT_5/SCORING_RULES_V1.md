@@ -291,10 +291,10 @@ Minimum command summary keys:
 `rankings` output should include:
 
 - `top_parcels` ordered by:
-1. score value descending
-2. reason code count descending
-3. parcel id ascending
-4. year ascending
+  1. score value descending
+  2. reason code count descending
+  3. parcel id ascending
+  4. year ascending
 - `risk_band_breakdown` (`high`, `medium`, `low` parcel counts)
 - `reason_code_breakdown` (triggered reason-code counts sorted by count desc then reason code asc)
 - `skipped_feature_breakdown` (structural safeguard skips by reason)
