@@ -66,6 +66,7 @@ General evaluation rules:
 - A rule can contribute at most one reason code row per score row.
 - Rules with missing required inputs are skipped (not failed).
 - Rules requiring multiple predicates may use one primary metric for `metric_name`/`metric_value`/`threshold_value`; secondary predicates must be encoded in `source_refs_json` and explanation text.
+- If a rule defines multiple tiers over the same metric, tiers must be evaluated in descending `severity_weight` order and only the first satisfied tier may fire.
 - Rules are evaluated independently, then summed.
 
 Score formula:
@@ -137,6 +138,7 @@ Score formula:
   - otherwise when predicate passes
     => `severity_weight = 8.0000`, `threshold_value = "0.60"`
 - Required input(s): `appeal_success_rate_3y`, `appeal_value_delta_3y`
+- Secondary evidence fields: `appeal_value_delta_3y`, `appeal_value_delta_threshold` (string: `"-15000"` for high tier, `"-5000"` otherwise)
 - Skip when either required input is null.
 
 ### R6: Lineage-Linked Value Reset Drop
