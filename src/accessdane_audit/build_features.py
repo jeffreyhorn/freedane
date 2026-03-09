@@ -30,6 +30,7 @@ PEER_PERCENTILE_MIN_GROUP_SIZE = 2
 PERMIT_CAPTURE_RATE = Decimal("0.75")
 APPEAL_WINDOW_YEARS = 3
 LINEAGE_REFERENCE_YEAR_OFFSET = -1
+MAX_SKIPPED_ROW_SAMPLE = 25
 
 
 class BuildFeaturesScope(TypedDict):
@@ -54,10 +55,24 @@ class BuildFeaturesSummary(TypedDict):
     quality_warning_count: int
 
 
+class BuildFeaturesSkippedRow(TypedDict):
+    parcel_id: str
+    year: int
+    error_codes: list[str]
+
+
+class BuildFeaturesDiagnostics(TypedDict):
+    rows_with_quality_flags: int
+    quality_flag_counts: dict[str, int]
+    validation_error_counts: dict[str, int]
+    skipped_rows: list[BuildFeaturesSkippedRow]
+
+
 class BuildFeaturesPayload(TypedDict, total=False):
     run: BuildFeaturesRun
     scope: BuildFeaturesScope
     summary: BuildFeaturesSummary
+    diagnostics: BuildFeaturesDiagnostics
     error: str
 
 
@@ -84,6 +99,17 @@ class _FeatureDraft:
     permit_estimated_cost_sum: Optional[Decimal]
     sale: Optional[_SelectedSale]
     flags: list[str]
+
+
+@dataclass
+class _BuildRowsResult:
+    rows_inserted: int
+    rows_skipped: int
+    quality_warning_count: int
+    rows_with_quality_flags: int
+    quality_flag_counts: dict[str, int]
+    validation_error_counts: dict[str, int]
+    skipped_rows: list[BuildFeaturesSkippedRow]
 
 
 @dataclass(frozen=True)
@@ -158,6 +184,7 @@ def build_features(
         "rows_skipped": 0,
         "quality_warning_count": 0,
     }
+    failure_diagnostics = _empty_build_features_diagnostics()
 
     try:
         session.add(run)
@@ -168,8 +195,15 @@ def build_features(
             years=resolved_scope["years"],
         )
         rows_deleted = 0
-        rows_inserted = 0
-        quality_warning_count = 0
+        build_rows_result = _BuildRowsResult(
+            rows_inserted=0,
+            rows_skipped=0,
+            quality_warning_count=0,
+            rows_with_quality_flags=0,
+            quality_flag_counts={},
+            validation_error_counts={},
+            skipped_rows=[],
+        )
         with session.begin_nested():
             rows_deleted = _delete_existing_feature_rows(
                 session,
@@ -186,7 +220,7 @@ def build_features(
                 facts=facts,
                 lineage_links=lineage_links,
             )
-            rows_inserted, quality_warning_count = _build_feature_rows(
+            build_rows_result = _build_feature_rows(
                 session=session,
                 run_id=run.id,
                 feature_version=feature_version,
@@ -201,14 +235,27 @@ def build_features(
             "selected_parcels": len({fact.parcel_id for fact in facts}),
             "selected_parcel_years": len(facts),
             "rows_deleted": rows_deleted,
-            "rows_inserted": rows_inserted,
-            "rows_skipped": 0,
-            "quality_warning_count": quality_warning_count,
+            "rows_inserted": build_rows_result.rows_inserted,
+            "rows_skipped": build_rows_result.rows_skipped,
+            "quality_warning_count": build_rows_result.quality_warning_count,
+        }
+        diagnostics: BuildFeaturesDiagnostics = {
+            "rows_with_quality_flags": build_rows_result.rows_with_quality_flags,
+            "quality_flag_counts": _sorted_counts(
+                build_rows_result.quality_flag_counts
+            ),
+            "validation_error_counts": _sorted_counts(
+                build_rows_result.validation_error_counts
+            ),
+            "skipped_rows": build_rows_result.skipped_rows,
         }
         run.status = "succeeded"
         run.error_summary = None
         run.input_summary_json = raw_scope
-        run.output_summary_json = dict(summary)
+        run.output_summary_json = {
+            "summary": dict(summary),
+            "diagnostics": diagnostics,
+        }
         run.completed_at = datetime.now(timezone.utc)
         session.flush()
 
@@ -216,13 +263,17 @@ def build_features(
             "run": _run_payload(run),
             "scope": resolved_scope,
             "summary": summary,
+            "diagnostics": diagnostics,
         }
     except Exception as exc:
         run_persisted = True
         run.status = "failed"
         run.error_summary = str(exc)
         run.input_summary_json = raw_scope
-        run.output_summary_json = dict(failure_summary)
+        run.output_summary_json = {
+            "summary": dict(failure_summary),
+            "diagnostics": failure_diagnostics,
+        }
         run.completed_at = datetime.now(timezone.utc)
         try:
             session.flush()
@@ -234,6 +285,7 @@ def build_features(
             "run": _run_payload(run, run_persisted=run_persisted),
             "scope": resolved_scope,
             "summary": failure_summary,
+            "diagnostics": failure_diagnostics,
             "error": str(exc),
         }
 
@@ -546,7 +598,7 @@ def _build_feature_rows(
     appeal_contexts: dict[tuple[str, int], _AppealYearContext],
     lineage_links: dict[str, list[str]],
     lineage_reference_assessments: dict[tuple[str, int], Optional[Decimal]],
-) -> tuple[int, int]:
+) -> _BuildRowsResult:
     drafts: list[_FeatureDraft] = []
     for fact in facts:
         flags: list[str] = []
@@ -592,7 +644,12 @@ def _build_feature_rows(
         ratios.sort()
 
     rows_inserted = 0
+    rows_skipped = 0
     quality_warning_count = 0
+    rows_with_quality_flags = 0
+    quality_flag_counts: dict[str, int] = {}
+    validation_error_counts: dict[str, int] = {}
+    skipped_rows: list[BuildFeaturesSkippedRow] = []
     batch_rows: list[ParcelFeature] = []
 
     def _flush_batch() -> None:
@@ -675,7 +732,73 @@ def _build_feature_rows(
         )
 
         feature_quality_flags = sorted(set(draft.flags))
+        source_refs = {
+            "assessment": {"parcel_id": draft.parcel_id, "year": draft.year},
+            "sales": {
+                "sales_transaction_id": (
+                    draft.sale.sales_transaction_id if draft.sale else None
+                ),
+                "match_id": draft.sale.sales_parcel_match_id if draft.sale else None,
+            },
+            "peer_group": {
+                "year": draft.year,
+                "municipality": draft.municipality_key,
+                "classification": draft.classification_key,
+                "group_size": peer_group_size,
+            },
+            "permits": {
+                "window_years": [draft.year, draft.year],
+                "basis": permit_basis,
+                "source_parcel_year_keys": permit_source_keys,
+            },
+            "appeals": {
+                "window_years": [appeal_start_year, draft.year],
+                "source_parcel_year_keys": appeal_source_keys,
+                "value_detail_status": appeal_value_detail_status,
+                "outcome_detail_status": appeal_outcome_detail_status,
+            },
+            "lineage": {
+                "relationship_count": len(related_parcel_ids),
+                "related_parcel_ids": related_parcel_ids,
+                "reference_year": lineage_reference_year,
+            },
+        }
+        validation_errors = _validate_feature_row(
+            parcel_id=draft.parcel_id,
+            year=draft.year,
+            feature_version=feature_version,
+            assessment_to_sale_ratio=draft.ratio,
+            peer_percentile=peer_percentile,
+            permit_adjusted_expected_change=permit_adjusted_expected_change,
+            permit_basis=permit_basis,
+            permit_source_keys=permit_source_keys,
+            appeal_value_delta_3y=appeal_value_delta_3y,
+            appeal_success_rate_3y=appeal_success_rate_3y,
+            appeal_source_keys=appeal_source_keys,
+            appeal_value_detail_status=appeal_value_detail_status,
+            appeal_outcome_detail_status=appeal_outcome_detail_status,
+            related_parcel_ids=related_parcel_ids,
+            source_refs=source_refs,
+        )
+        if validation_errors:
+            rows_skipped += 1
+            for code in validation_errors:
+                validation_error_counts[code] = validation_error_counts.get(code, 0) + 1
+            if len(skipped_rows) < MAX_SKIPPED_ROW_SAMPLE:
+                skipped_rows.append(
+                    {
+                        "parcel_id": draft.parcel_id,
+                        "year": draft.year,
+                        "error_codes": validation_errors,
+                    }
+                )
+            continue
+
         quality_warning_count += len(feature_quality_flags)
+        if feature_quality_flags:
+            rows_with_quality_flags += 1
+            for flag in feature_quality_flags:
+                quality_flag_counts[flag] = quality_flag_counts.get(flag, 0) + 1
         row = ParcelFeature(
             run_id=run_id,
             parcel_id=draft.parcel_id,
@@ -690,46 +813,159 @@ def _build_feature_rows(
             appeal_success_rate_3y=appeal_success_rate_3y,
             lineage_value_reset_delta=lineage_value_reset_delta,
             feature_quality_flags=feature_quality_flags,
-            source_refs_json={
-                "assessment": {"parcel_id": draft.parcel_id, "year": draft.year},
-                "sales": {
-                    "sales_transaction_id": (
-                        draft.sale.sales_transaction_id if draft.sale else None
-                    ),
-                    "match_id": (
-                        draft.sale.sales_parcel_match_id if draft.sale else None
-                    ),
-                },
-                "peer_group": {
-                    "year": draft.year,
-                    "municipality": draft.municipality_key,
-                    "classification": draft.classification_key,
-                    "group_size": peer_group_size,
-                },
-                "permits": {
-                    "window_years": [draft.year, draft.year],
-                    "basis": permit_basis,
-                    "source_parcel_year_keys": permit_source_keys,
-                },
-                "appeals": {
-                    "window_years": [appeal_start_year, draft.year],
-                    "source_parcel_year_keys": appeal_source_keys,
-                    "value_detail_status": appeal_value_detail_status,
-                    "outcome_detail_status": appeal_outcome_detail_status,
-                },
-                "lineage": {
-                    "relationship_count": len(related_parcel_ids),
-                    "related_parcel_ids": related_parcel_ids,
-                    "reference_year": lineage_reference_year,
-                },
-            },
+            source_refs_json=source_refs,
         )
         batch_rows.append(row)
         if len(batch_rows) >= IN_CLAUSE_BATCH_SIZE:
             _flush_batch()
 
     _flush_batch()
-    return rows_inserted, quality_warning_count
+    return _BuildRowsResult(
+        rows_inserted=rows_inserted,
+        rows_skipped=rows_skipped,
+        quality_warning_count=quality_warning_count,
+        rows_with_quality_flags=rows_with_quality_flags,
+        quality_flag_counts=quality_flag_counts,
+        validation_error_counts=validation_error_counts,
+        skipped_rows=skipped_rows,
+    )
+
+
+def _validate_feature_row(
+    *,
+    parcel_id: str,
+    year: int,
+    feature_version: str,
+    assessment_to_sale_ratio: Optional[Decimal],
+    peer_percentile: Optional[Decimal],
+    permit_adjusted_expected_change: Optional[Decimal],
+    permit_basis: str,
+    permit_source_keys: Sequence[_ParcelYearKey],
+    appeal_value_delta_3y: Optional[Decimal],
+    appeal_success_rate_3y: Optional[Decimal],
+    appeal_source_keys: Sequence[_ParcelYearKey],
+    appeal_value_detail_status: str,
+    appeal_outcome_detail_status: str,
+    related_parcel_ids: Sequence[str],
+    source_refs: dict[str, object],
+) -> list[str]:
+    errors: set[str] = set()
+    if not parcel_id.strip():
+        errors.add("missing_required_parcel_id")
+    if year <= 0:
+        errors.add("invalid_year")
+    if not feature_version.strip():
+        errors.add("missing_required_feature_version")
+
+    if assessment_to_sale_ratio is not None and assessment_to_sale_ratio < 0:
+        errors.add("negative_assessment_to_sale_ratio")
+    if peer_percentile is not None:
+        if peer_percentile < 0 or peer_percentile > 1:
+            errors.add("out_of_bounds_peer_percentile")
+        if assessment_to_sale_ratio is None:
+            errors.add("peer_percentile_without_ratio")
+    if appeal_success_rate_3y is not None and (
+        appeal_success_rate_3y < 0 or appeal_success_rate_3y > 1
+    ):
+        errors.add("out_of_bounds_appeal_success_rate_3y")
+
+    if permit_basis == "none":
+        if permit_adjusted_expected_change != Decimal("0.00"):
+            errors.add("permit_basis_none_with_nonzero_expected_change")
+        if permit_source_keys:
+            errors.add("permit_basis_none_with_source_keys")
+    elif permit_basis == "unknown":
+        if permit_adjusted_expected_change is not None:
+            errors.add("permit_basis_unknown_with_expected_change")
+    elif permit_basis in {"declared", "estimated"}:
+        if permit_adjusted_expected_change is None:
+            errors.add("permit_basis_known_without_expected_change")
+        if not permit_source_keys:
+            errors.add("permit_basis_known_without_source_keys")
+    else:
+        errors.add("invalid_permit_basis")
+
+    if not _is_sorted_unique_parcel_year_keys(permit_source_keys):
+        errors.add("permit_source_keys_not_sorted_unique")
+    if not _is_sorted_unique_parcel_year_keys(appeal_source_keys):
+        errors.add("appeal_source_keys_not_sorted_unique")
+
+    if appeal_value_detail_status not in {"known", "missing", "none"}:
+        errors.add("invalid_appeal_value_detail_status")
+    if appeal_outcome_detail_status not in {"known", "missing", "none"}:
+        errors.add("invalid_appeal_outcome_detail_status")
+
+    if appeal_value_detail_status == "none":
+        if appeal_value_delta_3y is not None:
+            errors.add("appeal_value_none_with_value")
+        if appeal_source_keys:
+            errors.add("appeal_value_none_with_source_keys")
+    elif appeal_value_detail_status == "known":
+        if appeal_value_delta_3y is None:
+            errors.add("appeal_value_known_without_value")
+        if not appeal_source_keys:
+            errors.add("appeal_value_known_without_source_keys")
+    elif appeal_value_detail_status == "missing":
+        if appeal_value_delta_3y is not None:
+            errors.add("appeal_value_missing_with_value")
+        if not appeal_source_keys:
+            errors.add("appeal_value_missing_without_source_keys")
+
+    if appeal_outcome_detail_status == "none":
+        if appeal_success_rate_3y is not None:
+            errors.add("appeal_outcome_none_with_rate")
+        if appeal_source_keys:
+            errors.add("appeal_outcome_none_with_source_keys")
+    elif appeal_outcome_detail_status == "missing":
+        if appeal_success_rate_3y is not None:
+            errors.add("appeal_outcome_missing_with_rate")
+        if not appeal_source_keys:
+            errors.add("appeal_outcome_missing_without_source_keys")
+    elif appeal_outcome_detail_status == "known" and not appeal_source_keys:
+        errors.add("appeal_outcome_known_without_source_keys")
+
+    if related_parcel_ids != sorted(set(related_parcel_ids)):
+        errors.add("lineage_related_parcels_not_sorted_unique")
+    lineage_payload = source_refs.get("lineage")
+    if not isinstance(lineage_payload, dict):
+        errors.add("missing_source_refs_lineage")
+    else:
+        relationship_count = lineage_payload.get("relationship_count")
+        if relationship_count != len(related_parcel_ids):
+            errors.add("lineage_relationship_count_mismatch")
+
+    expected_source_ref_keys = {
+        "assessment",
+        "sales",
+        "peer_group",
+        "permits",
+        "appeals",
+        "lineage",
+    }
+    missing_keys = sorted(expected_source_ref_keys.difference(source_refs))
+    if missing_keys:
+        errors.add("missing_required_source_refs_keys")
+    return sorted(errors)
+
+
+def _is_sorted_unique_parcel_year_keys(
+    keys: Sequence[_ParcelYearKey],
+) -> bool:
+    normalized = [(key["parcel_id"], key["year"]) for key in keys]
+    return normalized == sorted(set(normalized))
+
+
+def _empty_build_features_diagnostics() -> BuildFeaturesDiagnostics:
+    return {
+        "rows_with_quality_flags": 0,
+        "quality_flag_counts": {},
+        "validation_error_counts": {},
+        "skipped_rows": [],
+    }
+
+
+def _sorted_counts(values: dict[str, int]) -> dict[str, int]:
+    return {key: values[key] for key in sorted(values)}
 
 
 def _assessment_to_sale_ratio(
