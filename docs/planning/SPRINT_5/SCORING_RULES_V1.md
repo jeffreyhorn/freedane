@@ -47,6 +47,7 @@ If scope resolves to zero feature rows, command succeeds with zero counters.
 - All weight contributions are computed as Decimal values and quantized to `Numeric(6,2)` scale before persistence.
 - `score_value` is clamped to `[0.00, 100.00]`.
 - `severity_weight` on each `fraud_flags` row is quantized to 4 decimal places (`Numeric(8,4)`).
+- Rounding mode for all quantization is `ROUND_HALF_UP`.
 
 ## Ruleset Identifier
 
@@ -223,7 +224,7 @@ Template patterns:
 For each scored row, persist:
 
 - `run_id`: current scoring run id
-- `feature_run_id`: resolved source feature run id when available
+- `feature_run_id`: resolved source feature run id (required/non-null for normal `score-fraud` runs; nullable only for explicit backfill/repair runs)
 - `parcel_id`, `year`, `ruleset_version`, `feature_version`
 - `score_value`, `risk_band`, `requires_review`
 - `reason_code_count`: count of triggered reasons persisted in `fraud_flags`
@@ -246,7 +247,7 @@ One `fraud_flags` row per triggered reason code.
 Required mapping:
 
 - `reason_code`: triggered reason code
-- `reason_rank`: rank after deterministic ordering
+- `reason_rank`: 1-based rank after deterministic ordering (`1 = strongest contributor`; larger values are weaker contributors)
 - `severity_weight`: rule tier weight
 - `metric_name`: primary metric column name
 - `metric_value`: observed value as string
@@ -280,13 +281,18 @@ Minimum command summary keys:
 
 ## Rerun And Replacement Semantics
 
-For `(ruleset_version, feature_version)` and resolved scope:
+For `(ruleset_version, feature_version)` and a resolved scope defined as:
 
-- delete existing in-scope `fraud_scores`
-- delete corresponding `fraud_flags` via parent-score replacement semantics
-- insert deterministic rebuilt rows
+- parcel/year scope filters
+- plus supplied `feature_run_id` / `--feature-run-id` filter when provided
 
-Scoped reruns must preserve out-of-scope rows.
+Apply replacement as follows:
+
+- delete existing in-scope `fraud_scores` for the resolved scope (including `feature_run_id` filter when supplied)
+- delete corresponding `fraud_flags` via parent-score replacement semantics within the same resolved scope
+- insert deterministic rebuilt rows for exactly the resolved scope
+
+Scoped reruns must preserve out-of-scope rows, including rows for other `feature_run_id` values or parcels outside the resolved scope.
 
 ## Comparability Contract
 
