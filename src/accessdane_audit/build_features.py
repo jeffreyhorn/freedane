@@ -98,8 +98,6 @@ class _AppealYearContext:
     appeal_unknown_outcome_count: Optional[int]
     appeal_value_change_known_count: Optional[int]
     appeal_value_change_total: Optional[Decimal]
-    appeal_value_change_reduction_total: Optional[Decimal]
-    appeal_value_change_increase_total: Optional[Decimal]
 
     def has_context(self) -> bool:
         return any(
@@ -115,8 +113,6 @@ class _AppealYearContext:
                 self.appeal_unknown_outcome_count,
                 self.appeal_value_change_known_count,
                 self.appeal_value_change_total,
-                self.appeal_value_change_reduction_total,
-                self.appeal_value_change_increase_total,
             )
         )
 
@@ -446,8 +442,6 @@ def _load_appeal_contexts(
             ParcelYearFact.appeal_unknown_outcome_count,
             ParcelYearFact.appeal_value_change_known_count,
             ParcelYearFact.appeal_value_change_total,
-            ParcelYearFact.appeal_value_change_reduction_total,
-            ParcelYearFact.appeal_value_change_increase_total,
         ).where(
             ParcelYearFact.parcel_id.in_(batch_parcel_ids),
             ParcelYearFact.year.in_(window_years),
@@ -465,8 +459,6 @@ def _load_appeal_contexts(
             appeal_unknown_outcome_count,
             appeal_value_change_known_count,
             appeal_value_change_total,
-            appeal_value_change_reduction_total,
-            appeal_value_change_increase_total,
         ) in session.execute(query):
             contexts[(parcel_id, year)] = _AppealYearContext(
                 appeal_event_count=appeal_event_count,
@@ -479,8 +471,6 @@ def _load_appeal_contexts(
                 appeal_unknown_outcome_count=appeal_unknown_outcome_count,
                 appeal_value_change_known_count=appeal_value_change_known_count,
                 appeal_value_change_total=appeal_value_change_total,
-                appeal_value_change_reduction_total=appeal_value_change_reduction_total,
-                appeal_value_change_increase_total=appeal_value_change_increase_total,
             )
     return contexts
 
