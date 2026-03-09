@@ -44,10 +44,11 @@ If scope resolves to zero feature rows, command succeeds with zero counters.
 
 ## Normalization And Precision
 
-- All rule and weight arithmetic is performed using `Decimal`.
-- `severity_weight` on each `fraud_flags` row is stored at 4 decimal places (`Numeric(8,4)`) and summed at that precision; no per-flag rounding to 2 decimal places is applied.
-- `raw_score` is the unbounded sum of per-flag contributions and is persisted in `score_summary_json` at 4 decimal places.
-- `score_value` is derived from `raw_score`, clamped to `[0.00, 100.00]`, then quantized to `Numeric(6,2)` immediately before persistence.
+- All rule and weight arithmetic is performed using `Decimal` with 4-decimal working precision.
+- Each per-flag `severity_weight` is quantized to 4 decimal places and stored as `Numeric(8,4)` on `fraud_flags`.
+- `raw_score` is computed as the unbounded sum of those 4-decimal `severity_weight` contributions; no per-flag or intermediate rounding to 2 decimal places is applied.
+- `raw_score` is persisted in `score_summary_json` at 4 decimal places.
+- `score_value` is derived solely from `raw_score`, clamped to `[0.00, 100.00]`, then quantized to `Numeric(6,2)` immediately before persistence.
 - Rounding mode for quantization to both 4 decimal places and 2 decimal places is `ROUND_HALF_UP`.
 
 ## Ruleset Identifier
@@ -122,7 +123,7 @@ Score formula:
   - `yoy_assessment_change_pct >= 0.35` => `severity_weight = 16.0000`, `threshold_value = "0.35"`
   - `0.20 <= yoy_assessment_change_pct < 0.35` => `severity_weight = 10.0000`, `threshold_value = "0.20"`
 - Required input(s): `yoy_assessment_change_pct`
-- Secondary evidence fields: `permit_adjusted_expected_change`, permit basis from `source_refs_json.permits.basis`
+- Secondary evidence fields: `permit_adjusted_expected_change`, `permit_adjusted_expected_change_threshold` (string, fixed value `"10000"`), permit basis from `source_refs_json.permits.basis`
 - Skip when required input is null.
 
 ### R5: Appeal Pattern Suggesting Persistent Downward Pressure
@@ -255,7 +256,7 @@ Required mapping:
 - `metric_name`: primary metric column name
 - `metric_value`: observed value as string
 - `threshold_value`: threshold value as string
-- `comparison_operator`: for `scoring_rules_v1`, one of `<`, `<=`, `>=` (the broader v1 `fraud_flags` contract may support additional operators; see `FRAUD_SIGNAL_V1.md`)
+- `comparison_operator`: operator string. For v1 `scoring_rules_v1`, rule evaluations must only emit `<`, `<=`, or `>=`. The broader v1 `fraud_flags` contract may support additional operators; see `FRAUD_SIGNAL_V1.md`.
 - `explanation`: template-filled plain-language sentence
 - `source_refs_json`: source evidence object, minimum keys:
   - `feature_row`: `{ "parcel_id": <id>, "year": <year>, "feature_version": <version> }`
