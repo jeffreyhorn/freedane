@@ -16,11 +16,13 @@ from .models import FraudFlag, FraudScore, ParcelFeature, ScoringRun
 RUN_TYPE_SCORE_FRAUD = "score_fraud"
 IN_CLAUSE_BATCH_SIZE = 800
 TOP_FLAGS_LIMIT = 20
+SCORE_INSERT_BATCH_SIZE = 200
 SCORE_MIN = Decimal("0.00")
 SCORE_MAX = Decimal("100.00")
 RISK_BAND_HIGH_MIN = Decimal("70.00")
 RISK_BAND_MEDIUM_MIN = Decimal("40.00")
 PERMIT_SUPPORT_CUTOFF = Decimal("10000")
+SUPPORTED_RULESET_VERSIONS = ("scoring_rules_v1",)
 
 
 class ScoreFraudScope(TypedDict):
@@ -91,6 +93,13 @@ class _RuleResult:
     skip: Optional[_RuleSkip]
 
 
+@dataclass(frozen=True)
+class _PendingScoreBatchItem:
+    feature: ParcelFeature
+    score_row: FraudScore
+    ranked_triggers: list[_RuleTrigger]
+
+
 def score_fraud(
     session: Session,
     *,
@@ -100,6 +109,30 @@ def score_fraud(
     parcel_ids: Optional[Sequence[str]] = None,
     years: Optional[Sequence[int]] = None,
 ) -> ScoreFraudPayload:
+    if ruleset_version not in SUPPORTED_RULESET_VERSIONS:
+        supported_values = ", ".join(SUPPORTED_RULESET_VERSIONS)
+        return {
+            "run": {
+                "run_id": None,
+                "run_persisted": False,
+                "run_type": RUN_TYPE_SCORE_FRAUD,
+                "version_tag": ruleset_version,
+                "status": "failed",
+                "parent_run_id": None,
+            },
+            "scope": _resolved_scope(
+                parcel_ids=parcel_ids,
+                years=years,
+                feature_run_id=feature_run_id,
+            ),
+            "summary": _empty_summary(),
+            "top_flags": [],
+            "error": (
+                f"Unsupported ruleset_version '{ruleset_version}'. "
+                f"Supported values: {supported_values}."
+            ),
+        }
+
     raw_scope: dict[str, object] = {
         "requested_parcel_ids": list(parcel_ids) if parcel_ids is not None else None,
         "requested_years": list(years) if years is not None else None,
@@ -131,14 +164,7 @@ def score_fraud(
         config_json=config_json,
         parent_run_id=None,
     )
-    failure_summary: ScoreFraudSummary = {
-        "features_considered": 0,
-        "scores_inserted": 0,
-        "flags_inserted": 0,
-        "high_risk_count": 0,
-        "medium_risk_count": 0,
-        "low_risk_count": 0,
-    }
+    failure_summary = _empty_summary()
     failure_top_flags: list[ScoreFraudTopFlag] = []
 
     try:
@@ -349,6 +375,7 @@ def _persist_scores_and_flags(
     medium_risk_count = 0
     low_risk_count = 0
     top_flags: list[ScoreFraudTopFlag] = []
+    pending_scores: list[_PendingScoreBatchItem] = []
 
     for feature in features:
         rule_results = [
@@ -420,7 +447,6 @@ def _persist_scores_and_flags(
             },
         )
         session.add(score_row)
-        session.flush()
         scores_inserted += 1
 
         if risk_band == "high":
@@ -430,36 +456,15 @@ def _persist_scores_and_flags(
         else:
             low_risk_count += 1
 
-        for reason_rank, trigger in enumerate(ranked_triggers, start=1):
-            source_refs_json: dict[str, object] = {
-                "feature_row": {
-                    "parcel_id": feature.parcel_id,
-                    "year": feature.year,
-                    "feature_version": feature.feature_version,
-                },
-                "feature_run_id": feature.run_id,
-                "feature_sources": feature.source_refs_json,
-            }
-            if trigger.secondary_evidence:
-                source_refs_json["secondary_evidence"] = trigger.secondary_evidence
-            flag_row = FraudFlag(
-                run_id=run_id,
-                score_id=score_row.id,
-                parcel_id=feature.parcel_id,
-                year=feature.year,
-                ruleset_version=ruleset_version,
-                reason_code=trigger.reason_code,
-                reason_rank=reason_rank,
-                severity_weight=_quantize_decimal(trigger.severity_weight, scale=4),
-                metric_name=trigger.metric_name,
-                metric_value=_decimal_to_str(trigger.metric_value),
-                threshold_value=trigger.threshold_value,
-                comparison_operator=trigger.comparison_operator,
-                explanation=trigger.explanation,
-                source_refs_json=source_refs_json,
+        pending_scores.append(
+            _PendingScoreBatchItem(
+                feature=feature,
+                score_row=score_row,
+                ranked_triggers=ranked_triggers,
             )
-            session.add(flag_row)
-            flags_inserted += 1
+        )
+
+        for reason_rank, trigger in enumerate(ranked_triggers, start=1):
             top_flags.append(
                 {
                     "parcel_id": feature.parcel_id,
@@ -475,7 +480,21 @@ def _persist_scores_and_flags(
                 }
             )
 
-    session.flush()
+        if len(pending_scores) >= SCORE_INSERT_BATCH_SIZE:
+            flags_inserted += _flush_score_batch(
+                session=session,
+                pending_scores=pending_scores,
+                run_id=run_id,
+                ruleset_version=ruleset_version,
+            )
+            pending_scores.clear()
+
+    flags_inserted += _flush_score_batch(
+        session=session,
+        pending_scores=pending_scores,
+        run_id=run_id,
+        ruleset_version=ruleset_version,
+    )
     ordered_top_flags = sorted(
         top_flags,
         key=lambda item: (
@@ -494,6 +513,75 @@ def _persist_scores_and_flags(
         "low_risk_count": low_risk_count,
     }
     return summary, ordered_top_flags[:TOP_FLAGS_LIMIT]
+
+
+def _flush_score_batch(
+    *,
+    session: Session,
+    pending_scores: list[_PendingScoreBatchItem],
+    run_id: int,
+    ruleset_version: str,
+) -> int:
+    if not pending_scores:
+        return 0
+
+    session.flush()
+    inserted_flags = 0
+    inserted_flag_rows: list[FraudFlag] = []
+
+    for batch_item in pending_scores:
+        score_id = batch_item.score_row.id
+        assert score_id is not None
+        feature = batch_item.feature
+        for reason_rank, trigger in enumerate(batch_item.ranked_triggers, start=1):
+            source_refs_json: dict[str, object] = {
+                "feature_row": {
+                    "parcel_id": feature.parcel_id,
+                    "year": feature.year,
+                    "feature_version": feature.feature_version,
+                },
+                "feature_run_id": feature.run_id,
+                "feature_sources": feature.source_refs_json,
+            }
+            if trigger.secondary_evidence:
+                source_refs_json["secondary_evidence"] = trigger.secondary_evidence
+            flag_row = FraudFlag(
+                run_id=run_id,
+                score_id=score_id,
+                parcel_id=feature.parcel_id,
+                year=feature.year,
+                ruleset_version=ruleset_version,
+                reason_code=trigger.reason_code,
+                reason_rank=reason_rank,
+                severity_weight=_quantize_decimal(trigger.severity_weight, scale=4),
+                metric_name=trigger.metric_name,
+                metric_value=_decimal_to_str(trigger.metric_value),
+                threshold_value=trigger.threshold_value,
+                comparison_operator=trigger.comparison_operator,
+                explanation=trigger.explanation,
+                source_refs_json=source_refs_json,
+            )
+            session.add(flag_row)
+            inserted_flag_rows.append(flag_row)
+            inserted_flags += 1
+
+    session.flush()
+    for flag_row in inserted_flag_rows:
+        session.expunge(flag_row)
+    for batch_item in pending_scores:
+        session.expunge(batch_item.score_row)
+    return inserted_flags
+
+
+def _empty_summary() -> ScoreFraudSummary:
+    return {
+        "features_considered": 0,
+        "scores_inserted": 0,
+        "flags_inserted": 0,
+        "high_risk_count": 0,
+        "medium_risk_count": 0,
+        "low_risk_count": 0,
+    }
 
 
 def _evaluate_r1(feature: ParcelFeature) -> _RuleResult:

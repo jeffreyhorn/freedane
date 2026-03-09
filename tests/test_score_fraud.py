@@ -32,7 +32,7 @@ def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
         payload = score_fraud(
             session,
             ruleset_version="scoring_rules_v1",
-            feature_version="feature-v1",
+            feature_version="feature_v1",
         )
 
     assert payload["run"]["status"] == "succeeded"
@@ -166,7 +166,7 @@ def test_score_fraud_feature_run_filter_replaces_only_filtered_rows(
         first_payload = score_fraud(
             session,
             ruleset_version="scoring_rules_v1",
-            feature_version="feature-v1",
+            feature_version="feature_v1",
         )
 
     first_run_id = first_payload["run"]["run_id"]
@@ -177,7 +177,7 @@ def test_score_fraud_feature_run_filter_replaces_only_filtered_rows(
             select(ParcelFeature).where(
                 ParcelFeature.parcel_id == "parcel-1",
                 ParcelFeature.year == 2025,
-                ParcelFeature.feature_version == "feature-v1",
+                ParcelFeature.feature_version == "feature_v1",
             )
         ).scalar_one()
         p1_feature.assessment_to_sale_ratio = Decimal("0.650000")
@@ -186,7 +186,7 @@ def test_score_fraud_feature_run_filter_replaces_only_filtered_rows(
         second_payload = score_fraud(
             session,
             ruleset_version="scoring_rules_v1",
-            feature_version="feature-v1",
+            feature_version="feature_v1",
             feature_run_id=fixture["feature_runs"]["run_1_id"],
         )
 
@@ -202,7 +202,7 @@ def test_score_fraud_feature_run_filter_replaces_only_filtered_rows(
             session.execute(
                 select(FraudScore).where(
                     FraudScore.ruleset_version == "scoring_rules_v1",
-                    FraudScore.feature_version == "feature-v1",
+                    FraudScore.feature_version == "feature_v1",
                 )
             )
             .scalars()
@@ -228,13 +228,13 @@ def test_score_fraud_is_idempotent_for_same_scope(tmp_path: Path) -> None:
         first_payload = score_fraud(
             session,
             ruleset_version="scoring_rules_v1",
-            feature_version="feature-v1",
+            feature_version="feature_v1",
             years=[2025],
         )
         second_payload = score_fraud(
             session,
             ruleset_version="scoring_rules_v1",
-            feature_version="feature-v1",
+            feature_version="feature_v1",
             years=[2025],
         )
 
@@ -274,9 +274,9 @@ def test_score_fraud_cli_supports_scope_filter_and_output_file(
             "--year",
             "2025",
             "--feature-version",
-            "feature-v1",
+            "feature_v1",
             "--ruleset-version",
-            "scoring_rules_v1_cli",
+            "scoring_rules_v1",
             "--feature-run-id",
             str(fixture["feature_runs"]["run_1_id"]),
             "--out",
@@ -316,16 +316,16 @@ def _seed_score_fraud_fixture(session) -> dict[str, dict[str, int]]:
     run_1 = ScoringRun(
         run_type="build_features",
         status="succeeded",
-        version_tag="feature-v1-run1",
+        version_tag="feature_v1-run1",
         scope_json={"parcel_ids": None, "years": None},
-        config_json={"feature_version": "feature-v1"},
+        config_json={"feature_version": "feature_v1"},
     )
     run_2 = ScoringRun(
         run_type="build_features",
         status="succeeded",
-        version_tag="feature-v1-run2",
+        version_tag="feature_v1-run2",
         scope_json={"parcel_ids": None, "years": None},
-        config_json={"feature_version": "feature-v1"},
+        config_json={"feature_version": "feature_v1"},
     )
     session.add_all([run_1, run_2])
     session.flush()
@@ -336,7 +336,7 @@ def _seed_score_fraud_fixture(session) -> dict[str, dict[str, int]]:
                 run_id=run_1.id,
                 parcel_id="parcel-1",
                 year=2025,
-                feature_version="feature-v1",
+                feature_version="feature_v1",
                 assessment_to_sale_ratio=Decimal("0.500000"),
                 peer_percentile=Decimal("0.0400"),
                 yoy_assessment_change_pct=Decimal("0.400000"),
@@ -354,7 +354,7 @@ def _seed_score_fraud_fixture(session) -> dict[str, dict[str, int]]:
                 run_id=run_1.id,
                 parcel_id="parcel-2",
                 year=2025,
-                feature_version="feature-v1",
+                feature_version="feature_v1",
                 assessment_to_sale_ratio=None,
                 peer_percentile=None,
                 yoy_assessment_change_pct=None,
@@ -370,7 +370,7 @@ def _seed_score_fraud_fixture(session) -> dict[str, dict[str, int]]:
                 run_id=run_2.id,
                 parcel_id="parcel-3",
                 year=2025,
-                feature_version="feature-v1",
+                feature_version="feature_v1",
                 assessment_to_sale_ratio=Decimal("0.680000"),
                 peer_percentile=Decimal("0.0900"),
                 yoy_assessment_change_pct=Decimal("0.220000"),
@@ -386,7 +386,7 @@ def _seed_score_fraud_fixture(session) -> dict[str, dict[str, int]]:
                 run_id=run_2.id,
                 parcel_id="parcel-4",
                 year=2024,
-                feature_version="feature-v1",
+                feature_version="feature_v1",
                 assessment_to_sale_ratio=Decimal("1.100000"),
                 peer_percentile=Decimal("0.5500"),
                 yoy_assessment_change_pct=Decimal("0.010000"),

@@ -47,7 +47,7 @@ from .retr import (
     match_sales_transactions,
 )
 from .sales_ratio_study import build_sales_ratio_study
-from .score_fraud import score_fraud
+from .score_fraud import SUPPORTED_RULESET_VERSIONS, score_fraud
 from .scrape import fetch_page
 from .search import search_trs
 from .spatial import detect_spatial_support, spatial_support_status_to_dict
@@ -502,6 +502,13 @@ def score_fraud_cmd(
     ),
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
 ) -> None:
+    if ruleset_version not in SUPPORTED_RULESET_VERSIONS:
+        supported_values = ", ".join(SUPPORTED_RULESET_VERSIONS)
+        raise typer.BadParameter(
+            f"Unsupported ruleset version '{ruleset_version}'. "
+            f"Supported values: {supported_values}."
+        )
+
     settings = load_settings()
     if ids or ids_file:
         parcel_ids = _collect_ids(ids, ids_file)
