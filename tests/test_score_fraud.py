@@ -17,7 +17,11 @@ from accessdane_audit.models import (
     ParcelFeature,
     ScoringRun,
 )
-from accessdane_audit.score_fraud import PERMIT_SUPPORT_CUTOFF, score_fraud
+from accessdane_audit.score_fraud import (
+    PERMIT_SUPPORT_CUTOFF,
+    _normalized_feature_quality_flags,
+    score_fraud,
+)
 
 
 def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
@@ -403,6 +407,7 @@ def test_score_fraud_skips_invalid_feature_rows_and_records_breakdown(
     with session_scope(database_url) as session:
         _seed_score_fraud_fixture(session)
         session.add(Parcel(id="parcel-invalid"))
+        session.add(Parcel(id="parcel-space "))
         run_3 = ScoringRun(
             run_type="build_features",
             status="succeeded",
@@ -430,6 +435,24 @@ def test_score_fraud_skips_invalid_feature_rows_and_records_breakdown(
                 source_refs_json=[],
             )
         )
+        session.add(
+            ParcelFeature(
+                run_id=run_3.id,
+                parcel_id="parcel-space ",
+                year=2025,
+                feature_version="feature_v1",
+                assessment_to_sale_ratio=Decimal("0.500000"),
+                peer_percentile=Decimal("0.0100"),
+                yoy_assessment_change_pct=Decimal("0.500000"),
+                permit_adjusted_expected_change=Decimal("1000.00"),
+                permit_adjusted_gap=Decimal("90000.00"),
+                appeal_value_delta_3y=Decimal("-20000.00"),
+                appeal_success_rate_3y=Decimal("0.9000"),
+                lineage_value_reset_delta=Decimal("-200000.00"),
+                feature_quality_flags=("flag_b", "flag_a"),
+                source_refs_json={},
+            )
+        )
         p3_feature = session.execute(
             select(ParcelFeature).where(
                 ParcelFeature.parcel_id == "parcel-3",
@@ -447,11 +470,12 @@ def test_score_fraud_skips_invalid_feature_rows_and_records_breakdown(
         )
 
     assert payload["run"]["status"] == "succeeded"
-    assert payload["summary"]["features_considered"] == 5
+    assert payload["summary"]["features_considered"] == 6
     assert payload["summary"]["scores_inserted"] == 4
-    assert payload["summary"]["skipped_feature_rows"] == 1
+    assert payload["summary"]["skipped_feature_rows"] == 2
     assert payload["rankings"]["skipped_feature_breakdown"] == [
-        {"reason": "invalid_year", "row_count": 1}
+        {"reason": "invalid_year", "row_count": 1},
+        {"reason": "parcel_id_has_surrounding_whitespace", "row_count": 1},
     ]
     with session_scope(database_url) as session:
         parcel_3_score = session.execute(
@@ -466,6 +490,14 @@ def test_score_fraud_skips_invalid_feature_rows_and_records_breakdown(
         "source_refs_json_invalid_shape"
         in parcel_3_score.score_summary_json["quality_flags"]
     )
+
+
+def test_normalized_feature_quality_flags_accepts_non_list_sequences() -> None:
+    assert _normalized_feature_quality_flags(("flag_b", "flag_a", "flag_b", 1)) == [
+        "flag_a",
+        "flag_b",
+    ]
+    assert _normalized_feature_quality_flags("flag_a") == []
 
 
 def test_score_fraud_cli_supports_scope_filter_and_output_file(

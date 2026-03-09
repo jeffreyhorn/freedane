@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
-from typing import Optional, Sequence, TypedDict, TypeVar
+from typing import Callable, Optional, Sequence, TypedDict, TypeVar
 
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
@@ -379,10 +379,14 @@ def _delete_existing_scored_rows(
 
 
 def _feature_keys(features: Sequence[ParcelFeature]) -> list[tuple[str, int]]:
-    return sorted(
-        {(feature.parcel_id, feature.year) for feature in features},
-        key=lambda item: (item[0], item[1]),
-    )
+    keys: set[tuple[str, int]] = set()
+    for feature in features:
+        if _feature_row_guard_reason(feature) is not None:
+            continue
+        assert isinstance(feature.parcel_id, str)
+        assert feature.year is not None
+        keys.add((feature.parcel_id, int(feature.year)))
+    return sorted(keys, key=lambda item: (item[0], item[1]))
 
 
 def _load_existing_score_ids_for_feature_keys(
@@ -437,7 +441,7 @@ def _persist_scores_and_flags(
 
         assert isinstance(feature.parcel_id, str)
         assert feature.year is not None
-        parcel_id = feature.parcel_id.strip()
+        parcel_id = feature.parcel_id
         year = int(feature.year)
         feature_sources, invalid_source_refs = _normalize_feature_sources(
             feature.source_refs_json
@@ -563,7 +567,9 @@ def _persist_scores_and_flags(
             ranked_triggers[0].reason_code if ranked_triggers else None
         )
         primary_reason_weight = (
-            _decimal_to_str(ranked_triggers[0].severity_weight)
+            _decimal_to_str(
+                _quantize_decimal(ranked_triggers[0].severity_weight, scale=4)
+            )
             if ranked_triggers
             else "0.0000"
         )
@@ -644,13 +650,12 @@ def _consider_top_flag_candidate(
     top_flag_candidates: list[_TopFlagCandidate],
     candidate: _TopFlagCandidate,
 ) -> None:
-    if len(top_flag_candidates) < TOP_FLAGS_LIMIT:
-        top_flag_candidates.append(candidate)
-        top_flag_candidates.sort(key=lambda item: item.sort_key)
-        return
-    if candidate.sort_key < top_flag_candidates[-1].sort_key:
-        top_flag_candidates[-1] = candidate
-        top_flag_candidates.sort(key=lambda item: item.sort_key)
+    _consider_top_candidate(
+        candidates=top_flag_candidates,
+        candidate=candidate,
+        limit=TOP_FLAGS_LIMIT,
+        key_fn=lambda item: item.sort_key,
+    )
 
 
 def _consider_top_parcel_candidate(
@@ -658,13 +663,31 @@ def _consider_top_parcel_candidate(
     top_parcel_candidates: list[_TopParcelCandidate],
     candidate: _TopParcelCandidate,
 ) -> None:
-    if len(top_parcel_candidates) < TOP_PARCELS_LIMIT:
-        top_parcel_candidates.append(candidate)
-        top_parcel_candidates.sort(key=lambda item: item.sort_key)
+    _consider_top_candidate(
+        candidates=top_parcel_candidates,
+        candidate=candidate,
+        limit=TOP_PARCELS_LIMIT,
+        key_fn=lambda item: item.sort_key,
+    )
+
+
+_TopCandidateT = TypeVar("_TopCandidateT")
+
+
+def _consider_top_candidate(
+    *,
+    candidates: list[_TopCandidateT],
+    candidate: _TopCandidateT,
+    limit: int,
+    key_fn: Callable[[_TopCandidateT], tuple[object, ...]],
+) -> None:
+    if len(candidates) < limit:
+        candidates.append(candidate)
+        candidates.sort(key=key_fn)
         return
-    if candidate.sort_key < top_parcel_candidates[-1].sort_key:
-        top_parcel_candidates[-1] = candidate
-        top_parcel_candidates.sort(key=lambda item: item.sort_key)
+    if key_fn(candidate) < key_fn(candidates[-1]):
+        candidates[-1] = candidate
+        candidates.sort(key=key_fn)
 
 
 def _top_flag_sort_key(
@@ -698,8 +721,10 @@ def _feature_row_guard_reason(feature: ParcelFeature) -> Optional[str]:
     parcel_id = feature.parcel_id
     if not isinstance(parcel_id, str) or not parcel_id.strip():
         return "missing_parcel_id"
+    if parcel_id.strip() != parcel_id:
+        return "parcel_id_has_surrounding_whitespace"
     year = feature.year
-    if not isinstance(year, int) or year < 1:
+    if not isinstance(year, int) or isinstance(year, bool) or year < 1:
         return "invalid_year"
     return None
 
@@ -713,7 +738,9 @@ def _normalize_feature_sources(
 
 
 def _normalized_feature_quality_flags(raw_flags: object) -> list[str]:
-    if not isinstance(raw_flags, list):
+    if not isinstance(raw_flags, Sequence) or isinstance(
+        raw_flags, (str, bytes, bytearray)
+    ):
         return []
     return sorted({flag for flag in raw_flags if isinstance(flag, str)})
 
