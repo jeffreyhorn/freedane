@@ -65,3 +65,9 @@ Scoped rebuild by repeated IDs:
 - Quality-warning flags are non-fatal; they indicate incomplete context and should be reviewed by downstream scoring rules.
 - For deterministic reruns, keep source data, scope, and `feature_version` fixed.
 - `scoring_runs.output_summary_json` stores both `summary` and `diagnostics` for run auditability.
+
+## Next Step
+
+After feature output is accepted, continue with scoring workflow operations in:
+
+- `docs/planning/SPRINT_5/SCORE_FRAUD_OPERATIONS.md`

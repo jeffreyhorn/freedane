@@ -388,14 +388,14 @@ Logical version dimensions in v1:
 
 - `build-features`: `feature_version`
 - `score-fraud`: (`ruleset_version`, `feature_version`)
-- when `score-fraud` is executed with explicit `--feature-run-id`, treat `feature_run_id` as an additional replacement selector for that run
+- when `score-fraud` is executed with explicit `--feature-run-id`, use it to select source `parcel_features` rows; replacement applies to derived `(parcel_id, year)` keys in that selected set
 
 ## Full rerun
 
 - command scope covers all eligible parcels/years
 - existing rows for the same logical version are replaced in-table before insert
   - `parcel_features`: replace rows for `feature_version`
-  - `fraud_scores`: replace rows for (`ruleset_version`, `feature_version`) and, when provided, matching `feature_run_id`
+  - `fraud_scores`: replace rows for (`ruleset_version`, `feature_version`) that match selected `(parcel_id, year)` keys
   - `fraud_flags`: replace rows whose parent `fraud_scores` rows are being replaced
 - run summary records delete/insert counts
 

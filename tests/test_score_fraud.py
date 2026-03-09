@@ -47,6 +47,7 @@ def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
         "high_risk_count": 1,
         "medium_risk_count": 1,
         "low_risk_count": 2,
+        "skipped_feature_rows": 0,
     }
     assert payload["top_flags"][0] == {
         "parcel_id": "parcel-1",
@@ -151,6 +152,80 @@ def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
         yoy_flag.source_refs_json["feature_sources"]["permits"]["basis"] == "declared"
     )
     assert f"vs cutoff {format(PERMIT_SUPPORT_CUTOFF, 'f')}" in yoy_flag.explanation
+
+    assert payload["rankings"]["top_parcels"] == [
+        {
+            "parcel_id": "parcel-1",
+            "year": 2025,
+            "score_value": "100.00",
+            "risk_band": "high",
+            "reason_code_count": 6,
+            "primary_reason_code": "ratio__assessment_to_sale_below_floor",
+            "primary_reason_weight": "35.0000",
+        },
+        {
+            "parcel_id": "parcel-3",
+            "year": 2025,
+            "score_value": "50.00",
+            "risk_band": "medium",
+            "reason_code_count": 4,
+            "primary_reason_code": "ratio__assessment_to_sale_below_floor",
+            "primary_reason_weight": "20.0000",
+        },
+        {
+            "parcel_id": "parcel-2",
+            "year": 2025,
+            "score_value": "0.00",
+            "risk_band": "low",
+            "reason_code_count": 0,
+            "primary_reason_code": None,
+            "primary_reason_weight": "0.0000",
+        },
+        {
+            "parcel_id": "parcel-4",
+            "year": 2024,
+            "score_value": "0.00",
+            "risk_band": "low",
+            "reason_code_count": 0,
+            "primary_reason_code": None,
+            "primary_reason_weight": "0.0000",
+        },
+    ]
+    assert payload["rankings"]["risk_band_breakdown"] == [
+        {"risk_band": "high", "parcel_count": 1},
+        {"risk_band": "medium", "parcel_count": 1},
+        {"risk_band": "low", "parcel_count": 2},
+    ]
+    assert payload["rankings"]["reason_code_breakdown"] == [
+        {"reason_code": "appeal__recurring_successful_reductions", "flag_count": 2},
+        {
+            "reason_code": "peer__assessment_ratio_bottom_peer_percentile",
+            "flag_count": 2,
+        },
+        {
+            "reason_code": "ratio__assessment_to_sale_below_floor",
+            "flag_count": 2,
+        },
+        {"reason_code": "yoy__assessment_spike_without_support", "flag_count": 2},
+        {"reason_code": "lineage__post_lineage_value_drop", "flag_count": 1},
+        {
+            "reason_code": "permit_gap__assessment_increase_unexplained_by_permits",
+            "flag_count": 1,
+        },
+    ]
+    assert payload["rankings"]["skipped_feature_breakdown"] == []
+
+    explanations_by_reason_rank = {
+        (flag.reason_code, flag.reason_rank): flag.explanation for flag in p1_flags
+    }
+    for top_flag in payload["top_flags"]:
+        if top_flag["parcel_id"] == "parcel-1" and top_flag["year"] == 2025:
+            assert (
+                top_flag["explanation"]
+                == explanations_by_reason_rank[
+                    (top_flag["reason_code"], top_flag["reason_rank"])
+                ]
+            )
 
 
 def test_score_fraud_feature_run_filter_replaces_only_filtered_rows(
@@ -318,6 +393,81 @@ def test_score_fraud_feature_run_filter_replaces_rows_after_feature_run_id_chang
     assert by_key[("parcel-3", 2025)].run_id == initial_run_id
 
 
+def test_score_fraud_skips_invalid_feature_rows_and_records_breakdown(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "score_fraud_skip_invalid_rows.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_score_fraud_fixture(session)
+        session.add(Parcel(id="parcel-invalid"))
+        run_3 = ScoringRun(
+            run_type="build_features",
+            status="succeeded",
+            version_tag="feature_v1-invalid-row",
+            scope_json={"parcel_ids": None, "years": None},
+            config_json={"feature_version": "feature_v1"},
+        )
+        session.add(run_3)
+        session.flush()
+        session.add(
+            ParcelFeature(
+                run_id=run_3.id,
+                parcel_id="parcel-invalid",
+                year=0,
+                feature_version="feature_v1",
+                assessment_to_sale_ratio=Decimal("0.500000"),
+                peer_percentile=Decimal("0.0100"),
+                yoy_assessment_change_pct=Decimal("0.500000"),
+                permit_adjusted_expected_change=Decimal("1000.00"),
+                permit_adjusted_gap=Decimal("90000.00"),
+                appeal_value_delta_3y=Decimal("-20000.00"),
+                appeal_success_rate_3y=Decimal("0.9000"),
+                lineage_value_reset_delta=Decimal("-200000.00"),
+                feature_quality_flags=None,
+                source_refs_json=[],
+            )
+        )
+        p3_feature = session.execute(
+            select(ParcelFeature).where(
+                ParcelFeature.parcel_id == "parcel-3",
+                ParcelFeature.year == 2025,
+                ParcelFeature.feature_version == "feature_v1",
+            )
+        ).scalar_one()
+        p3_feature.source_refs_json = []
+
+    with session_scope(database_url) as session:
+        payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["summary"]["features_considered"] == 5
+    assert payload["summary"]["scores_inserted"] == 4
+    assert payload["summary"]["skipped_feature_rows"] == 1
+    assert payload["rankings"]["skipped_feature_breakdown"] == [
+        {"reason": "invalid_year", "row_count": 1}
+    ]
+    with session_scope(database_url) as session:
+        parcel_3_score = session.execute(
+            select(FraudScore).where(
+                FraudScore.parcel_id == "parcel-3",
+                FraudScore.year == 2025,
+                FraudScore.ruleset_version == "scoring_rules_v1",
+                FraudScore.feature_version == "feature_v1",
+            )
+        ).scalar_one()
+    assert (
+        "source_refs_json_invalid_shape"
+        in parcel_3_score.score_summary_json["quality_flags"]
+    )
+
+
 def test_score_fraud_cli_supports_scope_filter_and_output_file(
     tmp_path: Path,
     monkeypatch,
@@ -375,6 +525,7 @@ def test_score_fraud_cli_supports_scope_filter_and_output_file(
         "high_risk_count": 1,
         "medium_risk_count": 0,
         "low_risk_count": 1,
+        "skipped_feature_rows": 0,
     }
 
 
