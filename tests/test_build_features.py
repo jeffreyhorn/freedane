@@ -46,7 +46,7 @@ def test_build_features_computes_core_features_and_persists_rows(
         "rows_deleted": 0,
         "rows_inserted": 6,
         "rows_skipped": 0,
-        "quality_warning_count": 25,
+        "quality_warning_count": 24,
     }
 
     with session_scope(database_url) as session:
@@ -98,6 +98,8 @@ def test_build_features_computes_core_features_and_persists_rows(
             {"parcel_id": "parcel-res-1", "year": 2024},
             {"parcel_id": "parcel-res-1", "year": 2025},
         ],
+        "value_detail_status": "known",
+        "outcome_detail_status": "known",
     }
     assert p1_2025.source_refs_json["lineage"] == {
         "relationship_count": 1,
@@ -125,25 +127,26 @@ def test_build_features_computes_core_features_and_persists_rows(
     }
     assert p2_2025.source_refs_json["permits"]["basis"] == "unknown"
     assert p2_2025.source_refs_json["appeals"]["source_parcel_year_keys"] == []
+    assert p2_2025.source_refs_json["appeals"]["value_detail_status"] == "none"
+    assert p2_2025.source_refs_json["appeals"]["outcome_detail_status"] == "none"
     assert p2_2025.source_refs_json["lineage"]["relationship_count"] == 0
 
     p3_2025 = by_key[("parcel-com-1", 2025)]
     assert p3_2025.assessment_to_sale_ratio == Decimal("1.500000")
     assert p3_2025.peer_percentile is None
     assert p3_2025.yoy_assessment_change_pct is None
-    assert p3_2025.permit_adjusted_expected_change is None
+    assert p3_2025.permit_adjusted_expected_change == Decimal("37500.00")
     assert p3_2025.permit_adjusted_gap is None
-    assert p3_2025.appeal_value_delta_3y == Decimal("0.00")
+    assert p3_2025.appeal_value_delta_3y is None
     assert p3_2025.appeal_success_rate_3y is None
     assert p3_2025.lineage_value_reset_delta is None
     assert p3_2025.feature_quality_flags == [
         "insufficient_peer_group",
+        "missing_appeal_outcome_detail_3y",
+        "missing_appeal_value_detail_3y",
         "missing_assessment_for_permit_gap",
         "missing_lineage_reference_values",
-        "missing_permit_adjusted_expected_change",
-        "missing_permit_context",
         "missing_prior_year_assessment",
-        "no_appeals_in_window",
     ]
     assert p3_2025.source_refs_json["peer_group"] == {
         "year": 2025,
@@ -156,6 +159,8 @@ def test_build_features_computes_core_features_and_persists_rows(
         "related_parcel_ids": ["parcel-missing-sale"],
         "reference_year": 2024,
     }
+    assert p3_2025.source_refs_json["appeals"]["value_detail_status"] == "missing"
+    assert p3_2025.source_refs_json["appeals"]["outcome_detail_status"] == "missing"
 
     p4_2025 = by_key[("parcel-missing-sale", 2025)]
     assert p4_2025.assessment_to_sale_ratio is None
@@ -317,6 +322,7 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 appeal_event_count=2,
                 appeal_reduction_granted_count=1,
                 appeal_partial_reduction_count=0,
+                appeal_value_change_known_count=1,
                 appeal_value_change_total=Decimal("-2000.00"),
             ),
             ParcelYearFact(
@@ -331,6 +337,7 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 appeal_event_count=1,
                 appeal_reduction_granted_count=1,
                 appeal_partial_reduction_count=0,
+                appeal_value_change_known_count=1,
                 appeal_value_change_total=Decimal("-1000.00"),
             ),
             ParcelYearFact(
@@ -358,10 +365,12 @@ def _seed_build_features_fixture(session) -> dict[str, dict[str, int]]:
                 assessment_total_value=Decimal("300000.00"),
                 permit_event_count=1,
                 permit_declared_valuation_known_count=1,
-                appeal_event_count=0,
-                appeal_reduction_granted_count=0,
-                appeal_partial_reduction_count=0,
-                appeal_value_change_total=Decimal("0.00"),
+                permit_declared_valuation_sum=Decimal("50000.00"),
+                appeal_event_count=1,
+                appeal_reduction_granted_count=None,
+                appeal_partial_reduction_count=None,
+                appeal_value_change_known_count=0,
+                appeal_value_change_total=None,
             ),
             ParcelYearFact(
                 parcel_id="parcel-missing-sale",

@@ -657,13 +657,17 @@ def _build_feature_rows(
             permit_adjusted_expected_change=permit_adjusted_expected_change,
             flags=draft.flags,
         )
-        appeal_value_delta_3y, appeal_success_rate_3y, appeal_source_keys = (
-            _appeal_window_features(
-                parcel_id=draft.parcel_id,
-                year=draft.year,
-                appeal_contexts=appeal_contexts,
-                flags=draft.flags,
-            )
+        (
+            appeal_value_delta_3y,
+            appeal_success_rate_3y,
+            appeal_source_keys,
+            appeal_value_detail_status,
+            appeal_outcome_detail_status,
+        ) = _appeal_window_features(
+            parcel_id=draft.parcel_id,
+            year=draft.year,
+            appeal_contexts=appeal_contexts,
+            flags=draft.flags,
         )
         appeal_start_year = draft.year - (APPEAL_WINDOW_YEARS - 1)
         lineage_reference_year = draft.year + LINEAGE_REFERENCE_YEAR_OFFSET
@@ -716,6 +720,8 @@ def _build_feature_rows(
                 "appeals": {
                     "window_years": [appeal_start_year, draft.year],
                     "source_parcel_year_keys": appeal_source_keys,
+                    "value_detail_status": appeal_value_detail_status,
+                    "outcome_detail_status": appeal_outcome_detail_status,
                 },
                 "lineage": {
                     "relationship_count": len(related_parcel_ids),
@@ -889,13 +895,15 @@ def _appeal_window_features(
     year: int,
     appeal_contexts: dict[tuple[str, int], _AppealYearContext],
     flags: list[str],
-) -> tuple[Optional[Decimal], Optional[Decimal], list[_ParcelYearKey]]:
+) -> tuple[Optional[Decimal], Optional[Decimal], list[_ParcelYearKey], str, str]:
     appeal_start_year = year - (APPEAL_WINDOW_YEARS - 1)
     source_keys: list[_ParcelYearKey] = []
     total_value_delta = Decimal("0")
     success_numerator = 0
     success_denominator = 0
     has_any_appeal_context = False
+    missing_value_detail = False
+    missing_outcome_detail = False
 
     for context_year in range(appeal_start_year, year + 1):
         context = appeal_contexts.get((parcel_id, context_year))
@@ -905,30 +913,65 @@ def _appeal_window_features(
         source_keys.append(
             _source_parcel_year_key(parcel_id=parcel_id, year=context_year)
         )
-        total_value_delta += context.appeal_value_change_total or Decimal("0")
-        success_numerator += (context.appeal_reduction_granted_count or 0) + (
-            context.appeal_partial_reduction_count or 0
-        )
-        success_denominator += context.appeal_event_count or 0
+        value_change_known_count = context.appeal_value_change_known_count
+        if (
+            value_change_known_count is None
+            or value_change_known_count <= 0
+            or context.appeal_value_change_total is None
+        ):
+            missing_value_detail = True
+        else:
+            total_value_delta += context.appeal_value_change_total
+
+        if (
+            context.appeal_event_count is None
+            or context.appeal_reduction_granted_count is None
+            or context.appeal_partial_reduction_count is None
+        ):
+            missing_outcome_detail = True
+        else:
+            success_numerator += context.appeal_reduction_granted_count + (
+                context.appeal_partial_reduction_count
+            )
+            success_denominator += context.appeal_event_count
 
     if not has_any_appeal_context:
         flags.append("missing_appeal_context_3y")
-        return None, None, []
+        return None, None, [], "none", "none"
 
-    appeal_value_delta_3y = _quantize_numeric(
-        total_value_delta, precision=14, scale=2, flags=flags
-    )
-    if success_denominator <= 0:
+    appeal_value_delta_3y: Optional[Decimal]
+    if missing_value_detail:
+        flags.append("missing_appeal_value_detail_3y")
+        appeal_value_delta_3y = None
+    else:
+        appeal_value_delta_3y = _quantize_numeric(
+            total_value_delta, precision=14, scale=2, flags=flags
+        )
+
+    appeal_success_rate_3y: Optional[Decimal]
+    if missing_outcome_detail:
+        flags.append("missing_appeal_outcome_detail_3y")
+        appeal_success_rate_3y = None
+    elif success_denominator <= 0:
         flags.append("no_appeals_in_window")
-        return appeal_value_delta_3y, None, source_keys
+        appeal_success_rate_3y = None
+    else:
+        appeal_success_rate_3y = _quantize_numeric(
+            Decimal(success_numerator) / Decimal(success_denominator),
+            precision=6,
+            scale=4,
+            flags=flags,
+        )
 
-    appeal_success_rate_3y = _quantize_numeric(
-        Decimal(success_numerator) / Decimal(success_denominator),
-        precision=6,
-        scale=4,
-        flags=flags,
+    value_detail_status = "missing" if missing_value_detail else "known"
+    outcome_detail_status = "missing" if missing_outcome_detail else "known"
+    return (
+        appeal_value_delta_3y,
+        appeal_success_rate_3y,
+        source_keys,
+        value_detail_status,
+        outcome_detail_status,
     )
-    return appeal_value_delta_3y, appeal_success_rate_3y, source_keys
 
 
 def _lineage_value_reset_delta(
