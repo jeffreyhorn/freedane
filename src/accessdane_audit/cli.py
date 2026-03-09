@@ -47,6 +47,7 @@ from .retr import (
     match_sales_transactions,
 )
 from .sales_ratio_study import build_sales_ratio_study
+from .score_fraud import SUPPORTED_RULESET_VERSIONS, score_fraud
 from .scrape import fetch_page
 from .search import search_trs
 from .spatial import detect_spatial_support, spatial_support_status_to_dict
@@ -446,6 +447,85 @@ def build_features_cmd(
         payload = build_features(
             session,
             feature_version=feature_version,
+            parcel_ids=parcel_ids,
+            years=years,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("score-fraud")
+def score_fraud_cmd(
+    ids: list[str] = typer.Option(
+        [],
+        "--id",
+        help="Parcel ID to include (repeatable)",
+    ),
+    ids_file: Optional[Path] = typer.Option(
+        None,
+        "--ids",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="File with parcel IDs (one parcel ID per line)",
+    ),
+    year: list[int] = typer.Option(
+        [],
+        "--year",
+        help="Score year filter (repeatable)",
+        min=1,
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version selector for source parcel_features rows",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version tag recorded in scoring_runs",
+    ),
+    feature_run_id: Optional[int] = typer.Option(
+        None,
+        "--feature-run-id",
+        min=1,
+        help="Optional feature run ID to pin source parcel_features rows",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    if ruleset_version not in SUPPORTED_RULESET_VERSIONS:
+        supported_values = ", ".join(SUPPORTED_RULESET_VERSIONS)
+        raise typer.BadParameter(
+            f"Unsupported ruleset version '{ruleset_version}'. "
+            f"Supported values: {supported_values}."
+        )
+
+    settings = load_settings()
+    if ids or ids_file:
+        parcel_ids = _collect_ids(ids, ids_file)
+        if not parcel_ids:
+            raise typer.BadParameter(
+                "At least one parcel ID must be provided via --id or --ids."
+            )
+    else:
+        parcel_ids = None
+    years = list(year) if year else None
+
+    with session_scope(settings.database_url) as session:
+        payload = score_fraud(
+            session,
+            ruleset_version=ruleset_version,
+            feature_version=feature_version,
+            feature_run_id=feature_run_id,
             parcel_ids=parcel_ids,
             years=years,
         )
