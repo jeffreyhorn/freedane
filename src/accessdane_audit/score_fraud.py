@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
-from typing import Optional, Sequence, TypedDict
+from typing import Optional, Sequence, TypedDict, TypeVar
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from sqlalchemy.orm import Session, load_only
 
@@ -100,6 +100,12 @@ class _PendingScoreBatchItem:
     ranked_triggers: list[_RuleTrigger]
 
 
+@dataclass(frozen=True)
+class _TopFlagCandidate:
+    sort_key: tuple[Decimal, int, str, int, str]
+    payload: ScoreFraudTopFlag
+
+
 def score_fraud(
     session: Session,
     *,
@@ -187,9 +193,7 @@ def score_fraud(
                 session,
                 ruleset_version=ruleset_version,
                 feature_version=feature_version,
-                parcel_ids=resolved_scope["parcel_ids"],
-                years=resolved_scope["years"],
-                feature_run_id=resolved_scope["feature_run_id"],
+                features=features,
             )
             summary, top_flags = _persist_scores_and_flags(
                 session=session,
@@ -304,17 +308,13 @@ def _delete_existing_scored_rows(
     *,
     ruleset_version: str,
     feature_version: str,
-    parcel_ids: Optional[list[str]],
-    years: Optional[list[int]],
-    feature_run_id: Optional[int],
+    features: Sequence[ParcelFeature],
 ) -> None:
-    score_ids = _load_existing_score_ids(
+    score_ids = _load_existing_score_ids_for_feature_keys(
         session,
         ruleset_version=ruleset_version,
         feature_version=feature_version,
-        parcel_ids=parcel_ids,
-        years=years,
-        feature_run_id=feature_run_id,
+        feature_keys=_feature_keys(features),
     )
     if not score_ids:
         return
@@ -326,37 +326,30 @@ def _delete_existing_scored_rows(
         session.execute(delete(FraudScore).where(FraudScore.id.in_(batch_score_ids)))
 
 
-def _load_existing_score_ids(
+def _feature_keys(features: Sequence[ParcelFeature]) -> list[tuple[str, int]]:
+    return sorted(
+        {(feature.parcel_id, feature.year) for feature in features},
+        key=lambda item: (item[0], item[1]),
+    )
+
+
+def _load_existing_score_ids_for_feature_keys(
     session: Session,
     *,
     ruleset_version: str,
     feature_version: str,
-    parcel_ids: Optional[list[str]],
-    years: Optional[list[int]],
-    feature_run_id: Optional[int],
+    feature_keys: Sequence[tuple[str, int]],
 ) -> list[int]:
-    if parcel_ids is not None and not parcel_ids:
-        return []
-    if years is not None and not years:
+    if not feature_keys:
         return []
 
-    def _base_query():
+    score_ids: list[int] = []
+    for batch_feature_keys in _chunked(feature_keys, IN_CLAUSE_BATCH_SIZE):
         query = select(FraudScore.id).where(
             FraudScore.ruleset_version == ruleset_version,
             FraudScore.feature_version == feature_version,
+            tuple_(FraudScore.parcel_id, FraudScore.year).in_(batch_feature_keys),
         )
-        if years is not None:
-            query = query.where(FraudScore.year.in_(years))
-        if feature_run_id is not None:
-            query = query.where(FraudScore.feature_run_id == feature_run_id)
-        return query
-
-    if parcel_ids is None:
-        return sorted(session.execute(_base_query()).scalars().all())
-
-    score_ids: list[int] = []
-    for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE):
-        query = _base_query().where(FraudScore.parcel_id.in_(batch_parcel_ids))
         score_ids.extend(session.execute(query).scalars().all())
     return sorted(score_ids)
 
@@ -374,7 +367,7 @@ def _persist_scores_and_flags(
     high_risk_count = 0
     medium_risk_count = 0
     low_risk_count = 0
-    top_flags: list[ScoreFraudTopFlag] = []
+    top_flag_candidates: list[_TopFlagCandidate] = []
     pending_scores: list[_PendingScoreBatchItem] = []
 
     for feature in features:
@@ -465,19 +458,30 @@ def _persist_scores_and_flags(
         )
 
         for reason_rank, trigger in enumerate(ranked_triggers, start=1):
-            top_flags.append(
-                {
-                    "parcel_id": feature.parcel_id,
-                    "year": feature.year,
-                    "score_value": _decimal_to_str(score_value),
-                    "risk_band": risk_band,
-                    "reason_code": trigger.reason_code,
-                    "reason_rank": reason_rank,
-                    "severity_weight": _decimal_to_str(
-                        _quantize_decimal(trigger.severity_weight, scale=4)
+            top_flag_payload: ScoreFraudTopFlag = {
+                "parcel_id": feature.parcel_id,
+                "year": feature.year,
+                "score_value": _decimal_to_str(score_value),
+                "risk_band": risk_band,
+                "reason_code": trigger.reason_code,
+                "reason_rank": reason_rank,
+                "severity_weight": _decimal_to_str(
+                    _quantize_decimal(trigger.severity_weight, scale=4)
+                ),
+                "explanation": trigger.explanation,
+            }
+            _consider_top_flag_candidate(
+                top_flag_candidates=top_flag_candidates,
+                candidate=_TopFlagCandidate(
+                    sort_key=_top_flag_sort_key(
+                        score_value=score_value,
+                        reason_rank=reason_rank,
+                        parcel_id=feature.parcel_id,
+                        year=feature.year,
+                        reason_code=trigger.reason_code,
                     ),
-                    "explanation": trigger.explanation,
-                }
+                    payload=top_flag_payload,
+                ),
             )
 
         if len(pending_scores) >= SCORE_INSERT_BATCH_SIZE:
@@ -495,15 +499,7 @@ def _persist_scores_and_flags(
         run_id=run_id,
         ruleset_version=ruleset_version,
     )
-    ordered_top_flags = sorted(
-        top_flags,
-        key=lambda item: (
-            Decimal("0.00") - Decimal(item["score_value"]),
-            item["reason_rank"],
-            item["parcel_id"],
-            item["year"],
-        ),
-    )
+    ordered_top_flags = [item.payload for item in top_flag_candidates]
     summary: ScoreFraudSummary = {
         "features_considered": len(features),
         "scores_inserted": scores_inserted,
@@ -512,7 +508,38 @@ def _persist_scores_and_flags(
         "medium_risk_count": medium_risk_count,
         "low_risk_count": low_risk_count,
     }
-    return summary, ordered_top_flags[:TOP_FLAGS_LIMIT]
+    return summary, ordered_top_flags
+
+
+def _consider_top_flag_candidate(
+    *,
+    top_flag_candidates: list[_TopFlagCandidate],
+    candidate: _TopFlagCandidate,
+) -> None:
+    if len(top_flag_candidates) < TOP_FLAGS_LIMIT:
+        top_flag_candidates.append(candidate)
+        top_flag_candidates.sort(key=lambda item: item.sort_key)
+        return
+    if candidate.sort_key < top_flag_candidates[-1].sort_key:
+        top_flag_candidates[-1] = candidate
+        top_flag_candidates.sort(key=lambda item: item.sort_key)
+
+
+def _top_flag_sort_key(
+    *,
+    score_value: Decimal,
+    reason_rank: int,
+    parcel_id: str,
+    year: int,
+    reason_code: str,
+) -> tuple[Decimal, int, str, int, str]:
+    return (
+        Decimal("0.00") - score_value,
+        reason_rank,
+        parcel_id,
+        year,
+        reason_code,
+    )
 
 
 def _flush_score_batch(
@@ -715,6 +742,7 @@ def _evaluate_r4(feature: ParcelFeature) -> _RuleResult:
         weight = Decimal("10.0000")
     else:
         return _no_trigger()
+    permit_support_cutoff = _decimal_to_str(PERMIT_SUPPORT_CUTOFF)
 
     secondary_evidence: dict[str, object] = {
         "permit_adjusted_expected_change": (
@@ -723,7 +751,7 @@ def _evaluate_r4(feature: ParcelFeature) -> _RuleResult:
             else None
         ),
         "permit_adjusted_expected_change_condition": condition,
-        "permit_adjusted_expected_change_cutoff": "10000",
+        "permit_adjusted_expected_change_cutoff": permit_support_cutoff,
         "permit_basis": _permit_basis_from_feature_sources(feature.source_refs_json),
     }
     return _triggered_rule(
@@ -736,7 +764,7 @@ def _evaluate_r4(feature: ParcelFeature) -> _RuleResult:
         explanation=(
             "Year-over-year assessment change "
             f"{_decimal_to_str(yoy_change)} exceeds threshold {threshold} without "
-            f"strong permit support ({condition} vs cutoff 10000)."
+            f"strong permit support ({condition} vs cutoff {permit_support_cutoff})."
         ),
         secondary_evidence=secondary_evidence,
     )
@@ -940,8 +968,11 @@ def _run_payload(run: ScoringRun, *, run_persisted: bool = True) -> ScoreFraudRu
     }
 
 
-def _chunked(values: Sequence[int] | Sequence[str], size: int) -> list[list[object]]:
-    chunks: list[list[object]] = []
+_ChunkValueT = TypeVar("_ChunkValueT")
+
+
+def _chunked(values: Sequence[_ChunkValueT], size: int) -> list[list[_ChunkValueT]]:
+    chunks: list[list[_ChunkValueT]] = []
     for index in range(0, len(values), size):
         chunks.append(list(values[index : index + size]))
     return chunks

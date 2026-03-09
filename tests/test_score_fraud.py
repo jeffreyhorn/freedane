@@ -17,7 +17,7 @@ from accessdane_audit.models import (
     ParcelFeature,
     ScoringRun,
 )
-from accessdane_audit.score_fraud import score_fraud
+from accessdane_audit.score_fraud import PERMIT_SUPPORT_CUTOFF, score_fraud
 
 
 def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
@@ -144,12 +144,13 @@ def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
     assert yoy_flag.source_refs_json["secondary_evidence"] == {
         "permit_adjusted_expected_change": "8000.00",
         "permit_adjusted_expected_change_condition": "<=_cutoff",
-        "permit_adjusted_expected_change_cutoff": "10000",
+        "permit_adjusted_expected_change_cutoff": format(PERMIT_SUPPORT_CUTOFF, "f"),
         "permit_basis": "declared",
     }
     assert (
         yoy_flag.source_refs_json["feature_sources"]["permits"]["basis"] == "declared"
     )
+    assert f"vs cutoff {format(PERMIT_SUPPORT_CUTOFF, 'f')}" in yoy_flag.explanation
 
 
 def test_score_fraud_feature_run_filter_replaces_only_filtered_rows(
@@ -242,6 +243,79 @@ def test_score_fraud_is_idempotent_for_same_scope(tmp_path: Path) -> None:
     assert first_payload["scope"] == second_payload["scope"]
     assert first_payload["summary"] == second_payload["summary"]
     assert first_payload["top_flags"] == second_payload["top_flags"]
+
+
+def test_score_fraud_feature_run_filter_replaces_rows_after_feature_run_id_changes(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "score_fraud_feature_run_replace.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_score_fraud_fixture(session)
+
+    with session_scope(database_url) as session:
+        initial_payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+        )
+
+    initial_run_id = initial_payload["run"]["run_id"]
+    assert initial_run_id is not None
+
+    with session_scope(database_url) as session:
+        replacement_feature_run = ScoringRun(
+            run_type="build_features",
+            status="succeeded",
+            version_tag="feature_v1-run3",
+            scope_json={"parcel_ids": None, "years": None},
+            config_json={"feature_version": "feature_v1"},
+        )
+        session.add(replacement_feature_run)
+        session.flush()
+        replacement_run_id = replacement_feature_run.id
+
+        p1_feature = session.execute(
+            select(ParcelFeature).where(
+                ParcelFeature.parcel_id == "parcel-1",
+                ParcelFeature.year == 2025,
+                ParcelFeature.feature_version == "feature_v1",
+            )
+        ).scalar_one()
+        p1_feature.run_id = replacement_run_id
+
+    with session_scope(database_url) as session:
+        filtered_payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+            feature_run_id=replacement_run_id,
+        )
+
+    filtered_run_id = filtered_payload["run"]["run_id"]
+    assert filtered_run_id is not None
+    assert filtered_payload["run"]["status"] == "succeeded"
+    assert filtered_payload["summary"]["features_considered"] == 1
+    assert filtered_payload["summary"]["scores_inserted"] == 1
+
+    with session_scope(database_url) as session:
+        rows = (
+            session.execute(
+                select(FraudScore).where(
+                    FraudScore.ruleset_version == "scoring_rules_v1",
+                    FraudScore.feature_version == "feature_v1",
+                )
+            )
+            .scalars()
+            .all()
+        )
+    by_key = {(row.parcel_id, row.year): row for row in rows}
+    assert len(rows) == 4
+    assert by_key[("parcel-1", 2025)].feature_run_id == replacement_run_id
+    assert by_key[("parcel-1", 2025)].run_id == filtered_run_id
+    assert by_key[("parcel-3", 2025)].run_id == initial_run_id
 
 
 def test_score_fraud_cli_supports_scope_filter_and_output_file(
