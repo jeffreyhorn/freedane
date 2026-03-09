@@ -124,22 +124,26 @@ def build_features(
             parcel_ids=resolved_scope["parcel_ids"],
             years=resolved_scope["years"],
         )
-        rows_deleted = _delete_existing_feature_rows(
-            session,
-            feature_version=feature_version,
-            parcel_ids=resolved_scope["parcel_ids"],
-            years=resolved_scope["years"],
-        )
-        selected_sales = _load_selected_sales(session, facts)
-        prior_assessments = _load_prior_assessments(session, facts)
-        rows_inserted, quality_warning_count = _build_feature_rows(
-            session=session,
-            run_id=run.id,
-            feature_version=feature_version,
-            facts=facts,
-            selected_sales=selected_sales,
-            prior_assessments=prior_assessments,
-        )
+        rows_deleted = 0
+        rows_inserted = 0
+        quality_warning_count = 0
+        with session.begin_nested():
+            rows_deleted = _delete_existing_feature_rows(
+                session,
+                feature_version=feature_version,
+                parcel_ids=resolved_scope["parcel_ids"],
+                years=resolved_scope["years"],
+            )
+            selected_sales = _load_selected_sales(session, facts)
+            prior_assessments = _load_prior_assessments(session, facts)
+            rows_inserted, quality_warning_count = _build_feature_rows(
+                session=session,
+                run_id=run.id,
+                feature_version=feature_version,
+                facts=facts,
+                selected_sales=selected_sales,
+                prior_assessments=prior_assessments,
+            )
         summary: BuildFeaturesSummary = {
             "selected_parcels": len({fact.parcel_id for fact in facts}),
             "selected_parcel_years": len(facts),
@@ -330,12 +334,16 @@ def _load_prior_assessments(
 
     prior: dict[tuple[str, int], Optional[Decimal]] = {}
     for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE):
-        query = select(ParcelYearFact).where(
+        query = select(
+            ParcelYearFact.parcel_id,
+            ParcelYearFact.year,
+            ParcelYearFact.assessment_total_value,
+        ).where(
             ParcelYearFact.parcel_id.in_(batch_parcel_ids),
             ParcelYearFact.year.in_(prior_years),
         )
-        for fact in session.execute(query).scalars().all():
-            prior[(fact.parcel_id, fact.year)] = fact.assessment_total_value
+        for parcel_id, year, assessment_total_value in session.execute(query):
+            prior[(parcel_id, year)] = assessment_total_value
     return prior
 
 
@@ -424,6 +432,8 @@ def _build_feature_rows(
             prior_assessment=prior_assessments.get((draft.parcel_id, draft.year - 1)),
             flags=draft.flags,
         )
+        appeal_start_year = draft.year - (APPEAL_WINDOW_YEARS - 1)
+        lineage_reference_year = draft.year + LINEAGE_REFERENCE_YEAR_OFFSET
 
         feature_quality_flags = sorted(set(draft.flags))
         quality_warning_count += len(feature_quality_flags)
@@ -463,13 +473,13 @@ def _build_feature_rows(
                     "source_parcel_year_keys": [],
                 },
                 "appeals": {
-                    "window_years": [draft.year - 2, draft.year],
+                    "window_years": [appeal_start_year, draft.year],
                     "source_parcel_year_keys": [],
                 },
                 "lineage": {
                     "relationship_count": 0,
                     "related_parcel_ids": [],
-                    "reference_year": draft.year - 1,
+                    "reference_year": lineage_reference_year,
                 },
             },
         )
