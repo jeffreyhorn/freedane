@@ -15,6 +15,7 @@ from .models import FraudFlag, FraudScore, ParcelFeature, ScoringRun
 
 RUN_TYPE_SCORE_FRAUD = "score_fraud"
 IN_CLAUSE_BATCH_SIZE = 800
+FEATURE_KEY_IN_CLAUSE_BATCH_SIZE = 400
 TOP_FLAGS_LIMIT = 20
 SCORE_INSERT_BATCH_SIZE = 200
 SCORE_MIN = Decimal("0.00")
@@ -344,7 +345,7 @@ def _load_existing_score_ids_for_feature_keys(
         return []
 
     score_ids: list[int] = []
-    for batch_feature_keys in _chunked(feature_keys, IN_CLAUSE_BATCH_SIZE):
+    for batch_feature_keys in _chunked(feature_keys, FEATURE_KEY_IN_CLAUSE_BATCH_SIZE):
         query = select(FraudScore.id).where(
             FraudScore.ruleset_version == ruleset_version,
             FraudScore.feature_version == feature_version,
