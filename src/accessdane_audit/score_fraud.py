@@ -381,11 +381,18 @@ def _delete_existing_scored_rows(
 def _feature_keys(features: Sequence[ParcelFeature]) -> list[tuple[str, int]]:
     keys: set[tuple[str, int]] = set()
     for feature in features:
-        if _feature_row_guard_reason(feature) is not None:
+        parcel_id = feature.parcel_id
+        year = feature.year
+        if not isinstance(parcel_id, str):
             continue
-        assert isinstance(feature.parcel_id, str)
-        assert feature.year is not None
-        keys.add((feature.parcel_id, int(feature.year)))
+        if not isinstance(year, int) or isinstance(year, bool):
+            continue
+        keys.add((parcel_id, year))
+        stripped_parcel_id = parcel_id.strip()
+        if stripped_parcel_id and stripped_parcel_id != parcel_id:
+            # Include legacy-normalized key to ensure stale rows from pre-guard
+            # normalization are deleted during reruns.
+            keys.add((stripped_parcel_id, year))
     return sorted(keys, key=lambda item: (item[0], item[1]))
 
 

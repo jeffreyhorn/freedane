@@ -492,6 +492,65 @@ def test_score_fraud_skips_invalid_feature_rows_and_records_breakdown(
     )
 
 
+def test_score_fraud_rerun_deletes_stale_rows_for_whitespace_guarded_features(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "score_fraud_whitespace_key_cleanup.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_score_fraud_fixture(session)
+
+    with session_scope(database_url) as session:
+        first_payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+        )
+
+    assert first_payload["summary"]["scores_inserted"] == 4
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="parcel-1 "))
+        feature_row = session.execute(
+            select(ParcelFeature).where(
+                ParcelFeature.parcel_id == "parcel-1",
+                ParcelFeature.year == 2025,
+                ParcelFeature.feature_version == "feature_v1",
+            )
+        ).scalar_one()
+        feature_row.parcel_id = "parcel-1 "
+
+    with session_scope(database_url) as session:
+        payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+        )
+
+    assert payload["summary"]["features_considered"] == 4
+    assert payload["summary"]["scores_inserted"] == 3
+    assert payload["summary"]["skipped_feature_rows"] == 1
+    assert payload["rankings"]["skipped_feature_breakdown"] == [
+        {"reason": "parcel_id_has_surrounding_whitespace", "row_count": 1}
+    ]
+
+    with session_scope(database_url) as session:
+        score_rows = (
+            session.execute(
+                select(FraudScore).where(
+                    FraudScore.ruleset_version == "scoring_rules_v1",
+                    FraudScore.feature_version == "feature_v1",
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(score_rows) == 3
+    assert {row.parcel_id for row in score_rows} == {"parcel-2", "parcel-3", "parcel-4"}
+
+
 def test_normalized_feature_quality_flags_accepts_non_list_sequences() -> None:
     assert _normalized_feature_quality_flags(("flag_b", "flag_a", "flag_b", 1)) == [
         "flag_a",
