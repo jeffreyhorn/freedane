@@ -11,7 +11,7 @@ from typing import Optional, Sequence, TypedDict, cast
 from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from .models import (
     ParcelFeature,
@@ -193,7 +193,15 @@ def _load_candidate_facts(
         return []
 
     if parcel_ids is None:
-        query = select(ParcelYearFact)
+        query = select(ParcelYearFact).options(
+            load_only(
+                ParcelYearFact.parcel_id,
+                ParcelYearFact.year,
+                ParcelYearFact.assessment_total_value,
+                ParcelYearFact.municipality_name,
+                ParcelYearFact.assessment_valuation_classification,
+            )
+        )
         if years is not None:
             query = query.where(ParcelYearFact.year.in_(years))
         return list(
@@ -208,8 +216,18 @@ def _load_candidate_facts(
 
     facts: list[ParcelYearFact] = []
     for batch_parcel_ids in _chunked(parcel_ids, IN_CLAUSE_BATCH_SIZE):
-        query = select(ParcelYearFact).where(
-            ParcelYearFact.parcel_id.in_(batch_parcel_ids)
+        query = (
+            select(ParcelYearFact)
+            .options(
+                load_only(
+                    ParcelYearFact.parcel_id,
+                    ParcelYearFact.year,
+                    ParcelYearFact.assessment_total_value,
+                    ParcelYearFact.municipality_name,
+                    ParcelYearFact.assessment_valuation_classification,
+                )
+            )
+            .where(ParcelYearFact.parcel_id.in_(batch_parcel_ids))
         )
         if years is not None:
             query = query.where(ParcelYearFact.year.in_(years))
@@ -521,7 +539,10 @@ def _yoy_assessment_change_pct(
     prior_assessment: Optional[Decimal],
     flags: list[str],
 ) -> Optional[Decimal]:
-    if current_assessment is None or prior_assessment is None:
+    if current_assessment is None:
+        flags.append("missing_assessment_total_value")
+        return None
+    if prior_assessment is None:
         flags.append("missing_prior_year_assessment")
         return None
     if prior_assessment <= 0:
