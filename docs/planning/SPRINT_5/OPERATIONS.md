@@ -9,7 +9,9 @@ Provide one repeatable end-to-end Sprint 5 workflow from sales-ratio study throu
 ## Prerequisites
 
 - virtualenv dependencies installed: `pip install -e '.[dev]'`
-- database URL configured (defaults to `sqlite:///data/accessdane.sqlite`; Sprint 5 validation has used PostgreSQL)
+- database URL configured (defaults to `sqlite:///data/accessdane.sqlite`; Sprint 5 validation and calibration step 6 have used PostgreSQL)
+  - if running calibration: ensure `DATABASE_URL` (and any `PSQL_URL` override) points to a PostgreSQL URL usable by `psql`
+  - if staying on SQLite: skip calibration step 6
 - schema initialized to migration head:
 
 ```bash

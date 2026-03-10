@@ -36,7 +36,7 @@ Reference artifacts:
 
 Start Sprint 6 with these items in order:
 
-1. Implement `accessdane parcel-dossier --parcel-id ...` to produce one parcel evidence chain (assessment/sales/permit/appeal/reason codes).
+1. Implement `accessdane parcel-dossier --id ...` to produce one parcel evidence chain (assessment/sales/permit/appeal/reason codes).
 2. Add ranked review queue output for top-N parcels with export-friendly payloads.
 3. Add minimal analyst-facing report surface (static HTML runner or lightweight dashboard).
 4. Add `case_reviews` persistence for analyst notes/dispositions/false-positive tracking.
@@ -62,6 +62,8 @@ make typecheck && make lint && make format && make test
 .venv/bin/accessdane score-fraud --feature-version feature_v1 --ruleset-version scoring_rules_v1
 psql "${DATABASE_URL/postgresql+psycopg/postgresql}" -v ON_ERROR_STOP=1 -f docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql
 ```
+
+Note: this validation sequence assumes `DATABASE_URL` points to PostgreSQL (with the `postgresql+psycopg` scheme). The repository default is SQLite; use the Sprint 5 operations runbook for guidance on PostgreSQL overrides and calibration SQL execution.
 
 Then run a dossier-first smoke test on a small known parcel set once `parcel-dossier` is introduced.
 
