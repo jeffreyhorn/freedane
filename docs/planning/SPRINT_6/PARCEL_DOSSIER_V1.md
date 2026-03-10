@@ -104,7 +104,7 @@ accessdane parcel-dossier \
 
 ## Output Payload Contract
 
-Top-level payload keys (in this order):
+Top-level payload keys (canonical order when present):
 
 1. `run`
 2. `request`
@@ -114,6 +114,20 @@ Top-level payload keys (in this order):
 6. `timeline`
 7. `diagnostics`
 8. `error`
+
+Presence requirements by run status:
+
+- Success (`run.status = succeeded`):
+  - required: `run`, `request`, `parcel`, `section_order`, `sections`, `timeline`, `diagnostics`, `error`
+  - `error` must be `null`
+- Hard precondition failure (`run.status = failed` with precondition code):
+  - required: `run`, `request`, `error`
+  - optional: `diagnostics`
+  - must not be present: `parcel`, `section_order`, `sections`, `timeline`
+- Late/operational failure (`run.status = failed` after some assembly work):
+  - required: `run`, `request`, `error`
+  - optional: `diagnostics`, `parcel`, `section_order`, `sections`, `timeline`
+  - if optional dossier-shape keys are present, they must conform to the success-schema field contracts
 
 ### `run`
 
@@ -490,20 +504,34 @@ When a section cannot be built because of missing source artifacts:
 
 ## Failure Contract
 
-When command fails before section assembly:
+When command fails, payload requirements are:
 
-- return payload with:
-  - `run.status = failed`
-  - `error.code`
-  - `error.message`
-- `sections` may be omitted only for hard precondition failures (for example parcel not found).
+- always required:
+  - `run` with `run.status = failed`
+  - `request` echoing resolved request shape
+  - `error` with `error.code` and `error.message`
+- optional: `diagnostics`
 
-Standard v1 error codes:
+Failure classes in v1:
 
-- `parcel_not_found`
-- `invalid_scope`
-- `unsupported_version_selector`
-- `source_query_error`
+- hard precondition failures:
+  - `parcel_not_found`
+  - `invalid_scope`
+  - `unsupported_version_selector`
+- late/operational failures:
+  - `source_query_error`
+
+Hard precondition failure payload shape:
+
+- required keys: `run`, `request`, `error`
+- optional key: `diagnostics`
+- must not include: `parcel`, `section_order`, `sections`, `timeline`
+
+Late/operational failure payload shape:
+
+- required keys: `run`, `request`, `error`
+- optional: `diagnostics`, `parcel`, `section_order`, `sections`, `timeline`
+- if `sections`/`timeline` are present, they must follow the success-schema contracts
 
 ## Scoped Validation Fixtures (Day 4 Test Targets)
 
