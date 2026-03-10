@@ -26,7 +26,7 @@ Default target versions in the SQL file:
 ## Operator Workflow
 
 1. Run feature build and scoring for the target versions.
-2. Open `CALIBRATION_SQL_V1.sql` and set target versions (and optional threshold values) in each `target` CTE.
+2. Open `CALIBRATION_SQL_V1.sql` and set target versions and threshold values once at the top of the file by editing the `\set ruleset_version`, `\set feature_version`, `\set high_min`, `\set medium_min`, and `\set window_size` variables (each `target` CTE references these).
 3. Execute the SQL file:
 
 ```bash
