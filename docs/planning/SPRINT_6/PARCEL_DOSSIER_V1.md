@@ -228,18 +228,18 @@ Primary source:
 
 - `assessments` (preferred), with optional fallback fields from `parcel_year_facts`
 
-Row fields:
+Row fields (logical output fields with source mappings):
 
-- `assessment_id`
-- `year`
-- `valuation_classification`
-- `total_value`
-- `land_value`
-- `improved_value`
-- `estimated_fair_market_value`
-- `average_assessment_ratio`
-- `valuation_date`
-- `source_fetch_id` (maps to `assessments.fetch_id`; fallback: `parcel_year_facts.assessment_fetch_id`)
+- `assessment_id` (from `assessments.id`; `null` when row is sourced only from `parcel_year_facts`)
+- `year` (from `assessments.year`; fallback: `parcel_year_facts.year`)
+- `valuation_classification` (from `assessments.valuation_classification`; fallback: `parcel_year_facts.assessment_valuation_classification`)
+- `total_value` (from `assessments.total_value`; fallback: `parcel_year_facts.assessment_total_value`)
+- `land_value` (from `assessments.land_value`; fallback: `parcel_year_facts.assessment_land_value`)
+- `improved_value` (from `assessments.improved_value`; fallback: `parcel_year_facts.assessment_improved_value`)
+- `estimated_fair_market_value` (from `assessments.estimated_fair_market_value`; fallback: `parcel_year_facts.assessment_estimated_fair_market_value`)
+- `average_assessment_ratio` (from `assessments.average_assessment_ratio`; fallback: `parcel_year_facts.assessment_average_assessment_ratio`)
+- `valuation_date` (from `assessments.valuation_date`; fallback: `parcel_year_facts.assessment_valuation_date`)
+- `source_fetch_id` (from `assessments.fetch_id`; fallback: `parcel_year_facts.assessment_fetch_id`)
 
 Deterministic row order:
 
@@ -306,7 +306,7 @@ Row fields:
 - `year`
 - `feature_version`
 - `municipality_name`
-- `valuation_classification`
+- `valuation_classification` (from `parcel_year_facts.assessment_valuation_classification`)
 - `assessment_to_sale_ratio`
 - `peer_percentile`
 - `yoy_assessment_change_pct`
