@@ -144,6 +144,8 @@ Top-level payload keys (in this order):
 - If `request.years` is empty: use the most recent available row across all years (highest year in DB).
 - If `request.years` is non-empty: use the most recent available row within requested years (highest year in `request.years` that exists). If no row exists for requested years, all `parcel` fields are `null`.
 
+`trs_code` is sourced directly from `parcels.trs_code` and does not depend on `parcel_year_facts` year selection.
+
 ### `section_order`
 
 Required fixed order in v1:
@@ -223,7 +225,7 @@ Row fields:
 - `estimated_fair_market_value`
 - `average_assessment_ratio`
 - `valuation_date`
-- `source_fetch_id`
+- `source_fetch_id` (maps to `assessments.fetch_id`; fallback: `parcel_year_facts.assessment_fetch_id`)
 
 Deterministic row order:
 
