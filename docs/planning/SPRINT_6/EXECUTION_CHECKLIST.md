@@ -12,7 +12,7 @@ Source references:
 
 ### Parcel Dossier Contract And Core (Days 2-4)
 
-- [ ] Day 2: finalize dossier command contract (`PARCEL_DOSSIER_V1.md`)
+- [x] Day 2: finalize dossier command contract (`PARCEL_DOSSIER_V1.md`)
   - Acceptance gate: output schema, section ordering, null semantics, and deterministic sort rules are explicit.
 - [ ] Day 3: add dossier-support schema/index/query-layer scaffolding
   - Acceptance gate: migration tests pass and helper queries cover required evidence joins.
