@@ -62,3 +62,7 @@ Repeatable direct IDs:
 - The command is deterministic for the same source data and same resolved scope/config.
 - Sparse scopes can still succeed with zero or low group coverage; inspect `diagnostics` before using outputs downstream.
 - For analyst interpretation, treat `is_insufficient_sample = true` groups as directional only, not calibration-grade metrics.
+
+## See Also
+
+- consolidated Sprint 5 runbook: `docs/planning/SPRINT_5/OPERATIONS.md`
