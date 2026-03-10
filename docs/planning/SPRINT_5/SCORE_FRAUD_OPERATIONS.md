@@ -87,3 +87,7 @@ After scoring is stable for a selected `(ruleset_version, feature_version)`, run
 - usage notes: `docs/planning/SPRINT_5/CALIBRATION_NOTES.md`
 
 This workflow is for analyst threshold tuning and review queue sizing; any approved threshold changes must ship as a new `ruleset_version`.
+
+## See Also
+
+- consolidated Sprint 5 runbook: `docs/planning/SPRINT_5/OPERATIONS.md`

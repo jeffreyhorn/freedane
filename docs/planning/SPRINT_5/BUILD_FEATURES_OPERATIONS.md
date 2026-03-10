@@ -71,3 +71,4 @@ Scoped rebuild by repeated IDs:
 After feature output is accepted, continue with scoring workflow operations in:
 
 - `docs/planning/SPRINT_5/SCORE_FRAUD_OPERATIONS.md`
+- consolidated Sprint 5 runbook: `docs/planning/SPRINT_5/OPERATIONS.md`
