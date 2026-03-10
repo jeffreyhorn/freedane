@@ -100,8 +100,13 @@ accessdane parcel-dossier \
 - Any JSON-emitting dossier failure with `run.status = failed` exits `1` (including `invalid_scope`, `unsupported_version_selector`, and `source_query_error`).
 - Invalid option values (`exit 2`): handled by Typer/Click option parsing (for example invalid year); usage/error text is emitted to stderr and no JSON payload is emitted.
 - Partial source availability:
-  - command still succeeds when one or more sections cannot be populated
-  - affected sections must be marked `status = unavailable` with diagnostics
+  - command exits `0` when one or more sections cannot be populated due to schema/feature/data-availability issues while other required sections still run
+  - affected sections must be marked `status = unavailable` with diagnostics explaining the condition
+  - examples: missing section-specific tables/columns, incompatible `feature_version`/`ruleset_version`, feature not yet deployed, or data not yet backfilled
+- Source query errors:
+  - set `run.status = failed` and `error.code = source_query_error`
+  - exit `1`
+  - examples: database unreachable, authentication/connection failures, or global query failures that prevent required section execution
 
 ## Output Payload Contract
 
@@ -274,7 +279,7 @@ Match row selection rule for `matched_sales`:
   - `is_primary = true` first
   - higher `confidence_score` first (`DESC NULLS LAST`)
   - lower `match_rank` first (`ASC NULLS LAST`)
-  - lower `id` first (final tie-break)
+  - lower `sales_parcel_matches.id` first (`ASC`, final tie-break)
 - If the parcel has no primary match for a transaction but has non-primary matches, include the selected non-primary representative row.
 - Do not include match rows for other parcels, even if they are primary for the transaction.
 
