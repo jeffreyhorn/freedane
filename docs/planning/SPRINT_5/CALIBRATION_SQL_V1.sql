@@ -285,7 +285,7 @@ scoped_scores AS (
 area_rollup AS (
     SELECT
         COALESCE(p.trs_code, '(missing)') AS trs_code,
-        COUNT(*) AS parcel_count,
+        COUNT(*) AS score_row_count,
         AVG(ss.score_value) AS avg_score,
         SUM(CASE WHEN ss.score_value >= t.high_min THEN 1 ELSE 0 END) AS high_count,
         SUM(
@@ -302,17 +302,17 @@ area_rollup AS (
 )
 SELECT
     trs_code,
-    parcel_count,
+    score_row_count,
     ROUND(avg_score, 2) AS avg_score,
     high_count,
     medium_count,
     ROUND(
         CASE
-            WHEN parcel_count = 0 THEN 0.0
-            ELSE 100.0 * (high_count + medium_count) / parcel_count
+            WHEN score_row_count = 0 THEN 0.0
+            ELSE 100.0 * (high_count + medium_count) / score_row_count
         END,
         2
     ) AS review_queue_pct
 FROM area_rollup
-WHERE parcel_count >= 5
+WHERE score_row_count >= 5
 ORDER BY review_queue_pct DESC, avg_score DESC, trs_code ASC;
