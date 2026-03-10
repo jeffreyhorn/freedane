@@ -245,7 +245,8 @@ Row fields (logical output fields with source mappings):
 
 Deterministic row order:
 
-- `year DESC`, then `assessment_id DESC`
+- primary sort: `year DESC NULLS LAST`
+- secondary sort: `assessment_id DESC NULLS LAST` (rows with concrete `assessment_id` values come before fallback-only rows)
 
 Summary fields:
 
@@ -476,11 +477,11 @@ Timeline row sources:
 
 Event-date derivation:
 
-- assessment: `valuation_date`, else `YYYY-01-01` from `year`
+- assessment: `valuation_date`, else `YYYY-01-01` from `year` when `year` is non-null, else `event_date = null`
 - sale: `transfer_date`, else `recording_date`
-- permit: `issued_date`, else `applied_date`, else `status_date`, else `YYYY-01-01` from `permit_year`
-- appeal: `decision_date`, else `hearing_date`, else `filing_date`, else `YYYY-01-01` from `tax_year`
-- score: `YYYY-12-31` from score `year` when no explicit scored date is included
+- permit: `issued_date`, else `applied_date`, else `status_date`, else `YYYY-01-01` from `permit_year` when `permit_year` is non-null, else `event_date = null`
+- appeal: `decision_date`, else `hearing_date`, else `filing_date`, else `YYYY-01-01` from `tax_year` when `tax_year` is non-null, else `event_date = null`
+- score: explicit scored date when present; else `YYYY-12-31` from score `year` when score `year` is non-null; otherwise `event_date = null`
 
 Deterministic timeline order:
 
