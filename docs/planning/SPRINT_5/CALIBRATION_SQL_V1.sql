@@ -25,6 +25,7 @@ scoped_runs AS (
     FROM scoring_runs AS sr
     JOIN target AS t
         ON sr.version_tag = t.ruleset_version
+       AND sr.config_json ->> 'feature_version' = t.feature_version
     WHERE sr.run_type = 'score_fraud'
 ),
 scoped_scores AS (
@@ -68,7 +69,7 @@ scoped_scores AS (
 )
 SELECT
     bucket_label,
-    COUNT(*) AS parcel_count,
+    COUNT(*) AS score_row_count,
     MIN(score_value) AS min_score,
     MAX(score_value) AS max_score
 FROM (
@@ -205,7 +206,7 @@ SELECT
     ls.calibrated_band,
     ff.reason_code,
     COUNT(*) AS flag_count,
-    COUNT(DISTINCT ls.score_id) AS parcel_count
+    COUNT(DISTINCT ls.score_id) AS score_row_count
 FROM labeled_scores AS ls
 JOIN fraud_flags AS ff
     ON ff.score_id = ls.score_id
