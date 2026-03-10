@@ -153,12 +153,13 @@ Presence requirements by run status:
 - `current_primary_address`
 - `current_parcel_description`
 
-`parcel` fields are sourced from one `parcel_year_facts` row with null fallbacks:
+`parcel` fields (other than identifiers sourced directly from `parcels`) are sourced from one `parcel_year_facts` row with null fallbacks:
 
 - If `request.years` is empty: use the most recent available row across all years (highest year in DB).
-- If `request.years` is non-empty: use the most recent available row within requested years (highest year in `request.years` that exists). If no row exists for requested years, all `parcel` fields are `null`.
+- If `request.years` is non-empty: use the most recent available row within requested years (highest year in `request.years` that exists). If no row exists for requested years, year-fact-derived parcel fields are `null`.
 
 `trs_code` is sourced directly from `parcels.trs_code` and does not depend on `parcel_year_facts` year selection.
+When a parcel exists in `parcels`, `parcel_id` (and `trs_code`, if present) remain populated even when no `parcel_year_facts` row exists for the requested years.
 
 ### `section_order`
 
