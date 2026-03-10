@@ -183,7 +183,7 @@ Each section object must include:
   - `unavailable`
 - `summary` (section-specific counters)
 - `rows` (array; empty when no rows)
-- `message` (nullable string; required when status is `empty` or `unavailable`)
+- `message` (nullable string; always present; must be non-null when status is `empty` or `unavailable`)
 
 ### `timeline`
 
