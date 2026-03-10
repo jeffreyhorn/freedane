@@ -473,7 +473,7 @@ Deterministic timeline order:
 - `event_date DESC NULLS LAST`
 - tie-break by event-type precedence:
   - `score`, `appeal`, `permit`, `sale`, `assessment`
-- final tie-break: stable source key (`table`, `row_id`)
+- final tie-break: stable source key (`table ASC`, then `row_id ASC`)
 
 ## Null And Empty Semantics
 
@@ -490,6 +490,9 @@ When a section has no qualifying rows:
 - `status = empty`
 - `rows = []`
 - `summary.row_count = 0`
+- all non-`row_count` summary fields must still be present for that section's schema:
+  - min/max-style fields (for example `year_min`, `year_max`) must be `null`
+  - count-style fields (for example `*_count`) must be `0`
 - `message` explains why no rows were present (for example `no_sales_for_scope`)
 
 ### Unavailable section behavior
@@ -499,6 +502,9 @@ When a section cannot be built because of missing source artifacts:
 - `status = unavailable`
 - `rows = []`
 - `summary.row_count = 0`
+- all non-`row_count` summary fields must still be present for that section's schema:
+  - min/max-style fields must be `null`
+  - count-style fields must be `0`
 - `message` provides actionable diagnostic code (for example `missing_fraud_scores_for_requested_versions`)
 - section key must also appear in `diagnostics.unavailable_sections`
 
