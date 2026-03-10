@@ -451,7 +451,7 @@ Row fields:
   - `threshold_value`
   - `comparison_operator`
   - `explanation`
-  - `source_refs` (object)
+  - `source_refs` (object, emitted from `fraud_flags.source_refs_json`)
 
 Deterministic row order:
 
