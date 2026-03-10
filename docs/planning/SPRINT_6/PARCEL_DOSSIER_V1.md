@@ -475,6 +475,11 @@ Timeline row sources:
 - appeal events -> `event_type = appeal`
 - reason code evidence -> `event_type = score`
 
+Notes:
+
+- Only rows originating from `assessments` are eligible to produce `event_type = assessment` timeline events.
+- Fallback-only `assessment_history` rows sourced solely from `parcel_year_facts` (`assessment_id = null`) are excluded from timeline generation and must not produce timeline events.
+
 Event-date derivation:
 
 - assessment: `valuation_date`, else `YYYY-01-01` from `year` when `year` is non-null, else `event_date = null`
@@ -495,7 +500,8 @@ Deterministic timeline order:
 ### Null semantics
 
 - Unknown scalar field values must be serialized as `null`.
-- Numeric zeros must remain explicit string zeros (for example `"0.00"`), not `null`.
+- Decimal-valued numeric fields (for example monetary amounts or ratios) must preserve explicit string zeros (for example `"0.00"`), not `null`.
+- Integer/count-style fields must use numeric `0`, not the string `"0"`.
 - Arrays are never `null`; use empty arrays when no values exist.
 
 ### Empty section behavior
