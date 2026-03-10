@@ -70,11 +70,11 @@ accessdane parcel-dossier \
 
 ### Required and optional arguments
 
-- `--id` (required, single value in v1)
+- `--id` (required if `--parcel-id` is not provided; single value in v1)
   - target parcel ID to assemble dossier for
-- `--parcel-id` (optional alias for `--id`)
+- `--parcel-id` (required if `--id` is not provided; alias for `--id`)
   - compatibility alias for docs that used `--parcel-id`
-  - mutually exclusive with `--id`
+  - mutually exclusive with `--id`; exactly one of `--id` or `--parcel-id` must be provided
 - `--year` (optional, repeatable)
   - filters all year-grained sections to selected years
   - normalized to sorted unique years
@@ -97,7 +97,7 @@ accessdane parcel-dossier \
 
 - Success (`exit 0`): payload emitted with all required top-level keys.
 - Parcel not found (`exit 1`): payload includes `run.status = failed` and `error.code = parcel_not_found`.
-- Invalid option values (`exit 1`): CLI parameter error (for example invalid year).
+- Invalid option values (`exit 2`): handled by Typer/Click option parsing (for example invalid year); usage/error text is emitted to stderr and no JSON payload is emitted.
 - Partial source availability:
   - command still succeeds when one or more sections cannot be populated
   - affected sections must be marked `status = unavailable` with diagnostics
