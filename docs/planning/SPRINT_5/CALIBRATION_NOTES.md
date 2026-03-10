@@ -35,6 +35,8 @@ psql "${DATABASE_URL/postgresql+psycopg/postgresql}" \
   -f docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql
 ```
 
+`"${DATABASE_URL/postgresql+psycopg/postgresql}"` uses bash/zsh parameter substitution. If your shell does not support this, set a plain PostgreSQL URL first (for example `export PSQL_URL="postgresql://user:pass@host:port/dbname"`) and run `psql "$PSQL_URL" ...` instead.
+
 4. Interpret outputs in this order:
    - query 1: confirm available scoring runs and persisted row counts
    - query 2: inspect score distribution by buckets

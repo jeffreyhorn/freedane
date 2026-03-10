@@ -1,7 +1,15 @@
 -- Sprint 5 calibration support queries (v1)
 --
--- Usage example (PostgreSQL):
+-- Usage example (PostgreSQL, bash/zsh):
+--   # The ${.../.../...} expression below is bash/zsh parameter substitution that
+--   # rewrites a SQLAlchemy-style URL like "postgresql+psycopg://..." to "postgresql://..."
+--   # so psql can connect using the same DATABASE_URL value.
 --   psql "${DATABASE_URL/postgresql+psycopg/postgresql}" -v ON_ERROR_STOP=1 -f docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql
+--
+-- Alternative (for shells without this substitution):
+--   # Set PSQL_URL once using your shell/tooling, then:
+--   #   export PSQL_URL="postgresql://user:pass@host:port/dbname"
+--   #   psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql
 --
 -- Update variables below to match the run you are calibrating.
 \set ruleset_version 'scoring_rules_v1'
@@ -235,7 +243,7 @@ scoped_scores AS (
         fs.year,
         fs.score_value,
         fs.reason_code_count,
-        fs.risk_band
+        fs.risk_band AS stored_risk_band
     FROM fraud_scores AS fs
     JOIN target AS t
         ON fs.ruleset_version = t.ruleset_version
@@ -246,7 +254,12 @@ SELECT
     ss.year,
     ss.score_value,
     ss.reason_code_count,
-    ss.risk_band,
+    ss.stored_risk_band,
+    CASE
+        WHEN ss.score_value >= t.high_min THEN 'high'
+        WHEN ss.score_value >= t.medium_min THEN 'medium'
+        ELSE 'low'
+    END AS calibrated_band,
     CASE
         WHEN ABS(ss.score_value - t.high_min) <= t.window_size THEN 'high_threshold_window'
         WHEN ABS(ss.score_value - t.medium_min) <= t.window_size THEN 'medium_threshold_window'
