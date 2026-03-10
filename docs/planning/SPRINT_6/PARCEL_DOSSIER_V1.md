@@ -97,6 +97,7 @@ accessdane parcel-dossier \
 
 - Success (`exit 0`): payload emitted with all required top-level keys.
 - Parcel not found (`exit 1`): payload includes `run.status = failed` and `error.code = parcel_not_found`.
+- Any JSON-emitting dossier failure with `run.status = failed` exits `1` (including `invalid_scope`, `unsupported_version_selector`, and `source_query_error`).
 - Invalid option values (`exit 2`): handled by Typer/Click option parsing (for example invalid year); usage/error text is emitted to stderr and no JSON payload is emitted.
 - Partial source availability:
   - command still succeeds when one or more sections cannot be populated
@@ -260,9 +261,21 @@ Purpose:
 
 Primary sources:
 
-- `sales_parcel_matches` (`is_primary = true` preferred in v1)
+- `sales_parcel_matches` (deterministic representative match selected per transaction for this parcel)
 - `sales_transactions`
 - `sales_exclusions` (active exclusions aggregated by transaction)
+
+Match row selection rule for `matched_sales`:
+
+- Include candidate match rows where `sales_parcel_matches.parcel_id` equals requested parcel ID.
+- Group candidates by `sales_transaction_id`.
+- For each transaction, keep one representative match row using this deterministic priority:
+  - `is_primary = true` first
+  - higher `confidence_score` first (`DESC NULLS LAST`)
+  - lower `match_rank` first (`ASC NULLS LAST`)
+  - lower `id` first (final tie-break)
+- If the parcel has no primary match for a transaction but has non-primary matches, include the selected non-primary representative row.
+- Do not include match rows for other parcels, even if they are primary for the transaction.
 
 Row fields:
 
