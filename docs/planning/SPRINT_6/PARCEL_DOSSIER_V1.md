@@ -50,7 +50,7 @@ Out of scope for v1:
 ## Baseline Assumptions
 
 - Sprint 5 baseline tables are present: `parcel_features`, `fraud_scores`, `fraud_flags`, `scoring_runs`.
-- Core source tables are present: `assessments`, `sales_transactions`, `sales_parcel_matches`, `permit_events`, `appeal_events`, `parcel_year_facts`.
+- Core source tables are present: `assessments`, `sales_transactions`, `sales_parcel_matches`, `sales_exclusions`, `permit_events`, `appeal_events`, `parcel_year_facts`, `parcels`.
 - v1 command is read-only; no new run table writes are required for dossier generation.
 
 ## Command Contract
@@ -61,7 +61,7 @@ Out of scope for v1:
 
 ```bash
 accessdane parcel-dossier \
-  --id <parcel_id> \
+  (--id <parcel_id> | --parcel-id <parcel_id>) \
   [--year <year> ...] \
   [--feature-version <feature_version>] \
   [--ruleset-version <ruleset_version>] \
@@ -72,6 +72,9 @@ accessdane parcel-dossier \
 
 - `--id` (required, single value in v1)
   - target parcel ID to assemble dossier for
+- `--parcel-id` (optional alias for `--id`)
+  - compatibility alias for docs that used `--parcel-id`
+  - mutually exclusive with `--id`
 - `--year` (optional, repeatable)
   - filters all year-grained sections to selected years
   - normalized to sorted unique years
@@ -84,9 +87,10 @@ accessdane parcel-dossier \
 
 ### Scope resolution rules
 
-- If `--year` is omitted: include all available years for the parcel.
-- If `--year` is provided: include only those years in section queries.
-- `feature_version` and `ruleset_version` filters apply only to peer and reason-code sections.
+- If `--year` is omitted: `request.years = []` and no year filter is applied.
+- If `--year` is provided: include only those years in section queries and persist sorted unique years in `request.years`.
+- `feature_version` filter applies to `peer_context` and `reason_code_evidence`.
+- `ruleset_version` filter applies only to `reason_code_evidence`.
 - Parcel ID matching is exact against `parcels.id`.
 
 ### Exit behavior
@@ -109,6 +113,7 @@ Top-level payload keys (in this order):
 5. `sections`
 6. `timeline`
 7. `diagnostics`
+8. `error`
 
 ### `run`
 
@@ -121,7 +126,7 @@ Top-level payload keys (in this order):
 ### `request`
 
 - `parcel_id`
-- `years` (array or `null`)
+- `years` (array; empty array means "no year filter")
 - `feature_version`
 - `ruleset_version`
 
@@ -134,7 +139,10 @@ Top-level payload keys (in this order):
 - `current_primary_address`
 - `current_parcel_description`
 
-`parcel` fields are sourced from the most recent available `parcel_year_facts` row (highest year) with null fallbacks.
+`parcel` fields are sourced from one `parcel_year_facts` row with null fallbacks:
+
+- If `request.years` is empty: use the most recent available row across all years (highest year in DB).
+- If `request.years` is non-empty: use the most recent available row within requested years (highest year in `request.years` that exists). If no row exists for requested years, all `parcel` fields are `null`.
 
 ### `section_order`
 
@@ -180,6 +188,13 @@ Normalized evidence timeline assembled from section rows:
 - `warnings` (array of warning codes)
 - `unavailable_sections` (array of section keys)
 - `query_filters` (normalized filter summary)
+
+### `error`
+
+- `null` when `run.status = succeeded`
+- object when `run.status = failed`:
+  - `code`
+  - `message`
 
 ## Section Contracts
 
@@ -238,13 +253,13 @@ Row fields:
 - `transfer_date`
 - `recording_date`
 - `consideration_amount`
-- `arms_length_indicator`
-- `usable_sale_indicator`
+- `arms_length_indicator` (from `sales_transactions.arms_length_indicator_norm`, normalized boolean indicator)
+- `usable_sale_indicator` (from `sales_transactions.usable_sale_indicator_norm`, normalized boolean indicator)
 - `document_number`
 - `match_method`
 - `match_review_status`
-- `match_confidence_score`
-- `is_primary_match`
+- `match_confidence_score` (from `sales_parcel_matches.confidence_score`)
+- `is_primary_match` (from `sales_parcel_matches.is_primary`)
 - `active_exclusion_codes` (array)
 
 Deterministic row order:
@@ -271,7 +286,7 @@ Primary sources:
 
 Row fields:
 
-- `feature_run_id`
+- `run_id` (feature run id, from `parcel_features.run_id`)
 - `year`
 - `feature_version`
 - `municipality_name`
@@ -286,7 +301,7 @@ Row fields:
 
 Deterministic row order:
 
-- `year DESC`, then `feature_run_id DESC NULLS LAST`
+- `year DESC`, then `run_id DESC NULLS LAST`
 
 Summary fields:
 
@@ -317,7 +332,7 @@ Row fields:
 - `permit_type`
 - `permit_subtype`
 - `work_class`
-- `permit_status`
+- `permit_status` (from `permit_events.permit_status_norm`; normalized canonical status)
 - `declared_valuation`
 - `estimated_cost`
 - `description`
@@ -354,8 +369,8 @@ Row fields:
 - `decision_date`
 - `appeal_number`
 - `docket_number`
-- `appeal_level`
-- `outcome`
+- `appeal_level` (from `appeal_events.appeal_level_norm`; normalized canonical level)
+- `outcome` (from `appeal_events.outcome_norm`; normalized canonical outcome)
 - `assessed_value_before`
 - `requested_assessed_value`
 - `decided_assessed_value`
@@ -389,8 +404,8 @@ Primary sources:
 Row fields:
 
 - `score_id`
-- `scoring_run_id`
-- `feature_run_id`
+- `run_id` (scoring run id, from `fraud_scores.run_id`)
+- `feature_run_id` (from `fraud_scores.feature_run_id`)
 - `year`
 - `score_value`
 - `risk_band`
