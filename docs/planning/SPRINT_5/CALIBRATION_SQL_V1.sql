@@ -3,15 +3,20 @@
 -- Usage example (PostgreSQL):
 --   psql "${DATABASE_URL/postgresql+psycopg/postgresql}" -v ON_ERROR_STOP=1 -f docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql
 --
--- Update the target versions in each `target` CTE to match the run you are calibrating.
+-- Update variables below to match the run you are calibrating.
+\set ruleset_version 'scoring_rules_v1'
+\set feature_version 'feature_v1'
+\set high_min 70.0
+\set medium_min 40.0
+\set window_size 5.0
 
 -- -----------------------------------------------------------------------------
 -- 1) Run inventory and score coverage by run
 -- -----------------------------------------------------------------------------
 WITH target AS (
     SELECT
-        'scoring_rules_v1' AS ruleset_version,
-        'feature_v1' AS feature_version
+        :'ruleset_version' AS ruleset_version,
+        :'feature_version' AS feature_version
 ),
 scoped_runs AS (
     SELECT
@@ -57,8 +62,8 @@ ORDER BY r.run_id DESC;
 -- -----------------------------------------------------------------------------
 WITH target AS (
     SELECT
-        'scoring_rules_v1' AS ruleset_version,
-        'feature_v1' AS feature_version
+        :'ruleset_version' AS ruleset_version,
+        :'feature_version' AS feature_version
 ),
 scoped_scores AS (
     SELECT fs.score_value
@@ -109,8 +114,8 @@ ORDER BY bucket_order;
 -- -----------------------------------------------------------------------------
 WITH target AS (
     SELECT
-        'scoring_rules_v1' AS ruleset_version,
-        'feature_v1' AS feature_version
+        :'ruleset_version' AS ruleset_version,
+        :'feature_version' AS feature_version
 ),
 scored AS (
     SELECT fs.score_value
@@ -172,10 +177,10 @@ ORDER BY review_queue_count ASC, high_min DESC, medium_min DESC;
 -- -----------------------------------------------------------------------------
 WITH target AS (
     SELECT
-        'scoring_rules_v1' AS ruleset_version,
-        'feature_v1' AS feature_version,
-        70.0 AS high_min,
-        40.0 AS medium_min
+        :'ruleset_version' AS ruleset_version,
+        :'feature_version' AS feature_version,
+        :high_min AS high_min,
+        :medium_min AS medium_min
 ),
 scoped_scores AS (
     SELECT
@@ -218,11 +223,11 @@ ORDER BY ls.calibrated_band, flag_count DESC, ff.reason_code ASC;
 -- -----------------------------------------------------------------------------
 WITH target AS (
     SELECT
-        'scoring_rules_v1' AS ruleset_version,
-        'feature_v1' AS feature_version,
-        70.0 AS high_min,
-        40.0 AS medium_min,
-        5.0 AS window_size
+        :'ruleset_version' AS ruleset_version,
+        :'feature_version' AS feature_version,
+        :high_min AS high_min,
+        :medium_min AS medium_min,
+        :window_size AS window_size
 ),
 scoped_scores AS (
     SELECT
@@ -267,10 +272,10 @@ LIMIT 250;
 -- -----------------------------------------------------------------------------
 WITH target AS (
     SELECT
-        'scoring_rules_v1' AS ruleset_version,
-        'feature_v1' AS feature_version,
-        70.0 AS high_min,
-        40.0 AS medium_min
+        :'ruleset_version' AS ruleset_version,
+        :'feature_version' AS feature_version,
+        :high_min AS high_min,
+        :medium_min AS medium_min
 ),
 scoped_scores AS (
     SELECT

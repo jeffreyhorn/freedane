@@ -68,4 +68,4 @@ psql "${DATABASE_URL/postgresql+psycopg/postgresql}" \
   -f docs/planning/SPRINT_5/CALIBRATION_SQL_V1.sql
 ```
 
-Result: all queries executed successfully against current scoring tables and column names.
+Result: all queries executed successfully against the current scoring tables and column names on an empty local database (no scored rows), validating schema compatibility and empty-result behavior only; workbook behavior with populated scoring outputs has not yet been validated.
