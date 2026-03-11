@@ -729,6 +729,11 @@ def build_timeline_rows(
 
 
 def _normalize_years(years: Optional[Iterable[int]]) -> Optional[list[int]]:
+    """Normalize year scope while preserving None-vs-empty semantics.
+
+    `None` means unscoped. An explicit empty iterable means an explicit empty
+    scope and returns `[]`. Callers intentionally distinguish these two cases.
+    """
     if years is None:
         return None
     return sorted(set(years))
