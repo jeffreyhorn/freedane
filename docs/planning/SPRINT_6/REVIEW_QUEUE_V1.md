@@ -144,9 +144,8 @@ Canonical top-level key order:
 The key order above is canonical ordering only. Presence rules:
 
 - When `run.status = "succeeded"`:
-  - MUST include: `run`, `request`, `summary`, `rows`, `error`
+  - MUST include: `run`, `request`, `summary`, `rows`, `diagnostics`, `error`
   - `error` MUST be `null`
-  - MAY include: `diagnostics`
 - When `run.status = "failed"`:
   - MUST include: `run`, `request`, `error`
   - MAY include: `diagnostics`
@@ -228,6 +227,8 @@ Rows with missing optional enrichment fields are retained and not dropped.
 
 ## `diagnostics`
 
+- On succeeded runs, `diagnostics` MUST be present and MUST include `comparability`.
+  `filtered_reason_counts` and `skipped_row_counts` MAY be empty objects when no rows were filtered or skipped.
 - `filtered_reason_counts` (object)
   - keys may include:
     - `filtered_by_parcel_id`
