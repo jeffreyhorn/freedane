@@ -6,10 +6,13 @@ from pathlib import Path
 
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
+    AppealEvent,
     FraudFlag,
     FraudScore,
     Parcel,
+    ParcelFeature,
     ParcelYearFact,
+    PermitEvent,
     SalesExclusion,
     SalesParcelMatch,
     SalesTransaction,
@@ -17,8 +20,12 @@ from accessdane_audit.models import (
 )
 from accessdane_audit.parcel_dossier_queries import (
     build_timeline_rows,
+    get_parcel_header,
+    list_appeal_events,
     list_assessment_history,
     list_matched_sales,
+    list_peer_context,
+    list_permit_events,
     list_reason_code_evidence,
 )
 
@@ -590,3 +597,338 @@ def test_reason_code_evidence_year_scope_filters_rows(tmp_path: Path) -> None:
 
     assert len(rows) == 1
     assert rows[0]["year"] == 2024
+
+
+def test_get_parcel_header_year_scoping_and_missing_parcel(tmp_path: Path) -> None:
+    db_path = tmp_path / "parcel_dossier_header_scope.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="P-1", trs_code="TRS-1"))
+        session.add_all(
+            [
+                ParcelYearFact(
+                    parcel_id="P-1",
+                    year=2023,
+                    municipality_name="Town-2023",
+                    current_owner_name="Owner-2023",
+                    current_primary_address="Address-2023",
+                    current_parcel_description="Desc-2023",
+                ),
+                ParcelYearFact(
+                    parcel_id="P-1",
+                    year=2024,
+                    municipality_name="Town-2024",
+                    current_owner_name="Owner-2024",
+                    current_primary_address="Address-2024",
+                    current_parcel_description="Desc-2024",
+                ),
+                ParcelYearFact(
+                    parcel_id="P-1",
+                    year=2025,
+                    municipality_name="Town-2025",
+                    current_owner_name="Owner-2025",
+                    current_primary_address="Address-2025",
+                    current_parcel_description="Desc-2025",
+                ),
+            ]
+        )
+
+    with session_scope(database_url) as session:
+        scoped = get_parcel_header(session, parcel_id="P-1", years=[2023, 2024])
+        unscoped = get_parcel_header(session, parcel_id="P-1")
+        missing = get_parcel_header(session, parcel_id="P-missing")
+
+    assert scoped is not None
+    assert scoped["parcel_id"] == "P-1"
+    assert scoped["trs_code"] == "TRS-1"
+    assert scoped["municipality_name"] == "Town-2024"
+    assert scoped["current_owner_name"] == "Owner-2024"
+    assert scoped["current_primary_address"] == "Address-2024"
+    assert scoped["current_parcel_description"] == "Desc-2024"
+
+    assert unscoped is not None
+    assert unscoped["municipality_name"] == "Town-2025"
+    assert unscoped["current_owner_name"] == "Owner-2025"
+    assert missing is None
+
+
+def test_list_peer_context_orders_rows_and_normalizes_quality_flags(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "parcel_dossier_peer_context.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="P-1"))
+        session.add_all(
+            [
+                ParcelYearFact(
+                    parcel_id="P-1",
+                    year=2024,
+                    municipality_name="Town-2024",
+                    assessment_valuation_classification="residential",
+                ),
+                ParcelYearFact(
+                    parcel_id="P-1",
+                    year=2025,
+                    municipality_name="Town-2025",
+                    assessment_valuation_classification="residential",
+                ),
+            ]
+        )
+        run_1 = ScoringRun(
+            run_type="build_features",
+            status="succeeded",
+            version_tag="feature_v1",
+            scope_json={},
+            config_json={},
+        )
+        run_2 = ScoringRun(
+            run_type="build_features",
+            status="succeeded",
+            version_tag="feature_v1",
+            scope_json={},
+            config_json={},
+        )
+        session.add_all([run_1, run_2])
+        session.flush()
+        session.add_all(
+            [
+                ParcelFeature(
+                    run_id=run_1.id,
+                    parcel_id="P-1",
+                    year=2024,
+                    feature_version="feature_v1",
+                    assessment_to_sale_ratio=Decimal("0.950000"),
+                    feature_quality_flags=None,
+                    source_refs_json={},
+                ),
+                ParcelFeature(
+                    run_id=run_2.id,
+                    parcel_id="P-1",
+                    year=2025,
+                    feature_version="feature_v1",
+                    assessment_to_sale_ratio=Decimal("1.050000"),
+                    feature_quality_flags=["permit_gap"],
+                    source_refs_json={},
+                ),
+            ]
+        )
+
+    with session_scope(database_url) as session:
+        rows = list_peer_context(
+            session,
+            parcel_id="P-1",
+            feature_version="feature_v1",
+        )
+
+    assert [row["year"] for row in rows] == [2025, 2024]
+    assert rows[0]["municipality_name"] == "Town-2025"
+    assert rows[0]["feature_quality_flags"] == ["permit_gap"]
+    assert rows[1]["feature_quality_flags"] == []
+
+
+def test_list_permit_events_year_scoping_with_fallback_dates(tmp_path: Path) -> None:
+    db_path = tmp_path / "parcel_dossier_permit_events.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id="P-1"), Parcel(id="P-2")])
+        session.add_all(
+            [
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
+                    source_row_number=1,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    permit_year=None,
+                    applied_date=date(2024, 6, 1),
+                    permit_number="PERM-1",
+                    permit_type="roof",
+                ),
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
+                    source_row_number=2,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    permit_year=None,
+                    status_date=date(2024, 12, 31),
+                    permit_number="PERM-2",
+                    permit_type="plumbing",
+                ),
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
+                    source_row_number=3,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    permit_year=2024,
+                    permit_number="PERM-3",
+                    permit_type="electrical",
+                ),
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
+                    source_row_number=4,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    permit_year=2025,
+                    issued_date=date(2025, 1, 15),
+                    permit_number="PERM-4",
+                    permit_type="addition",
+                ),
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
+                    source_row_number=5,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="failed",
+                    parcel_id="P-1",
+                    permit_year=2024,
+                    issued_date=date(2024, 2, 1),
+                    permit_number="PERM-5",
+                    permit_type="ignored",
+                ),
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
+                    source_row_number=6,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-2",
+                    permit_year=2024,
+                    issued_date=date(2024, 3, 1),
+                    permit_number="PERM-6",
+                    permit_type="other",
+                ),
+            ]
+        )
+
+    with session_scope(database_url) as session:
+        rows = list_permit_events(session, parcel_id="P-1", years=[2024])
+
+    assert [row["permit_event_id"] for row in rows] == [2, 1, 3]
+    assert rows[0]["permit_year"] is None
+    assert rows[1]["permit_year"] is None
+    assert rows[2]["permit_year"] == 2024
+
+
+def test_list_appeal_events_year_scoping_with_fallback_dates(tmp_path: Path) -> None:
+    db_path = tmp_path / "parcel_dossier_appeal_events.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add_all([Parcel(id="P-1"), Parcel(id="P-2")])
+        session.add_all(
+            [
+                AppealEvent(
+                    source_system="appeals",
+                    source_file_name="appeals.csv",
+                    source_file_sha256="appeals-sha",
+                    source_row_number=1,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    tax_year=None,
+                    hearing_date=date(2024, 8, 1),
+                    filing_date=date(2024, 7, 1),
+                    appeal_number="A-1",
+                ),
+                AppealEvent(
+                    source_system="appeals",
+                    source_file_name="appeals.csv",
+                    source_file_sha256="appeals-sha",
+                    source_row_number=2,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    tax_year=2024,
+                    appeal_number="A-2",
+                ),
+                AppealEvent(
+                    source_system="appeals",
+                    source_file_name="appeals.csv",
+                    source_file_sha256="appeals-sha",
+                    source_row_number=3,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    tax_year=None,
+                    decision_date=date(2025, 2, 1),
+                    appeal_number="A-3",
+                ),
+                AppealEvent(
+                    source_system="appeals",
+                    source_file_name="appeals.csv",
+                    source_file_sha256="appeals-sha",
+                    source_row_number=4,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    tax_year=None,
+                    decision_date=date(2024, 9, 1),
+                    appeal_number="A-4",
+                ),
+                AppealEvent(
+                    source_system="appeals",
+                    source_file_name="appeals.csv",
+                    source_file_sha256="appeals-sha",
+                    source_row_number=5,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="failed",
+                    parcel_id="P-1",
+                    tax_year=2024,
+                    decision_date=date(2024, 6, 1),
+                    appeal_number="A-5",
+                ),
+                AppealEvent(
+                    source_system="appeals",
+                    source_file_name="appeals.csv",
+                    source_file_sha256="appeals-sha",
+                    source_row_number=6,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-2",
+                    tax_year=2024,
+                    decision_date=date(2024, 6, 1),
+                    appeal_number="A-6",
+                ),
+            ]
+        )
+
+    with session_scope(database_url) as session:
+        rows = list_appeal_events(session, parcel_id="P-1", years=[2024])
+
+    assert [row["appeal_event_id"] for row in rows] == [4, 1, 2]
+    assert rows[0]["tax_year"] is None
+    assert rows[1]["tax_year"] is None
+    assert rows[2]["tax_year"] == 2024
