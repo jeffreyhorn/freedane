@@ -68,28 +68,30 @@ accessdane review-queue \
   [--feature-version <feature_version>] \
   [--ruleset-version <ruleset_version>] \
   [--risk-band <high|medium|low> ...] \
-  [--requires-review-only / --all-scores] \
+  [--requires-review-only | --all-scores] \
   [--out <json_path>] \
   [--csv-out <csv_path>]
 ```
 
 ### Options and defaults
 
-- `--top` (optional; default `100`; min `1`; max `1000`)
-  - returns first N ranked rows for requested scope
-- `--page` and `--page-size` (optional pagination mode)
+- `--top` (optional; top-N mode; default `100` when pagination flags are omitted; min `1`; max `1000`)
+  - In top-N mode (default), neither `--page` nor `--page-size` is provided and the command returns the first N ranked rows for the requested scope.
+  - `--top` may be set explicitly, or omitted to use the default `100`, but only when pagination flags are not used.
+- `--page` and `--page-size` (optional; pagination mode)
+  - Pagination mode is activated when either `--page` or `--page-size` is provided.
   - `page` default `1`, min `1`
   - `page-size` default `100`, min `1`, max `500`
-  - `--top` cannot be combined with `--page` or `--page-size`
+  - In pagination mode, `--top` must be omitted and treated as `null`.
 - `--id` / `--ids` (optional parcel scope)
-  - same semantics as other commands; dedupe + preserve stable sorted output scope
+  - normalization: collect all IDs from `--id` and `--ids`, trim whitespace, drop empty values, de-duplicate by normalized ID, then sort lexicographically for stable scope evaluation/output
 - `--year` (optional repeatable filter)
   - normalized to sorted unique year list
 - `--feature-version` (optional; default `feature_v1`)
 - `--ruleset-version` (optional; default `scoring_rules_v1`)
 - `--risk-band` (optional repeatable)
   - allowed values: `high`, `medium`, `low`
-- `--requires-review-only` / `--all-scores`
+- `--requires-review-only` / `--all-scores` (mutually exclusive)
   - default mode is `--requires-review-only`
 - `--out` (optional JSON output path)
 - `--csv-out` (optional CSV output path)
@@ -98,7 +100,7 @@ accessdane review-queue \
 
 - Success (`exit 0`): payload emitted/written with required keys.
 - Request failure (`exit 1`): payload includes `run.status = failed` and `error`.
-- Invalid CLI option values (`exit 2`): Typer/Click validation error.
+- Invalid CLI option values (`exit 2`): Typer/Click validation error; no JSON payload is emitted (only usage/error text from Typer/Click).
 
 Failure codes (v1):
 
@@ -133,6 +135,21 @@ Canonical top-level key order:
 4. `rows`
 5. `diagnostics`
 6. `error`
+
+### Presence Requirements By `run.status`
+
+The key order above is canonical ordering only. Presence rules:
+
+- When `run.status = "succeeded"`:
+  - MUST include: `run`, `request`, `summary`, `rows`, `error`
+  - `error` MUST be `null`
+  - MAY include: `diagnostics`
+- When `run.status = "failed"`:
+  - MUST include: `run`, `request`, `error`
+  - MAY include: `diagnostics`
+  - MUST NOT include: `summary`, `rows`
+
+Producers MUST NOT emit any other `run.status` values in v1.
 
 ## `run`
 
@@ -171,7 +188,7 @@ Each row contains:
 
 - `queue_rank`
 - `score_id`
-- `score_run_id`
+- `run_id`
 - `feature_run_id`
 - `parcel_id`
 - `year`
@@ -189,6 +206,8 @@ Each row contains:
   - `feature_version`
   - `ruleset_version`
 
+Rows with missing optional enrichment fields (`primary_reason_code`, `primary_reason_weight`, `municipality_name`, `valuation_classification`) are retained with `null` values and are not dropped.
+
 ## `diagnostics`
 
 - `filtered_reason_counts` (object)
@@ -199,8 +218,8 @@ Each row contains:
     - `filtered_requires_review`
 - `skipped_row_counts` (object)
   - keys may include:
-    - `missing_primary_reason_code`
-    - `missing_parcel_year_fact`
+    - `invalid_required_identifiers`
+    - `duplicate_score_id_after_join`
 - `comparability` (object)
   - `comparable` (bool)
   - `queue_contract_version` (`review_queue_v1`)
@@ -210,6 +229,7 @@ Each row contains:
     - `requires_review_only`
     - `risk_bands`
     - `years`
+    - `parcel_ids`
     - `sort_key_version` (`review_queue_sort_v1`)
 
 ## `error`
@@ -225,7 +245,7 @@ Each row contains:
 
 1. `queue_rank`
 2. `score_id`
-3. `score_run_id`
+3. `run_id`
 4. `feature_run_id`
 5. `parcel_id`
 6. `year`
