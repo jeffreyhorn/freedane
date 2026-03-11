@@ -574,9 +574,11 @@ def parcel_dossier_cmd(
 ) -> None:
     if (id is None) == (parcel_id is None):
         raise typer.BadParameter("Provide exactly one of --id or --parcel-id.")
-    selected_parcel_id = id if id is not None else parcel_id
-    if selected_parcel_id is None:
-        raise typer.BadParameter("Provide exactly one of --id or --parcel-id.")
+    if id is not None:
+        selected_parcel_id = id
+    else:
+        assert parcel_id is not None
+        selected_parcel_id = parcel_id
     selected_parcel_id = selected_parcel_id.strip()
     if not selected_parcel_id:
         raise typer.BadParameter("Parcel ID cannot be empty.")

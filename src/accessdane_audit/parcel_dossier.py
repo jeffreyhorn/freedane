@@ -78,6 +78,7 @@ def build_parcel_dossier(
             years=years_filter,
         )
     except Exception as exc:
+        session.rollback()
         return _failure_payload(
             request=request,
             code="source_query_error",
@@ -253,6 +254,7 @@ def _load_rows(
     try:
         return list(loader())
     except Exception:
+        session.rollback()
         warnings.append(f"{section_key}_query_error")
         unavailable_sections.append(section_key)
         return []
