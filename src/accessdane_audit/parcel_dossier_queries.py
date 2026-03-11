@@ -280,7 +280,10 @@ def list_matched_sales(
             SalesTransaction,
             SalesTransaction.id == SalesParcelMatch.sales_transaction_id,
         )
-        .where(SalesParcelMatch.parcel_id == parcel_id)
+        .where(
+            SalesParcelMatch.parcel_id == parcel_id,
+            SalesTransaction.import_status == "loaded",
+        )
     )
     match_rows = session.execute(query).all()
 
@@ -530,15 +533,17 @@ def list_reason_code_evidence(
             session.execute(
                 select(FraudFlag)
                 .where(FraudFlag.score_id.in_(score_ids))
-                .order_by(FraudFlag.score_id.asc())
+                .order_by(
+                    FraudFlag.score_id.asc(),
+                    FraudFlag.reason_rank.asc(),
+                    FraudFlag.reason_code.asc(),
+                )
             )
             .scalars()
             .all()
         )
         for flag in flags:
             flags_by_score[flag.score_id].append(flag)
-    for grouped_flags in flags_by_score.values():
-        grouped_flags.sort(key=lambda row: (row.reason_rank, row.reason_code))
 
     rows: list[ReasonCodeEvidenceRow] = []
     for score in scores:

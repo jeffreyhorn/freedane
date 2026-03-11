@@ -152,7 +152,21 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
             arms_length_indicator_norm=True,
             usable_sale_indicator_norm=True,
         )
-        session.add_all([txn_1, txn_2, txn_3])
+        txn_4 = SalesTransaction(
+            source_system="retr",
+            source_file_name="retr.csv",
+            source_file_sha256="sha-1",
+            source_row_number=4,
+            source_headers=[],
+            raw_row={},
+            import_status="failed",
+            transfer_date=date(2027, 2, 1),
+            consideration_amount=Decimal("500000.00"),
+            document_number="DOC-4",
+            arms_length_indicator_norm=True,
+            usable_sale_indicator_norm=True,
+        )
+        session.add_all([txn_1, txn_2, txn_3, txn_4])
         session.flush()
 
         session.add_all(
@@ -211,6 +225,15 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
                     parcel_id="P-1",
                     match_method="parcel_number",
                     confidence_score=Decimal("0.9500"),
+                    match_rank=1,
+                    is_primary=False,
+                    match_review_status="reviewed",
+                ),
+                SalesParcelMatch(
+                    sales_transaction_id=txn_4.id,
+                    parcel_id="P-1",
+                    match_method="parcel_number",
+                    confidence_score=Decimal("0.9900"),
                     match_rank=1,
                     is_primary=False,
                     match_review_status="reviewed",
