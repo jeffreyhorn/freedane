@@ -35,6 +35,7 @@ from .models import (
     PaymentRecord,
     TaxRecord,
 )
+from .parcel_dossier import build_parcel_dossier
 from .parcel_year_facts import rebuild_parcel_year_facts
 from .parse import ParsedPage, parse_page
 from .permits import PermitImportFileError, ingest_permits_csv
@@ -528,6 +529,70 @@ def score_fraud_cmd(
             feature_run_id=feature_run_id,
             parcel_ids=parcel_ids,
             years=years,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("parcel-dossier")
+def parcel_dossier_cmd(
+    id: Optional[str] = typer.Option(
+        None,
+        "--id",
+        help="Target parcel ID",
+    ),
+    parcel_id: Optional[str] = typer.Option(
+        None,
+        "--parcel-id",
+        help="Alias for --id",
+    ),
+    year: list[int] = typer.Option(
+        [],
+        "--year",
+        help="Year filter (repeatable)",
+        min=1,
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version selector",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version selector",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    if (id is None) == (parcel_id is None):
+        raise typer.BadParameter("Provide exactly one of --id or --parcel-id.")
+    if id is not None:
+        selected_parcel_id = id
+    else:
+        assert parcel_id is not None
+        selected_parcel_id = parcel_id
+    selected_parcel_id = selected_parcel_id.strip()
+    if not selected_parcel_id:
+        raise typer.BadParameter("Parcel ID cannot be empty.")
+
+    years = sorted(set(year)) if year else None
+
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = build_parcel_dossier(
+            session,
+            parcel_id=selected_parcel_id,
+            years=years,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
         )
 
     if out:
