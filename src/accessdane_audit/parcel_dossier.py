@@ -55,7 +55,8 @@ def build_parcel_dossier(
     ruleset_version: str = "scoring_rules_v1",
 ) -> dict[str, object]:
     request_years = sorted(set(years)) if years is not None else []
-    years_filter = request_years if years is not None else None
+    # Treat an explicit empty years list as unscoped for header/query loading.
+    years_filter = request_years if request_years else None
     request: dict[str, object] = {
         "parcel_id": parcel_id,
         "years": list(request_years),

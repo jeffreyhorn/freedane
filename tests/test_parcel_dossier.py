@@ -126,6 +126,36 @@ def test_parcel_dossier_cli_supports_out_file(
     assert payload["request"]["parcel_id"] == "P-1"
 
 
+def test_build_parcel_dossier_treats_explicit_empty_year_scope_as_unscoped(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "parcel_dossier_empty_year_scope.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="P-EMPTY", trs_code="TRS-EMPTY"))
+        session.add(
+            ParcelYearFact(
+                parcel_id="P-EMPTY",
+                year=2025,
+                municipality_name="Scope Town",
+            )
+        )
+
+    with session_scope(database_url) as session:
+        payload = parcel_dossier_module.build_parcel_dossier(
+            session,
+            parcel_id="P-EMPTY",
+            years=[],
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["request"]["years"] == []
+    assert payload["parcel"]["parcel_id"] == "P-EMPTY"
+    assert payload["error"] is None
+
+
 def test_parcel_dossier_cli_marks_section_query_errors_as_unavailable(
     tmp_path: Path,
     monkeypatch,
