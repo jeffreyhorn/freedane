@@ -110,7 +110,10 @@ Failure codes (v1):
 
 ## Ranking Contract
 
-Queue candidate rows are pulled from `fraud_scores` filtered by requested scope/options.
+Queue rows originate from `fraud_scores` where `feature_version` and
+`ruleset_version` match the request. This version-matched set is the
+`candidate_count` baseline before optional request filters are applied
+(`parcel_ids`, `years`, `risk_bands`, `requires_review_only`).
 
 Deterministic ranking key (highest priority first):
 
@@ -161,9 +164,15 @@ Producers MUST NOT emit any other `run.status` values in v1.
 
 ## `request`
 
-- `top`
-- `page`
-- `page_size`
+- `top` (nullable int)
+  - top-N mode: integer value (explicit or default `100`)
+  - pagination mode: `null`
+- `page` (nullable int)
+  - top-N mode: `null`
+  - pagination mode: integer value (default `1`)
+- `page_size` (nullable int)
+  - top-N mode: `null`
+  - pagination mode: integer value (default `100`)
 - `parcel_ids` (normalized list; empty list means unscoped)
 - `years` (normalized list; empty list means unscoped)
 - `feature_version`
@@ -173,10 +182,9 @@ Producers MUST NOT emit any other `run.status` values in v1.
 
 ## `summary`
 
-- `candidate_count` (score rows considered before optional request filters:
-  parcel IDs, years, risk bands, requires-review mode)
-- `filtered_count`
-- `returned_count`
+- `candidate_count` (version-matched baseline rows before optional request filters)
+- `filtered_count` (rows excluded by optional request filters from `candidate_count`)
+- `returned_count` (rows emitted after filtering and top/page slicing)
 - `truncated` (bool)
 - `page`
 - `page_size`
