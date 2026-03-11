@@ -78,11 +78,12 @@ accessdane review-queue \
 - `--top` (optional; top-N mode; default `100` when pagination flags are omitted; min `1`; max `1000`)
   - In top-N mode (default), neither `--page` nor `--page-size` is provided and the command returns the first N ranked rows for the requested scope.
   - `--top` may be set explicitly, or omitted to use the default `100`, but only when pagination flags are not used.
+  - Providing `--top` together with `--page` or `--page-size` is an invalid CLI option combination (`exit 2`, no JSON payload).
 - `--page` and `--page-size` (optional; pagination mode)
   - Pagination mode is activated when either `--page` or `--page-size` is provided.
   - `page` default `1`, min `1`
   - `page-size` default `100`, min `1`, max `500`
-  - In pagination mode, `--top` must be omitted and treated as `null`.
+  - In pagination mode, `--top` must be omitted and treated as `null`; if provided, fail as the invalid CLI combination above.
 - `--id` / `--ids` (optional parcel scope)
   - normalization: collect all IDs from `--id` and `--ids`, trim whitespace, drop empty values, de-duplicate by normalized ID, then sort lexicographically for stable scope evaluation/output
 - `--year` (optional repeatable filter)
@@ -102,7 +103,9 @@ accessdane review-queue \
 - Success (`exit 0`): payload emitted/written with required keys.
 - Request failure (`exit 1`): payload includes `run.status = failed` and `error`.
 - Invalid CLI option values (`exit 2`): Typer/Click validation error; no JSON payload is emitted (only usage/error text from Typer/Click).
-  - Includes mutually exclusive flag conflicts such as providing both `--requires-review-only` and `--all-scores`.
+  - Includes mutually exclusive/conflicting flag combinations such as:
+    - providing both `--requires-review-only` and `--all-scores`
+    - providing `--top` together with `--page` or `--page-size`
   - Fixture expectation: assert exit code and CLI error text only; no JSON failure payload and no `error.code`.
 
 Failure codes (v1):
@@ -290,6 +293,17 @@ Rows with missing optional enrichment fields are retained and not dropped.
 
 CSV and JSON row counts must match for the same command invocation.
 `run_id` in both JSON and CSV maps to `fraud_scores.run_id`.
+
+### CSV Dialect (v1, Stable Contract)
+
+- File encoding: UTF-8 without BOM.
+- Newline: `\n` (LF) on all platforms.
+- Delimiter: comma (`,`).
+- Header row: required, with column names in the exact order listed above.
+- Quoting: RFC 4180-style minimal quoting using `"` when a field contains comma, quote, or newline.
+- Quote escaping: embedded `"` characters are escaped by doubling (`"` -> `""`).
+- Nulls: nullable fields emit as empty fields; non-null empty strings emit as `""`.
+- Boolean columns (for example, `requires_review`) emit lowercase `true` / `false`.
 
 ## Comparability Semantics
 
