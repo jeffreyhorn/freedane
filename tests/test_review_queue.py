@@ -287,6 +287,39 @@ def test_review_queue_module_invalid_risk_band_returns_specific_failure_payload(
     assert payload["error"]["code"] != "source_query_error"
 
 
+def test_review_queue_module_normalizes_non_positive_slice_inputs(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "review_queue_slice_normalization.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_review_queue_fixture(session)
+
+    with session_scope(database_url) as session:
+        paged_payload = review_queue_module.build_review_queue(
+            session,
+            page=0,
+            page_size=0,
+        )
+    assert paged_payload["run"]["status"] == "succeeded"
+    assert paged_payload["request"]["page"] == 1
+    assert paged_payload["request"]["page_size"] == 1
+    assert paged_payload["summary"]["page"] == 1
+    assert paged_payload["summary"]["page_size"] == 1
+    assert paged_payload["summary"]["returned_count"] == 1
+
+    with session_scope(database_url) as session:
+        top_payload = review_queue_module.build_review_queue(
+            session,
+            top=0,
+        )
+    assert top_payload["run"]["status"] == "succeeded"
+    assert top_payload["request"]["top"] == 1
+    assert top_payload["summary"]["returned_count"] == 1
+
+
 def test_review_queue_cli_sanitizes_source_query_errors(
     tmp_path: Path,
     monkeypatch,

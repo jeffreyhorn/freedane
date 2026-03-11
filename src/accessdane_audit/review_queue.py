@@ -439,16 +439,21 @@ def _resolve_mode(
 ) -> _ResolvedMode:
     in_pagination_mode = page is not None or page_size is not None
     if in_pagination_mode:
+        resolved_page = _PAGE_DEFAULT if page is None else max(page, 1)
+        resolved_page_size = (
+            _PAGE_SIZE_DEFAULT if page_size is None else max(page_size, 1)
+        )
         return _ResolvedMode(
             slice_mode="page",
             top=None,
-            page=page if page is not None else _PAGE_DEFAULT,
-            page_size=page_size if page_size is not None else _PAGE_SIZE_DEFAULT,
+            page=resolved_page,
+            page_size=resolved_page_size,
         )
 
+    resolved_top = _TOP_N_DEFAULT if top is None else max(top, 1)
     return _ResolvedMode(
         slice_mode="top",
-        top=top if top is not None else _TOP_N_DEFAULT,
+        top=resolved_top,
         page=None,
         page_size=None,
     )
