@@ -131,15 +131,6 @@ class _ResolvedMode:
     page_size: Optional[int]
 
 
-@dataclass(frozen=True)
-class _ScoredCandidate:
-    score: FraudScore
-    primary_reason_code: Optional[str]
-    primary_reason_weight: Optional[str]
-    municipality_name: Optional[str]
-    valuation_classification: Optional[str]
-
-
 def build_review_queue(
     session: Session,
     *,
@@ -156,6 +147,7 @@ def build_review_queue(
     normalized_parcel_ids = _normalize_parcel_ids(parcel_ids)
     normalized_years = sorted(set(years or []))
     normalized_risk_bands = _normalize_risk_bands(risk_bands)
+    unsupported_risk_bands = _unsupported_risk_bands(risk_bands)
     resolved_mode = _resolve_mode(top=top, page=page, page_size=page_size)
 
     request: ReviewQueueRequest = {
@@ -169,6 +161,18 @@ def build_review_queue(
         "risk_bands": normalized_risk_bands,
         "requires_review_only": requires_review_only,
     }
+
+    if unsupported_risk_bands:
+        supported_values = ", ".join(sorted(RISK_BAND_PRECEDENCE))
+        return _failure_payload(
+            request=request,
+            code="unsupported_risk_band",
+            message=(
+                "Unsupported risk_bands: "
+                f"{', '.join(unsupported_risk_bands)}. "
+                f"Supported values: {supported_values}."
+            ),
+        )
 
     if ruleset_version not in SUPPORTED_RULESET_VERSIONS:
         supported_values = ", ".join(SUPPORTED_RULESET_VERSIONS)
@@ -190,26 +194,37 @@ def build_review_queue(
 
         filtered_reason_counts: dict[str, int] = {}
         filtered_scores = list(base_scores)
+        parcel_id_set = set(normalized_parcel_ids) if normalized_parcel_ids else None
+        year_set = set(normalized_years) if normalized_years else None
+        risk_band_set = set(normalized_risk_bands) if normalized_risk_bands else None
+
         filtered_scores = _apply_filter(
             filtered_scores,
             filtered_reason_counts,
             reason_key="filtered_by_parcel_id",
-            predicate=(lambda row: row.parcel_id in set(normalized_parcel_ids)),
-            enabled=bool(normalized_parcel_ids),
+            predicate=(
+                lambda row, ids=parcel_id_set: ids is not None and row.parcel_id in ids
+            ),
+            enabled=parcel_id_set is not None,
         )
         filtered_scores = _apply_filter(
             filtered_scores,
             filtered_reason_counts,
             reason_key="filtered_by_year",
-            predicate=(lambda row: row.year in set(normalized_years)),
-            enabled=bool(normalized_years),
+            predicate=(
+                lambda row, years=year_set: years is not None and row.year in years
+            ),
+            enabled=year_set is not None,
         )
         filtered_scores = _apply_filter(
             filtered_scores,
             filtered_reason_counts,
             reason_key="filtered_by_risk_band",
-            predicate=(lambda row: row.risk_band in set(normalized_risk_bands)),
-            enabled=bool(normalized_risk_bands),
+            predicate=(
+                lambda row, bands=risk_band_set: bands is not None
+                and row.risk_band in bands
+            ),
+            enabled=risk_band_set is not None,
         )
         filtered_scores = _apply_filter(
             filtered_scores,
@@ -443,7 +458,15 @@ def _normalize_risk_bands(risk_bands: Optional[Sequence[str]]) -> list[str]:
     if not risk_bands:
         return []
     normalized = {band.strip().lower() for band in risk_bands if band.strip()}
-    return sorted(normalized, key=lambda value: RISK_BAND_PRECEDENCE[value])
+    supported = {band for band in normalized if band in RISK_BAND_PRECEDENCE}
+    return sorted(supported, key=lambda value: RISK_BAND_PRECEDENCE[value])
+
+
+def _unsupported_risk_bands(risk_bands: Optional[Sequence[str]]) -> list[str]:
+    if not risk_bands:
+        return []
+    normalized = {band.strip().lower() for band in risk_bands if band.strip()}
+    return sorted(band for band in normalized if band not in RISK_BAND_PRECEDENCE)
 
 
 def _load_base_scores(

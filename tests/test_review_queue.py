@@ -229,16 +229,6 @@ def test_review_queue_cli_validation_errors_exit_two_without_json(
     assert result_top_page.exit_code == 2
     assert "Cannot combine --top" in (result_top_page.stdout + result_top_page.stderr)
 
-    result_mode_conflict = runner.invoke(
-        cli.app,
-        ["review-queue", "--requires-review-only", "--all-scores"],
-    )
-    assert result_mode_conflict.exit_code == 2
-    mode_conflict_output = result_mode_conflict.stdout + result_mode_conflict.stderr
-    assert "Cannot combine" in mode_conflict_output
-    assert "--requires-review-only" in mode_conflict_output
-    assert "--all-scores" in mode_conflict_output
-
     result_empty_ids = runner.invoke(
         cli.app,
         ["review-queue", "--ids", str(ids_path)],
@@ -273,6 +263,28 @@ def test_review_queue_cli_unsupported_ruleset_returns_exit_one_json(
     payload = json.loads(result.stdout)
     assert payload["run"]["status"] == "failed"
     assert payload["error"]["code"] == "unsupported_version_selector"
+
+
+def test_review_queue_module_invalid_risk_band_returns_specific_failure_payload(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "review_queue_invalid_risk_band.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_review_queue_fixture(session)
+
+    with session_scope(database_url) as session:
+        payload = review_queue_module.build_review_queue(
+            session,
+            risk_bands=["critical"],
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"]["code"] == "unsupported_risk_band"
+    assert "critical" in payload["error"]["message"]
+    assert payload["error"]["code"] != "source_query_error"
 
 
 def test_review_queue_cli_sanitizes_source_query_errors(
@@ -359,7 +371,7 @@ def _seed_review_queue_fixture(session) -> None:
     scores = [
         FraudScore(
             run_id=run.id,
-            feature_run_id=101,
+            feature_run_id=None,
             parcel_id="P-1",
             year=2025,
             ruleset_version="scoring_rules_v1",
@@ -372,7 +384,7 @@ def _seed_review_queue_fixture(session) -> None:
         ),
         FraudScore(
             run_id=run.id,
-            feature_run_id=102,
+            feature_run_id=None,
             parcel_id="P-2",
             year=2025,
             ruleset_version="scoring_rules_v1",
@@ -385,7 +397,7 @@ def _seed_review_queue_fixture(session) -> None:
         ),
         FraudScore(
             run_id=run.id,
-            feature_run_id=103,
+            feature_run_id=None,
             parcel_id="P-3",
             year=2024,
             ruleset_version="scoring_rules_v1",
@@ -398,7 +410,7 @@ def _seed_review_queue_fixture(session) -> None:
         ),
         FraudScore(
             run_id=run.id,
-            feature_run_id=104,
+            feature_run_id=None,
             parcel_id="P-4",
             year=2025,
             ruleset_version="scoring_rules_v1",
@@ -411,7 +423,7 @@ def _seed_review_queue_fixture(session) -> None:
         ),
         FraudScore(
             run_id=run.id,
-            feature_run_id=105,
+            feature_run_id=None,
             parcel_id="P-5",
             year=2025,
             ruleset_version="scoring_rules_v1",
@@ -424,7 +436,7 @@ def _seed_review_queue_fixture(session) -> None:
         ),
         FraudScore(
             run_id=run.id,
-            feature_run_id=106,
+            feature_run_id=None,
             parcel_id="P-6",
             year=2023,
             ruleset_version="scoring_rules_v1",
@@ -437,7 +449,7 @@ def _seed_review_queue_fixture(session) -> None:
         ),
         FraudScore(
             run_id=run.id,
-            feature_run_id=107,
+            feature_run_id=None,
             parcel_id="P-7",
             year=2025,
             ruleset_version="scoring_rules_v1",

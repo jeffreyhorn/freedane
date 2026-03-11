@@ -665,14 +665,9 @@ def review_queue_cmd(
         help="Risk band filter (repeatable: high, medium, low)",
     ),
     requires_review_only: bool = typer.Option(
-        False,
-        "--requires-review-only",
-        help="Return only rows where requires_review is true (default behavior)",
-    ),
-    all_scores: bool = typer.Option(
-        False,
-        "--all-scores",
-        help="Disable requires_review-only filtering",
+        True,
+        "--requires-review-only/--all-scores",
+        help="Filter to requires_review=true rows (default: --requires-review-only)",
     ),
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
     csv_out: Optional[Path] = typer.Option(
@@ -685,11 +680,6 @@ def review_queue_cmd(
         raise typer.BadParameter(
             "Cannot combine --top with --page/--page-size.",
             param_hint="--top",
-        )
-    if requires_review_only and all_scores:
-        raise typer.BadParameter(
-            "Cannot combine --requires-review-only with --all-scores.",
-            param_hint="--requires-review-only",
         )
 
     raw_parcel_ids = _collect_ids(ids, ids_file) if (ids or ids_file) else []
@@ -731,7 +721,7 @@ def review_queue_cmd(
             feature_version=feature_version,
             ruleset_version=ruleset_version,
             risk_bands=normalized_risk_bands,
-            requires_review_only=(False if all_scores else True),
+            requires_review_only=requires_review_only,
         )
 
     if csv_out is not None and payload.get("run", {}).get("status") == "succeeded":
