@@ -249,7 +249,7 @@ Rows with missing optional enrichment fields are retained and not dropped.
     - `filtered_by_parcel_id`
     - `filtered_by_year`
     - `filtered_by_risk_band`
-    - `filtered_requires_review`
+    - `filtered_by_requires_review`
 - `skipped_row_counts` (object)
   - keys may include:
     - `invalid_required_identifiers`
