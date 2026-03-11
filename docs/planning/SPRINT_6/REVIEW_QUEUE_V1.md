@@ -93,6 +93,7 @@ accessdane review-queue \
   - allowed values: `high`, `medium`, `low`
 - `--requires-review-only` / `--all-scores` (mutually exclusive)
   - default mode is `--requires-review-only`
+  - if both flags are provided, treat as invalid CLI option combination (`exit 2`, no JSON payload)
 - `--out` (optional JSON output path)
 - `--csv-out` (optional CSV output path)
 
@@ -101,6 +102,8 @@ accessdane review-queue \
 - Success (`exit 0`): payload emitted/written with required keys.
 - Request failure (`exit 1`): payload includes `run.status = failed` and `error`.
 - Invalid CLI option values (`exit 2`): Typer/Click validation error; no JSON payload is emitted (only usage/error text from Typer/Click).
+  - Includes mutually exclusive flag conflicts such as providing both `--requires-review-only` and `--all-scores`.
+  - Fixture expectation: assert exit code and CLI error text only; no JSON failure payload and no `error.code`.
 
 Failure codes (v1):
 
@@ -119,7 +122,7 @@ Deterministic ranking key (highest priority first):
 
 1. `score_value DESC`
 2. `reason_code_count DESC`
-3. risk-band precedence: `high`, `medium`, `low` (defensive tie-break only; with current
+3. `risk_band` precedence: `high`, `medium`, `low` (defensive tie-break only; with current
    `scoring_rules_v1` this is functionally redundant because `risk_band` is derived
    from `score_value`, but retained for forward compatibility with future rulesets)
 4. `year DESC`
