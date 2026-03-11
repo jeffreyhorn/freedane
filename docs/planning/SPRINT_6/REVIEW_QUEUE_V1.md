@@ -308,9 +308,10 @@ CSV and JSON row counts must match for the same command invocation.
 - Newline: `\n` (LF) on all platforms.
 - Delimiter: comma (`,`).
 - Header row: required, with column names in the exact order listed above.
-- Quoting: RFC 4180-style minimal quoting using `"` when a field contains comma, quote, or newline.
+- Quoting: RFC 4180-style minimal quoting using `"` when a field contains comma, quote, or newline, with one exception:
+  non-null empty strings are always emitted as `""` to distinguish them from nulls.
 - Quote escaping: embedded `"` characters are escaped by doubling (`"` -> `""`).
-- Nulls: nullable fields emit as empty fields; non-null empty strings emit as `""`.
+- Nulls: nullable fields emit as empty unquoted fields; non-null empty strings emit as `""`.
 - Boolean columns (for example, `requires_review`) emit lowercase `true` / `false`.
 
 ## Comparability Semantics
