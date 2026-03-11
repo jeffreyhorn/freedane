@@ -169,8 +169,8 @@ def get_parcel_header(
     query = select(ParcelYearFact).where(ParcelYearFact.parcel_id == parcel_id)
     if years_list is not None:
         query = query.where(ParcelYearFact.year.in_(years_list))
-    facts = session.execute(query).scalars().all()
-    selected_fact = max(facts, key=lambda row: row.year) if facts else None
+    query = query.order_by(ParcelYearFact.year.desc()).limit(1)
+    selected_fact = session.execute(query).scalars().first()
 
     return {
         "parcel_id": parcel.id,

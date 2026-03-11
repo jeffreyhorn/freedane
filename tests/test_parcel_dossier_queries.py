@@ -7,6 +7,7 @@ from pathlib import Path
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     AppealEvent,
+    AssessmentRecord,
     FraudFlag,
     FraudScore,
     Parcel,
@@ -62,8 +63,6 @@ def test_list_assessment_history_includes_fallback_rows_with_deterministic_order
                 ),
             ]
         )
-        from accessdane_audit.models import AssessmentRecord
-
         session.add_all(
             [
                 AssessmentRecord(
