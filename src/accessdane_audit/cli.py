@@ -47,7 +47,11 @@ from .retr import (
     ingest_retr_csv,
     match_sales_transactions,
 )
-from .review_queue import build_review_queue, write_review_queue_csv
+from .review_queue import (
+    RISK_BAND_PRECEDENCE,
+    build_review_queue,
+    write_review_queue_csv,
+)
 from .sales_ratio_study import build_sales_ratio_study
 from .score_fraud import SUPPORTED_RULESET_VERSIONS, score_fraud
 from .scrape import fetch_page
@@ -694,20 +698,14 @@ def review_queue_cmd(
         {band.strip().lower() for band in risk_band if band.strip()}
     )
     unsupported_bands = sorted(
-        {
-            band
-            for band in normalized_risk_bands
-            if band not in {"high", "medium", "low"}
-        }
+        {band for band in normalized_risk_bands if band not in RISK_BAND_PRECEDENCE}
     )
     if unsupported_bands:
         raise typer.BadParameter(
             f"Unsupported --risk-band values: {', '.join(unsupported_bands)}.",
             param_hint="--risk-band",
         )
-    normalized_risk_bands.sort(
-        key=lambda value: {"high": 0, "medium": 1, "low": 2}[value]
-    )
+    normalized_risk_bands.sort(key=lambda value: RISK_BAND_PRECEDENCE[value])
 
     settings = load_settings()
     with session_scope(settings.database_url) as session:

@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Mapping, Optional, Sequence, TypedDict
+from typing import Any, Mapping, Optional, Sequence, TypedDict
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import case, func, select, tuple_
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
 
 from .models import FraudFlag, FraudScore, ParcelYearFact
 from .score_fraud import SUPPORTED_RULESET_VERSIONS
@@ -18,7 +20,8 @@ _SOURCE_QUERY_ERROR_MESSAGE = "Failed to query source data while building review
 _TOP_N_DEFAULT = 100
 _PAGE_DEFAULT = 1
 _PAGE_SIZE_DEFAULT = 100
-_IN_CLAUSE_BATCH_SIZE = 800
+_SCALAR_IN_CLAUSE_BATCH_SIZE = 800
+_COMPOSITE_KEY_IN_CLAUSE_BATCH_SIZE = 400
 
 RISK_BAND_PRECEDENCE: dict[str, int] = {
     "high": 0,
@@ -186,82 +189,92 @@ def build_review_queue(
         )
 
     try:
-        base_scores = _load_base_scores(
-            session,
-            feature_version=feature_version,
-            ruleset_version=ruleset_version,
-        )
+        base_conditions = [
+            FraudScore.feature_version == feature_version,
+            FraudScore.ruleset_version == ruleset_version,
+        ]
+        candidate_count = _count_scores(session, conditions=base_conditions)
 
         filtered_reason_counts: dict[str, int] = {}
-        filtered_scores = list(base_scores)
-        parcel_id_set = set(normalized_parcel_ids) if normalized_parcel_ids else None
-        year_set = set(normalized_years) if normalized_years else None
-        risk_band_set = set(normalized_risk_bands) if normalized_risk_bands else None
+        filtered_conditions = list(base_conditions)
+        filtered_total_count = candidate_count
 
-        filtered_scores = _apply_filter(
-            filtered_scores,
-            filtered_reason_counts,
-            reason_key="filtered_by_parcel_id",
-            predicate=(
-                lambda row, ids=parcel_id_set: ids is not None and row.parcel_id in ids
-            ),
-            enabled=parcel_id_set is not None,
-        )
-        filtered_scores = _apply_filter(
-            filtered_scores,
-            filtered_reason_counts,
-            reason_key="filtered_by_year",
-            predicate=(
-                lambda row, years=year_set: years is not None and row.year in years
-            ),
-            enabled=year_set is not None,
-        )
-        filtered_scores = _apply_filter(
-            filtered_scores,
-            filtered_reason_counts,
-            reason_key="filtered_by_risk_band",
-            predicate=(
-                lambda row, bands=risk_band_set: bands is not None
-                and row.risk_band in bands
-            ),
-            enabled=risk_band_set is not None,
-        )
-        filtered_scores = _apply_filter(
-            filtered_scores,
-            filtered_reason_counts,
-            reason_key="filtered_by_requires_review",
-            predicate=(lambda row: bool(row.requires_review)),
-            enabled=requires_review_only,
-        )
+        if normalized_parcel_ids:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=FraudScore.parcel_id.in_(normalized_parcel_ids),
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_parcel_id",
+            )
+        if normalized_years:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=FraudScore.year.in_(normalized_years),
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_year",
+            )
+        if normalized_risk_bands:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=FraudScore.risk_band.in_(normalized_risk_bands),
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_risk_band",
+            )
+        if requires_review_only:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=(FraudScore.requires_review.is_(True)),
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_requires_review",
+            )
 
-        filtered_scores.sort(key=_score_sort_key)
-
-        primary_reason_map = _load_primary_reason_map(
-            session,
-            score_ids=[row.id for row in filtered_scores],
-        )
-        parcel_fact_map = _load_parcel_fact_map(
-            session,
-            score_rows=filtered_scores,
+        valid_conditions = [*filtered_conditions, *_required_identifier_conditions()]
+        invalid_required_identifiers = max(
+            filtered_total_count - _count_scores(session, conditions=valid_conditions),
+            0,
         )
 
         skipped_row_counts = {
-            "invalid_required_identifiers": 0,
-            "duplicate_score_id_after_join": 0,
+            "invalid_required_identifiers": invalid_required_identifiers,
         }
-        seen_score_ids: set[int] = set()
-        eligible_rows: list[ReviewQueueRow] = []
 
-        for score in filtered_scores:
-            if score.id in seen_score_ids:
-                skipped_row_counts["duplicate_score_id_after_join"] += 1
-                continue
-            seen_score_ids.add(score.id)
+        eligible_total = _count_scores(session, conditions=valid_conditions)
+        paged_query = (
+            select(FraudScore)
+            .where(*valid_conditions)
+            .order_by(*_score_order_clauses())
+        )
+        if resolved_mode.slice_mode == "top":
+            assert resolved_mode.top is not None
+            paged_query = paged_query.limit(resolved_mode.top)
+            queue_rank_start = 1
+        else:
+            assert resolved_mode.page is not None
+            assert resolved_mode.page_size is not None
+            offset = max((resolved_mode.page - 1) * resolved_mode.page_size, 0)
+            paged_query = paged_query.offset(offset).limit(resolved_mode.page_size)
+            queue_rank_start = offset + 1
 
-            if not _has_required_identifiers(score):
-                skipped_row_counts["invalid_required_identifiers"] += 1
-                continue
+        scored_rows = _load_base_scores(session, query=paged_query)
+        primary_reason_map = _load_primary_reason_map(
+            session,
+            score_ids=[row.id for row in scored_rows],
+        )
+        parcel_fact_map = _load_parcel_fact_map(
+            session,
+            score_rows=scored_rows,
+        )
 
+        returned_rows: list[ReviewQueueRow] = []
+        for index, score in enumerate(scored_rows, start=queue_rank_start):
             reason_code, reason_weight = primary_reason_map.get(score.id, (None, None))
             primary_reason_weight = _format_primary_reason_weight(
                 primary_reason_code=reason_code,
@@ -278,9 +291,9 @@ def build_review_queue(
                 else None
             )
 
-            eligible_rows.append(
+            returned_rows.append(
                 {
-                    "queue_rank": 0,
+                    "queue_rank": index,
                     "score_id": score.id,
                     "run_id": score.run_id,
                     "feature_run_id": score.feature_run_id,
@@ -303,16 +316,9 @@ def build_review_queue(
                 }
             )
 
-        for index, row in enumerate(eligible_rows, start=1):
-            row["queue_rank"] = index
-
-        returned_rows = _slice_rows(eligible_rows, resolved_mode)
-
-        candidate_count = len(base_scores)
         filtered_count = sum(filtered_reason_counts.values())
         skipped_count = sum(skipped_row_counts.values())
         returned_count = len(returned_rows)
-        eligible_total = len(eligible_rows)
 
         summary: ReviewQueueSummary = {
             "candidate_count": candidate_count,
@@ -469,12 +475,79 @@ def _unsupported_risk_bands(risk_bands: Optional[Sequence[str]]) -> list[str]:
     return sorted(band for band in normalized if band not in RISK_BAND_PRECEDENCE)
 
 
+def _count_scores(
+    session: Session,
+    *,
+    conditions: Sequence[ColumnElement[bool]],
+) -> int:
+    return int(
+        session.execute(
+            select(func.count(FraudScore.id)).where(*conditions)
+        ).scalar_one()
+    )
+
+
+def _advance_filter_stage(
+    session: Session,
+    *,
+    filtered_conditions: list[ColumnElement[bool]],
+    previous_count: int,
+    extra_condition: ColumnElement[bool],
+    filtered_reason_counts: dict[str, int],
+    reason_key: str,
+) -> int:
+    filtered_conditions.append(extra_condition)
+    next_count = _count_scores(session, conditions=filtered_conditions)
+    excluded_count = max(previous_count - next_count, 0)
+    if excluded_count > 0:
+        filtered_reason_counts[reason_key] = excluded_count
+    return next_count
+
+
+def _required_identifier_conditions() -> tuple[ColumnElement[bool], ...]:
+    return (
+        FraudScore.id.is_not(None),
+        FraudScore.run_id.is_not(None),
+        FraudScore.parcel_id.is_not(None),
+        func.length(func.trim(FraudScore.parcel_id)) > 0,
+        FraudScore.year >= 1,
+    )
+
+
+def _score_order_clauses() -> tuple[ColumnElement[Any], ...]:
+    risk_band_rank = case(
+        (FraudScore.risk_band == "high", 0),
+        (FraudScore.risk_band == "medium", 1),
+        (FraudScore.risk_band == "low", 2),
+        else_=99,
+    )
+    return (
+        FraudScore.score_value.desc(),
+        FraudScore.reason_code_count.desc(),
+        risk_band_rank.asc(),
+        FraudScore.year.desc(),
+        FraudScore.parcel_id.asc(),
+        FraudScore.id.asc(),
+    )
+
+
 def _load_base_scores(
     session: Session,
     *,
-    feature_version: str,
-    ruleset_version: str,
+    query: Optional[Select[tuple[FraudScore]]] = None,
+    feature_version: Optional[str] = None,
+    ruleset_version: Optional[str] = None,
 ) -> list[FraudScore]:
+    if query is not None:
+        return list(session.execute(query).scalars().all())
+
+    if feature_version is None or ruleset_version is None:
+        msg = (
+            "feature_version and ruleset_version are required when query is not "
+            "provided"
+        )
+        raise ValueError(msg)
+
     return list(
         session.execute(
             select(FraudScore)
@@ -498,7 +571,7 @@ def _load_primary_reason_map(
         return {}
 
     primary_map: dict[int, tuple[Optional[str], Optional[Decimal]]] = {}
-    for batch in _chunked(score_ids, _IN_CLAUSE_BATCH_SIZE):
+    for batch in _chunked(score_ids, _SCALAR_IN_CLAUSE_BATCH_SIZE):
         flags = (
             session.execute(
                 select(FraudFlag)
@@ -524,7 +597,7 @@ def _load_parcel_fact_map(
         return {}
 
     fact_map: dict[tuple[str, int], ParcelYearFact] = {}
-    for batch in _chunked(keys, _IN_CLAUSE_BATCH_SIZE):
+    for batch in _chunked(keys, _COMPOSITE_KEY_IN_CLAUSE_BATCH_SIZE):
         rows = (
             session.execute(
                 select(ParcelYearFact).where(
@@ -539,52 +612,6 @@ def _load_parcel_fact_map(
     return fact_map
 
 
-def _apply_filter(
-    rows: list[FraudScore],
-    filtered_reason_counts: dict[str, int],
-    *,
-    reason_key: str,
-    predicate,
-    enabled: bool,
-) -> list[FraudScore]:
-    if not enabled:
-        return rows
-
-    included: list[FraudScore] = []
-    excluded_count = 0
-    for row in rows:
-        if predicate(row):
-            included.append(row)
-        else:
-            excluded_count += 1
-    if excluded_count > 0:
-        filtered_reason_counts[reason_key] = excluded_count
-    return included
-
-
-def _score_sort_key(row: FraudScore) -> tuple[Decimal, int, int, int, str, int]:
-    return (
-        Decimal("0.00") - row.score_value,
-        -row.reason_code_count,
-        RISK_BAND_PRECEDENCE.get(row.risk_band, 99),
-        -row.year,
-        row.parcel_id,
-        row.id,
-    )
-
-
-def _has_required_identifiers(row: FraudScore) -> bool:
-    if row.id is None:
-        return False
-    if row.run_id is None:
-        return False
-    if not isinstance(row.parcel_id, str) or not row.parcel_id.strip():
-        return False
-    if not isinstance(row.year, int) or row.year < 1:
-        return False
-    return True
-
-
 def _format_primary_reason_weight(
     *,
     primary_reason_code: Optional[str],
@@ -595,22 +622,6 @@ def _format_primary_reason_weight(
     if severity_weight is None:
         return None
     return _decimal_to_str(severity_weight, scale=4)
-
-
-def _slice_rows(
-    rows: list[ReviewQueueRow],
-    mode: _ResolvedMode,
-) -> list[ReviewQueueRow]:
-    if mode.slice_mode == "top":
-        assert mode.top is not None
-        return rows[: mode.top]
-
-    assert mode.page is not None
-    assert mode.page_size is not None
-    offset = (mode.page - 1) * mode.page_size
-    if offset < 0:
-        return []
-    return rows[offset : offset + mode.page_size]
 
 
 def _total_pages(eligible_count: int, page_size: Optional[int]) -> Optional[int]:
