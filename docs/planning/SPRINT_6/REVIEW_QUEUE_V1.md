@@ -186,9 +186,15 @@ Producers MUST NOT emit any other `run.status` values in v1.
 - `filtered_count` (rows excluded by optional request filters from `candidate_count`)
 - `returned_count` (rows emitted after filtering and top/page slicing)
 - `truncated` (bool)
-- `page`
-- `page_size`
-- `total_pages`
+- `page` (nullable int)
+  - top-N mode: `null`
+  - pagination mode: integer value for current page (default `1`)
+- `page_size` (nullable int)
+  - top-N mode: `null`
+  - pagination mode: integer value for effective page size (default `100`)
+- `total_pages` (nullable int)
+  - top-N mode: `null`
+  - pagination mode: integer value computed from `filtered_count` and `page_size`
 
 ## `rows`
 
