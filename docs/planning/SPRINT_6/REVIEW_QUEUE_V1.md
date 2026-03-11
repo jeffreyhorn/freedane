@@ -197,8 +197,9 @@ Producers MUST NOT emit any other `run.status` values in v1.
 
 - `candidate_count` (version-matched baseline rows before optional request filters)
 - `filtered_count` (rows excluded by optional request filters from `candidate_count`)
-- `returned_count` (rows emitted after filtering and top/page slicing)
-- `truncated` (bool; `true` when `returned_count < (candidate_count - filtered_count)`, else `false`)
+- `skipped_count` (rows excluded after filtering due to hard-skip checks, e.g., invalid identifiers or duplicate join artifacts)
+- `returned_count` (rows emitted after filtering, hard-skip checks, and top/page slicing)
+- `truncated` (bool; `true` when `returned_count < (candidate_count - filtered_count - skipped_count)`, else `false`)
 - `page` (nullable int)
   - top-N mode: `null`
   - pagination mode: integer value for current page (default `1`)
@@ -207,7 +208,7 @@ Producers MUST NOT emit any other `run.status` values in v1.
   - pagination mode: integer value for effective page size (default `100`)
 - `total_pages` (nullable int)
   - top-N mode: `null`
-  - pagination mode: integer value computed from `(candidate_count - filtered_count)` and `page_size`
+  - pagination mode: integer value computed from `(candidate_count - filtered_count - skipped_count)` and `page_size`
 
 ## `rows`
 
@@ -224,8 +225,8 @@ Each row contains:
 - `requires_review`
 - `reason_code_count`
 - `primary_reason_code` (nullable string)
-- `primary_reason_weight` (decimal string; nullable only when severity is unknown; when present, formatted with exactly 4 digits after the decimal point)
-  - when `primary_reason_code` is `null`: emit `"0.0000"` (4dp sentinel)
+- `primary_reason_weight` (decimal string; nullable when there is no primary reason or severity is unknown; when present, formatted with exactly 4 digits after the decimal point)
+  - when `primary_reason_code` is `null`: emit `null`
   - when `primary_reason_code` is present and severity is known: emit decimal string quantized to 4 decimal places
   - when `primary_reason_code` is present but severity is unknown: emit `null`
 - `municipality_name` (nullable string)
@@ -253,6 +254,7 @@ Rows with missing optional enrichment fields are retained and not dropped.
   - keys may include:
     - `invalid_required_identifiers`
     - `duplicate_score_id_after_join`
+  - `summary.skipped_count` MUST equal the sum of values in `skipped_row_counts`.
 - `comparability` (object)
   - `comparable` (bool)
   - `queue_contract_version` (`review_queue_v1`)
