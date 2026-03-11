@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Iterable, Optional, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -407,6 +407,13 @@ def list_permit_events(
         PermitEvent.parcel_id == parcel_id,
         PermitEvent.import_status == "loaded",
     )
+    if years_list is not None:
+        query = query.where(
+            or_(
+                PermitEvent.permit_year.in_(years_list),
+                PermitEvent.permit_year.is_(None),
+            )
+        )
     permits = session.execute(query).scalars().all()
 
     result: list[PermitEventRow] = []
@@ -464,6 +471,13 @@ def list_appeal_events(
         AppealEvent.parcel_id == parcel_id,
         AppealEvent.import_status == "loaded",
     )
+    if years_list is not None:
+        query = query.where(
+            or_(
+                AppealEvent.tax_year.in_(years_list),
+                AppealEvent.tax_year.is_(None),
+            )
+        )
     appeals = session.execute(query).scalars().all()
 
     result: list[AppealEventRow] = []

@@ -388,9 +388,7 @@ def test_list_reason_code_evidence_orders_scores_and_nested_flags(
     ]
 
 
-def test_build_timeline_rows_applies_precedence_and_excludes_fallback_assessments() -> (
-    None
-):
+def test_build_timeline_rows_precedence_excludes_fallback_assessments() -> None:
     rows = build_timeline_rows(
         assessment_history=[
             {
