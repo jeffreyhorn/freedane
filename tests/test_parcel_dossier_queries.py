@@ -829,6 +829,20 @@ def test_list_permit_events_year_scoping_with_fallback_dates(tmp_path: Path) -> 
                     source_system="permits",
                     source_file_name="permits.csv",
                     source_file_sha256="permits-sha",
+                    source_row_number=7,
+                    source_headers=[],
+                    raw_row={},
+                    import_status="loaded",
+                    parcel_id="P-1",
+                    permit_year=None,
+                    finaled_date=date(2024, 11, 30),
+                    permit_number="PERM-7",
+                    permit_type="finaled_only",
+                ),
+                PermitEvent(
+                    source_system="permits",
+                    source_file_name="permits.csv",
+                    source_file_sha256="permits-sha",
                     source_row_number=4,
                     source_headers=[],
                     raw_row={},
@@ -874,10 +888,12 @@ def test_list_permit_events_year_scoping_with_fallback_dates(tmp_path: Path) -> 
         rows = list_permit_events(session, parcel_id="P-1", years=[2024])
         empty_rows = list_permit_events(session, parcel_id="P-1", years=[])
 
-    assert [row["permit_event_id"] for row in rows] == [2, 1, 3]
+    assert [row["permit_event_id"] for row in rows] == [2, 4, 1, 3]
     assert rows[0]["permit_year"] is None
     assert rows[1]["permit_year"] is None
-    assert rows[2]["permit_year"] == 2024
+    assert rows[1]["finaled_date"] == date(2024, 11, 30)
+    assert rows[2]["permit_year"] is None
+    assert rows[3]["permit_year"] == 2024
     assert empty_rows == []
 
 

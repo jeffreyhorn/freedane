@@ -416,6 +416,7 @@ def list_permit_events(
             permit.permit_year,
             permit.issued_date,
             permit.applied_date,
+            permit.finaled_date,
             permit.status_date,
         ):
             continue
@@ -797,7 +798,12 @@ def _year_in_scope(
 
 
 def _coalesced_permit_date(row: PermitEventRow) -> Optional[date]:
-    return row["issued_date"] or row["applied_date"] or row["status_date"]
+    return (
+        row["issued_date"]
+        or row["applied_date"]
+        or row["finaled_date"]
+        or row["status_date"]
+    )
 
 
 def _coalesced_permit_ordinal(row: PermitEventRow) -> int:
