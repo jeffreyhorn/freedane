@@ -128,7 +128,22 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
             arms_length_indicator_norm=False,
             usable_sale_indicator_norm=True,
         )
-        session.add_all([txn_1, txn_2])
+        txn_3 = SalesTransaction(
+            source_system="retr",
+            source_file_name="retr.csv",
+            source_file_sha256="sha-1",
+            source_row_number=3,
+            source_headers=[],
+            raw_row={},
+            import_status="loaded",
+            transfer_date=None,
+            recording_date=date(2026, 1, 15),
+            consideration_amount=Decimal("400000.00"),
+            document_number="DOC-3",
+            arms_length_indicator_norm=True,
+            usable_sale_indicator_norm=True,
+        )
+        session.add_all([txn_1, txn_2, txn_3])
         session.flush()
 
         session.add_all(
@@ -182,6 +197,15 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
                     is_primary=False,
                     match_review_status="reviewed",
                 ),
+                SalesParcelMatch(
+                    sales_transaction_id=txn_3.id,
+                    parcel_id="P-1",
+                    match_method="parcel_number",
+                    confidence_score=Decimal("0.9500"),
+                    match_rank=1,
+                    is_primary=False,
+                    match_review_status="reviewed",
+                ),
             ]
         )
         session.add_all(
@@ -210,11 +234,12 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
     with session_scope(database_url) as session:
         rows = list_matched_sales(session, parcel_id="P-1")
 
-    assert [row["sales_transaction_id"] for row in rows] == [1, 2]
-    assert rows[0]["match_method"] == "parcel_number"
-    assert rows[0]["active_exclusion_codes"] == ["non_arms_length", "related_party"]
+    assert [row["sales_transaction_id"] for row in rows] == [3, 1, 2]
+    assert rows[0]["recording_date"] == date(2026, 1, 15)
     assert rows[1]["match_method"] == "parcel_number"
-    assert rows[1]["active_exclusion_codes"] == []
+    assert rows[1]["active_exclusion_codes"] == ["non_arms_length", "related_party"]
+    assert rows[2]["match_method"] == "parcel_number"
+    assert rows[2]["active_exclusion_codes"] == []
 
 
 def test_list_reason_code_evidence_orders_scores_and_nested_flags(
@@ -461,15 +486,10 @@ def test_dossier_support_indexes_exist_at_head(tmp_path: Path) -> None:
     database_url = f"sqlite:///{db_path}"
     init_db(database_url)
 
+    from sqlalchemy import inspect
+
     with session_scope(database_url) as session:
-        inspector = session.get_bind().dialect
-        assert inspector is not None
-
-    from sqlalchemy import create_engine, inspect
-
-    engine = create_engine(database_url, future=True)
-    try:
-        db_inspector = inspect(engine)
+        db_inspector = inspect(session.get_bind())
         assessments_indexes = {
             index["name"]: tuple(index["column_names"])
             for index in db_inspector.get_indexes("assessments")
@@ -510,8 +530,6 @@ def test_dossier_support_indexes_exist_at_head(tmp_path: Path) -> None:
             "score_id",
             "reason_rank",
         )
-    finally:
-        engine.dispose()
 
 
 def test_reason_code_evidence_year_scope_filters_rows(tmp_path: Path) -> None:

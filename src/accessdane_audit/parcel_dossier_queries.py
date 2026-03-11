@@ -317,12 +317,8 @@ def list_matched_sales(
 
     rows.sort(
         key=lambda row: (
-            row["transfer_date"] is None,
-            -(
-                row["transfer_date"].toordinal()
-                if row["transfer_date"] is not None
-                else -1
-            ),
+            _coalesced_sale_date_from_row(row) is None,
+            -_coalesced_sale_ordinal_from_row(row),
             -row["sales_transaction_id"],
         )
     )
@@ -757,6 +753,15 @@ def _coalesced_sale_year_from_row(row: MatchedSaleRow) -> Optional[int]:
     if row["recording_date"] is not None:
         return row["recording_date"].year
     return None
+
+
+def _coalesced_sale_date_from_row(row: MatchedSaleRow) -> Optional[date]:
+    return row["transfer_date"] or row["recording_date"]
+
+
+def _coalesced_sale_ordinal_from_row(row: MatchedSaleRow) -> int:
+    coalesced = _coalesced_sale_date_from_row(row)
+    return coalesced.toordinal() if coalesced is not None else -1
 
 
 def _year_in_scope(
