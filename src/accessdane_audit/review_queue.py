@@ -237,16 +237,14 @@ def build_review_queue(
             )
 
         valid_conditions = [*filtered_conditions, *_required_identifier_conditions()]
-        invalid_required_identifiers = max(
-            filtered_total_count - _count_scores(session, conditions=valid_conditions),
-            0,
-        )
+        valid_count = _count_scores(session, conditions=valid_conditions)
+        invalid_required_identifiers = max(filtered_total_count - valid_count, 0)
 
         skipped_row_counts = {
             "invalid_required_identifiers": invalid_required_identifiers,
         }
 
-        eligible_total = _count_scores(session, conditions=valid_conditions)
+        eligible_total = valid_count
         paged_query = (
             select(FraudScore)
             .where(*valid_conditions)
@@ -520,12 +518,7 @@ def _required_identifier_conditions() -> tuple[ColumnElement[bool], ...]:
 
 
 def _score_order_clauses() -> tuple[ColumnElement[Any], ...]:
-    risk_band_rank = case(
-        (FraudScore.risk_band == "high", 0),
-        (FraudScore.risk_band == "medium", 1),
-        (FraudScore.risk_band == "low", 2),
-        else_=99,
-    )
+    risk_band_rank = case(RISK_BAND_PRECEDENCE, value=FraudScore.risk_band, else_=99)
     return (
         FraudScore.score_value.desc(),
         FraudScore.reason_code_count.desc(),
