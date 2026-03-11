@@ -114,7 +114,9 @@ Deterministic ranking key (highest priority first):
 
 1. `score_value DESC`
 2. `reason_code_count DESC`
-3. risk-band precedence: `high`, `medium`, `low`
+3. risk-band precedence: `high`, `medium`, `low` (defensive tie-break only; with current
+   `scoring_rules_v1` this is functionally redundant because `risk_band` is derived
+   from `score_value`, but retained for forward compatibility with future rulesets)
 4. `year DESC`
 5. `parcel_id ASC`
 6. `score_id ASC`
@@ -145,7 +147,7 @@ Canonical top-level key order:
 - `top`
 - `page`
 - `page_size`
-- `parcel_ids` (normalized list or `null`)
+- `parcel_ids` (normalized list; empty list means unscoped)
 - `years` (normalized list; empty list means unscoped)
 - `feature_version`
 - `ruleset_version`
@@ -154,7 +156,8 @@ Canonical top-level key order:
 
 ## `summary`
 
-- `candidate_count` (pre-filter score rows in selected run/version scope)
+- `candidate_count` (score rows considered before optional request filters:
+  parcel IDs, years, risk bands, requires-review mode)
 - `filtered_count`
 - `returned_count`
 - `truncated` (bool)
@@ -194,8 +197,6 @@ Each row contains:
     - `filtered_by_year`
     - `filtered_by_risk_band`
     - `filtered_requires_review`
-    - `filtered_by_feature_version`
-    - `filtered_by_ruleset_version`
 - `skipped_row_counts` (object)
   - keys may include:
     - `missing_primary_reason_code`
@@ -259,6 +260,8 @@ If any differ, output is valid but not directly comparable for rank drift interp
 
 - Decimal values serialize as strings in JSON and CSV.
 - Arrays are never `null`; use `[]` for empty.
+- In `request`, scope arrays (`parcel_ids`, `years`, `risk_bands`) always emit as arrays.
+  Use `[]` to represent unscoped/default selection.
 - Empty successful queue:
   - `run.status = succeeded`
   - `rows = []`
