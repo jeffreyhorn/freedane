@@ -47,6 +47,7 @@ from .retr import (
     ingest_retr_csv,
     match_sales_transactions,
 )
+from .review_queue import build_review_queue, write_review_queue_csv
 from .sales_ratio_study import build_sales_ratio_study
 from .score_fraud import SUPPORTED_RULESET_VERSIONS, score_fraud
 from .scrape import fetch_page
@@ -594,6 +595,149 @@ def parcel_dossier_cmd(
             feature_version=feature_version,
             ruleset_version=ruleset_version,
         )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("review-queue")
+def review_queue_cmd(
+    top: Optional[int] = typer.Option(
+        None,
+        "--top",
+        min=1,
+        max=1000,
+        help="Top-N mode row limit",
+    ),
+    page: Optional[int] = typer.Option(
+        None,
+        "--page",
+        min=1,
+        help="Pagination page number",
+    ),
+    page_size: Optional[int] = typer.Option(
+        None,
+        "--page-size",
+        min=1,
+        max=500,
+        help="Pagination page size",
+    ),
+    ids: list[str] = typer.Option(
+        [],
+        "--id",
+        help="Parcel ID to include (repeatable)",
+    ),
+    ids_file: Optional[Path] = typer.Option(
+        None,
+        "--ids",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="File with parcel IDs (one parcel ID per line)",
+    ),
+    year: list[int] = typer.Option(
+        [],
+        "--year",
+        help="Queue year filter (repeatable)",
+        min=1,
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version selector",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version selector",
+    ),
+    risk_band: list[str] = typer.Option(
+        [],
+        "--risk-band",
+        help="Risk band filter (repeatable: high, medium, low)",
+    ),
+    requires_review_only: bool = typer.Option(
+        False,
+        "--requires-review-only",
+        help="Return only rows where requires_review is true (default behavior)",
+    ),
+    all_scores: bool = typer.Option(
+        False,
+        "--all-scores",
+        help="Disable requires_review-only filtering",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+    csv_out: Optional[Path] = typer.Option(
+        None,
+        "--csv-out",
+        help="Optional CSV export path",
+    ),
+) -> None:
+    if top is not None and (page is not None or page_size is not None):
+        raise typer.BadParameter(
+            "Cannot combine --top with --page/--page-size.",
+            param_hint="--top",
+        )
+    if requires_review_only and all_scores:
+        raise typer.BadParameter(
+            "Cannot combine --requires-review-only with --all-scores.",
+            param_hint="--requires-review-only",
+        )
+
+    raw_parcel_ids = _collect_ids(ids, ids_file) if (ids or ids_file) else []
+    parcel_ids = sorted(set(raw_parcel_ids))
+    if (ids or ids_file) and not parcel_ids:
+        raise typer.BadParameter(
+            "At least one parcel ID must remain after normalization via --id/--ids."
+        )
+
+    years = sorted(set(year))
+    normalized_risk_bands = sorted(
+        {band.strip().lower() for band in risk_band if band.strip()}
+    )
+    unsupported_bands = sorted(
+        {
+            band
+            for band in normalized_risk_bands
+            if band not in {"high", "medium", "low"}
+        }
+    )
+    if unsupported_bands:
+        raise typer.BadParameter(
+            f"Unsupported --risk-band values: {', '.join(unsupported_bands)}.",
+            param_hint="--risk-band",
+        )
+    normalized_risk_bands.sort(
+        key=lambda value: {"high": 0, "medium": 1, "low": 2}[value]
+    )
+
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = build_review_queue(
+            session,
+            top=top,
+            page=page,
+            page_size=page_size,
+            parcel_ids=parcel_ids,
+            years=years,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            risk_bands=normalized_risk_bands,
+            requires_review_only=(False if all_scores else True),
+        )
+
+    if csv_out is not None and payload.get("run", {}).get("status") == "succeeded":
+        rows = payload.get("rows", [])
+        if isinstance(rows, list):
+            write_review_queue_csv(csv_out, rows)
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
