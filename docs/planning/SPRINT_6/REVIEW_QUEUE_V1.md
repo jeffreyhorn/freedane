@@ -86,6 +86,7 @@ accessdane review-queue \
   - In pagination mode, `--top` must be omitted and treated as `null`; if provided, fail as the invalid CLI combination above.
 - `--id` / `--ids` (optional parcel scope)
   - normalization: collect all IDs from `--id` and `--ids`, trim whitespace, drop empty values, de-duplicate by normalized ID, then sort lexicographically for stable scope evaluation/output
+  - if `--id` and/or `--ids` was explicitly provided but normalized IDs are empty, treat as CLI validation error (`exit 2`, no JSON payload)
 - `--year` (optional repeatable filter)
   - normalized to sorted unique year list
 - `--feature-version` (optional; default `feature_v1`)
@@ -138,7 +139,8 @@ Deterministic ranking key (highest priority first):
 5. `parcel_id ASC`
 6. `score_id ASC`
 
-`queue_rank` is 1-based and assigned after filtering and sorting.
+`queue_rank` is 1-based global rank within the fully filtered and sorted result set,
+assigned before top/page slicing. It does not reset per page.
 
 ## Output Payload Contract (JSON)
 
@@ -196,7 +198,7 @@ Producers MUST NOT emit any other `run.status` values in v1.
 - `candidate_count` (version-matched baseline rows before optional request filters)
 - `filtered_count` (rows excluded by optional request filters from `candidate_count`)
 - `returned_count` (rows emitted after filtering and top/page slicing)
-- `truncated` (bool)
+- `truncated` (bool; `true` when `returned_count < (candidate_count - filtered_count)`, else `false`)
 - `page` (nullable int)
   - top-N mode: `null`
   - pagination mode: integer value for current page (default `1`)
@@ -222,9 +224,9 @@ Each row contains:
 - `requires_review`
 - `reason_code_count`
 - `primary_reason_code` (nullable string)
-- `primary_reason_weight` (decimal string; nullable only when severity is unknown)
-  - when `primary_reason_code` is `null`: emit `"0.0000"`
-  - when `primary_reason_code` is present and severity is known: emit decimal string
+- `primary_reason_weight` (decimal string; nullable only when severity is unknown; when present, formatted with exactly 4 digits after the decimal point)
+  - when `primary_reason_code` is `null`: emit `"0.0000"` (4dp sentinel)
+  - when `primary_reason_code` is present and severity is known: emit decimal string quantized to 4 decimal places
   - when `primary_reason_code` is present but severity is unknown: emit `null`
 - `municipality_name` (nullable string)
 - `valuation_classification` (nullable string)
