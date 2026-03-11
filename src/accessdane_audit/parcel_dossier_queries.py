@@ -164,8 +164,10 @@ def get_parcel_header(
         return None
 
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return None
     query = select(ParcelYearFact).where(ParcelYearFact.parcel_id == parcel_id)
-    if years_list:
+    if years_list is not None:
         query = query.where(ParcelYearFact.year.in_(years_list))
     facts = session.execute(query).scalars().all()
     selected_fact = max(facts, key=lambda row: row.year) if facts else None
@@ -197,10 +199,12 @@ def list_assessment_history(
     years: Optional[Iterable[int]] = None,
 ) -> list[AssessmentHistoryRow]:
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return []
     assessments_query = select(AssessmentRecord).where(
         AssessmentRecord.parcel_id == parcel_id
     )
-    if years_list:
+    if years_list is not None:
         assessments_query = assessments_query.where(
             AssessmentRecord.year.in_(years_list)
         )
@@ -227,7 +231,7 @@ def list_assessment_history(
         )
 
     facts_query = select(ParcelYearFact).where(ParcelYearFact.parcel_id == parcel_id)
-    if years_list:
+    if years_list is not None:
         facts_query = facts_query.where(ParcelYearFact.year.in_(years_list))
     fact_rows = session.execute(facts_query).scalars().all()
     for fact in fact_rows:
@@ -268,6 +272,8 @@ def list_matched_sales(
     years: Optional[Iterable[int]] = None,
 ) -> list[MatchedSaleRow]:
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return []
     query = (
         select(SalesParcelMatch, SalesTransaction)
         .join(
@@ -281,7 +287,7 @@ def list_matched_sales(
     by_transaction: dict[int, tuple[SalesParcelMatch, SalesTransaction]] = {}
     for match_row, transaction in match_rows:
         transaction_year = _coalesced_sale_year(transaction)
-        if years_list and transaction_year not in years_list:
+        if years_list is not None and transaction_year not in years_list:
             continue
         chosen = by_transaction.get(transaction.id)
         if chosen is None or _match_priority_key(match_row) < _match_priority_key(
@@ -333,6 +339,8 @@ def list_peer_context(
     years: Optional[Iterable[int]] = None,
 ) -> list[PeerContextRow]:
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return []
     query = (
         select(ParcelFeature, ParcelYearFact)
         .outerjoin(
@@ -345,7 +353,7 @@ def list_peer_context(
             ParcelFeature.feature_version == feature_version,
         )
     )
-    if years_list:
+    if years_list is not None:
         query = query.where(ParcelFeature.year.in_(years_list))
     rows = session.execute(query).all()
 
@@ -390,6 +398,8 @@ def list_permit_events(
     years: Optional[Iterable[int]] = None,
 ) -> list[PermitEventRow]:
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return []
     query = select(PermitEvent).where(
         PermitEvent.parcel_id == parcel_id,
         PermitEvent.import_status == "loaded",
@@ -398,7 +408,7 @@ def list_permit_events(
 
     result: list[PermitEventRow] = []
     for permit in permits:
-        if years_list and not _year_in_scope(
+        if years_list is not None and not _year_in_scope(
             years_list,
             permit.permit_year,
             permit.issued_date,
@@ -444,6 +454,8 @@ def list_appeal_events(
     years: Optional[Iterable[int]] = None,
 ) -> list[AppealEventRow]:
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return []
     query = select(AppealEvent).where(
         AppealEvent.parcel_id == parcel_id,
         AppealEvent.import_status == "loaded",
@@ -452,7 +464,7 @@ def list_appeal_events(
 
     result: list[AppealEventRow] = []
     for appeal in appeals:
-        if years_list and not _year_in_scope(
+        if years_list is not None and not _year_in_scope(
             years_list,
             appeal.tax_year,
             appeal.decision_date,
@@ -500,12 +512,14 @@ def list_reason_code_evidence(
     years: Optional[Iterable[int]] = None,
 ) -> list[ReasonCodeEvidenceRow]:
     years_list = _normalize_years(years)
+    if years_list is not None and not years_list:
+        return []
     score_query = select(FraudScore).where(
         FraudScore.parcel_id == parcel_id,
         FraudScore.feature_version == feature_version,
         FraudScore.ruleset_version == ruleset_version,
     )
-    if years_list:
+    if years_list is not None:
         score_query = score_query.where(FraudScore.year.in_(years_list))
     scores = session.execute(score_query).scalars().all()
     score_ids = [score.id for score in scores]
@@ -694,9 +708,9 @@ def build_timeline_rows(
     return rows
 
 
-def _normalize_years(years: Optional[Iterable[int]]) -> list[int]:
+def _normalize_years(years: Optional[Iterable[int]]) -> Optional[list[int]]:
     if years is None:
-        return []
+        return None
     return sorted(set(years))
 
 

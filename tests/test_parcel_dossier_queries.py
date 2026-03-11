@@ -87,6 +87,7 @@ def test_list_assessment_history_includes_fallback_rows_with_deterministic_order
 
     with session_scope(database_url) as session:
         rows = list_assessment_history(session, parcel_id="P-1")
+        empty_rows = list_assessment_history(session, parcel_id="P-1", years=[])
 
     assert [row["year"] for row in rows] == [2025, 2024, None]
     assert rows[0]["assessment_id"] is None
@@ -95,6 +96,7 @@ def test_list_assessment_history_includes_fallback_rows_with_deterministic_order
     assert rows[1]["assessment_id"] is not None
     assert rows[1]["total_value"] == Decimal("315000.00")
     assert rows[2]["assessment_id"] is not None
+    assert empty_rows == []
 
 
 def test_list_matched_sales_selects_one_representative_match_per_transaction(
@@ -240,6 +242,7 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
 
     with session_scope(database_url) as session:
         rows = list_matched_sales(session, parcel_id="P-1")
+        empty_rows = list_matched_sales(session, parcel_id="P-1", years=[])
 
     assert [row["sales_transaction_id"] for row in rows] == [3, 1, 2]
     assert rows[0]["recording_date"] == date(2026, 1, 15)
@@ -247,6 +250,7 @@ def test_list_matched_sales_selects_one_representative_match_per_transaction(
     assert rows[1]["active_exclusion_codes"] == ["non_arms_length", "related_party"]
     assert rows[2]["match_method"] == "parcel_number"
     assert rows[2]["active_exclusion_codes"] == []
+    assert empty_rows == []
 
 
 def test_list_reason_code_evidence_orders_scores_and_nested_flags(
@@ -594,9 +598,17 @@ def test_reason_code_evidence_year_scope_filters_rows(tmp_path: Path) -> None:
             ruleset_version="scoring_rules_v1",
             years=[2024],
         )
+        empty_rows = list_reason_code_evidence(
+            session,
+            parcel_id="P-1",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            years=[],
+        )
 
     assert len(rows) == 1
     assert rows[0]["year"] == 2024
+    assert empty_rows == []
 
 
 def test_get_parcel_header_year_scoping_and_missing_parcel(tmp_path: Path) -> None:
@@ -638,6 +650,7 @@ def test_get_parcel_header_year_scoping_and_missing_parcel(tmp_path: Path) -> No
     with session_scope(database_url) as session:
         scoped = get_parcel_header(session, parcel_id="P-1", years=[2023, 2024])
         unscoped = get_parcel_header(session, parcel_id="P-1")
+        empty_scoped = get_parcel_header(session, parcel_id="P-1", years=[])
         missing = get_parcel_header(session, parcel_id="P-missing")
 
     assert scoped is not None
@@ -651,6 +664,7 @@ def test_get_parcel_header_year_scoping_and_missing_parcel(tmp_path: Path) -> No
     assert unscoped is not None
     assert unscoped["municipality_name"] == "Town-2025"
     assert unscoped["current_owner_name"] == "Owner-2025"
+    assert empty_scoped is None
     assert missing is None
 
 
@@ -724,11 +738,18 @@ def test_list_peer_context_orders_rows_and_normalizes_quality_flags(
             parcel_id="P-1",
             feature_version="feature_v1",
         )
+        empty_rows = list_peer_context(
+            session,
+            parcel_id="P-1",
+            feature_version="feature_v1",
+            years=[],
+        )
 
     assert [row["year"] for row in rows] == [2025, 2024]
     assert rows[0]["municipality_name"] == "Town-2025"
     assert rows[0]["feature_quality_flags"] == ["permit_gap"]
     assert rows[1]["feature_quality_flags"] == []
+    assert empty_rows == []
 
 
 def test_list_permit_events_year_scoping_with_fallback_dates(tmp_path: Path) -> None:
@@ -828,11 +849,13 @@ def test_list_permit_events_year_scoping_with_fallback_dates(tmp_path: Path) -> 
 
     with session_scope(database_url) as session:
         rows = list_permit_events(session, parcel_id="P-1", years=[2024])
+        empty_rows = list_permit_events(session, parcel_id="P-1", years=[])
 
     assert [row["permit_event_id"] for row in rows] == [2, 1, 3]
     assert rows[0]["permit_year"] is None
     assert rows[1]["permit_year"] is None
     assert rows[2]["permit_year"] == 2024
+    assert empty_rows == []
 
 
 def test_list_appeal_events_year_scoping_with_fallback_dates(tmp_path: Path) -> None:
@@ -927,8 +950,10 @@ def test_list_appeal_events_year_scoping_with_fallback_dates(tmp_path: Path) -> 
 
     with session_scope(database_url) as session:
         rows = list_appeal_events(session, parcel_id="P-1", years=[2024])
+        empty_rows = list_appeal_events(session, parcel_id="P-1", years=[])
 
     assert [row["appeal_event_id"] for row in rows] == [4, 1, 2]
     assert rows[0]["tax_year"] is None
     assert rows[1]["tax_year"] is None
     assert rows[2]["tax_year"] == 2024
+    assert empty_rows == []
