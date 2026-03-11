@@ -60,6 +60,9 @@ class Fetch(Base):
 
 class AssessmentRecord(Base):
     __tablename__ = "assessments"
+    __table_args__ = (
+        Index("ix_assessments_parcel_id_year_id", "parcel_id", "year", "id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     parcel_id: Mapped[str] = mapped_column(String, ForeignKey("parcels.id"), index=True)
@@ -517,6 +520,11 @@ class SalesParcelMatch(Base):
         ),
         Index("ix_sales_parcel_matches_parcel_id", "parcel_id"),
         Index(
+            "ix_sales_parcel_matches_parcel_id_sales_transaction_id",
+            "parcel_id",
+            "sales_transaction_id",
+        ),
+        Index(
             "ix_sales_parcel_matches_match_review_status",
             "match_review_status",
         ),
@@ -587,6 +595,7 @@ class PermitEvent(Base):
         Index("ix_permit_events_site_address_norm", "site_address_norm"),
         Index("ix_permit_events_parcel_id", "parcel_id"),
         Index("ix_permit_events_permit_year", "permit_year"),
+        Index("ix_permit_events_parcel_id_permit_year", "parcel_id", "permit_year"),
         Index("ix_permit_events_permit_status_norm", "permit_status_norm"),
     )
 
@@ -661,6 +670,7 @@ class AppealEvent(Base):
         Index("ix_appeal_events_site_address_norm", "site_address_norm"),
         Index("ix_appeal_events_parcel_id", "parcel_id"),
         Index("ix_appeal_events_tax_year", "tax_year"),
+        Index("ix_appeal_events_parcel_id_tax_year", "parcel_id", "tax_year"),
         Index("ix_appeal_events_outcome_norm", "outcome_norm"),
         Index("ix_appeal_events_hearing_date", "hearing_date"),
     )
@@ -928,6 +938,7 @@ class FraudFlag(Base):
         ),
         Index("ix_fraud_flags_parcel_id_year", "parcel_id", "year"),
         Index("ix_fraud_flags_run_id", "run_id"),
+        Index("ix_fraud_flags_score_id_reason_rank", "score_id", "reason_rank"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
