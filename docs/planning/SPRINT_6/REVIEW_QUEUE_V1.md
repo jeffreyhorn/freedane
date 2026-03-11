@@ -194,7 +194,7 @@ Producers MUST NOT emit any other `run.status` values in v1.
   - pagination mode: integer value for effective page size (default `100`)
 - `total_pages` (nullable int)
   - top-N mode: `null`
-  - pagination mode: integer value computed from `filtered_count` and `page_size`
+  - pagination mode: integer value computed from `(candidate_count - filtered_count)` and `page_size`
 
 ## `rows`
 
@@ -211,7 +211,10 @@ Each row contains:
 - `requires_review`
 - `reason_code_count`
 - `primary_reason_code` (nullable string)
-- `primary_reason_weight` (nullable decimal string)
+- `primary_reason_weight` (decimal string or `null`)
+  - when `primary_reason_code` is `null`: emit `"0.0000"`
+  - when `primary_reason_code` is present and severity is known: emit decimal string
+  - when `primary_reason_code` is present but severity is unknown: emit `null`
 - `municipality_name` (nullable string)
 - `valuation_classification` (nullable string)
 - `dossier_args` (object)
@@ -220,7 +223,8 @@ Each row contains:
   - `feature_version`
   - `ruleset_version`
 
-Rows with missing optional enrichment fields (`primary_reason_code`, `primary_reason_weight`, `municipality_name`, `valuation_classification`) are retained with `null` values and are not dropped.
+Rows with missing optional enrichment fields are retained and not dropped.
+`municipality_name` and `valuation_classification` emit `null` when unavailable.
 
 ## `diagnostics`
 
@@ -245,6 +249,10 @@ Rows with missing optional enrichment fields (`primary_reason_code`, `primary_re
     - `years`
     - `parcel_ids`
     - `sort_key_version` (`review_queue_sort_v1`)
+    - `slice_mode` (`top` | `page`)
+    - `top` (nullable int; populated when `slice_mode = "top"`)
+    - `page` (nullable int; populated when `slice_mode = "page"`)
+    - `page_size` (nullable int; populated when `slice_mode = "page"`)
 
 ## `error`
 
@@ -287,6 +295,7 @@ Two queue exports are comparable only if all are true:
 - same `feature_version`
 - same `ruleset_version`
 - same filter scope (`parcel_ids`, `years`, `risk_bands`, review-only mode)
+- same slice settings (`slice_mode`, `top`, `page`, `page_size`)
 
 If any differ, output is valid but not directly comparable for rank drift interpretation.
 
