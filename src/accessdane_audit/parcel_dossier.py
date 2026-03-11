@@ -40,6 +40,9 @@ _PERMIT_OPEN_STATUSES = {"applied", "issued"}
 _PERMIT_CLOSED_STATUSES = {"finaled", "expired", "cancelled"}
 _APPEAL_SUCCESSFUL_OUTCOMES = {"reduction_granted", "partial_reduction"}
 _APPEAL_DENIED_OUTCOMES = {"denied"}
+_SOURCE_QUERY_ERROR_MESSAGE = (
+    "Failed to query source data while building parcel dossier."
+)
 _T = TypeVar("_T")
 
 
@@ -77,12 +80,12 @@ def build_parcel_dossier(
             parcel_id=parcel_id,
             years=years_filter,
         )
-    except Exception as exc:
+    except Exception:
         session.rollback()
         return _failure_payload(
             request=request,
             code="source_query_error",
-            message=str(exc),
+            message=_SOURCE_QUERY_ERROR_MESSAGE,
         )
 
     if parcel is None:
@@ -94,12 +97,14 @@ def build_parcel_dossier(
 
     warnings: list[str] = []
     unavailable_sections: list[str] = []
+    section_query_errors: set[str] = set()
 
     assessment_rows = _load_rows(
         session,
         section_key="assessment_history",
         warnings=warnings,
         unavailable_sections=unavailable_sections,
+        section_query_errors=section_query_errors,
         loader=lambda: list_assessment_history(
             session,
             parcel_id=parcel_id,
@@ -111,6 +116,7 @@ def build_parcel_dossier(
         section_key="matched_sales",
         warnings=warnings,
         unavailable_sections=unavailable_sections,
+        section_query_errors=section_query_errors,
         loader=lambda: list_matched_sales(
             session,
             parcel_id=parcel_id,
@@ -122,6 +128,7 @@ def build_parcel_dossier(
         section_key="peer_context",
         warnings=warnings,
         unavailable_sections=unavailable_sections,
+        section_query_errors=section_query_errors,
         loader=lambda: list_peer_context(
             session,
             parcel_id=parcel_id,
@@ -134,6 +141,7 @@ def build_parcel_dossier(
         section_key="permit_events",
         warnings=warnings,
         unavailable_sections=unavailable_sections,
+        section_query_errors=section_query_errors,
         loader=lambda: list_permit_events(
             session,
             parcel_id=parcel_id,
@@ -145,6 +153,7 @@ def build_parcel_dossier(
         section_key="appeal_events",
         warnings=warnings,
         unavailable_sections=unavailable_sections,
+        section_query_errors=section_query_errors,
         loader=lambda: list_appeal_events(
             session,
             parcel_id=parcel_id,
@@ -156,6 +165,7 @@ def build_parcel_dossier(
         section_key="reason_code_evidence",
         warnings=warnings,
         unavailable_sections=unavailable_sections,
+        section_query_errors=section_query_errors,
         loader=lambda: list_reason_code_evidence(
             session,
             parcel_id=parcel_id,
@@ -166,23 +176,37 @@ def build_parcel_dossier(
     )
 
     sections = {
-        "assessment_history": _assessment_section(assessment_rows),
-        "matched_sales": _matched_sales_section(matched_sales_rows),
+        "assessment_history": _assessment_section(
+            assessment_rows,
+            query_error=("assessment_history" in section_query_errors),
+        ),
+        "matched_sales": _matched_sales_section(
+            matched_sales_rows,
+            query_error=("matched_sales" in section_query_errors),
+        ),
         "peer_context": _peer_context_section(
             session,
             rows=peer_context_rows,
             parcel_id=parcel_id,
             years_filter=years_filter,
             unavailable_sections=unavailable_sections,
+            query_error=("peer_context" in section_query_errors),
         ),
-        "permit_events": _permit_events_section(permit_event_rows),
-        "appeal_events": _appeal_events_section(appeal_event_rows),
+        "permit_events": _permit_events_section(
+            permit_event_rows,
+            query_error=("permit_events" in section_query_errors),
+        ),
+        "appeal_events": _appeal_events_section(
+            appeal_event_rows,
+            query_error=("appeal_events" in section_query_errors),
+        ),
         "reason_code_evidence": _reason_code_section(
             session,
             rows=reason_code_rows,
             parcel_id=parcel_id,
             years_filter=years_filter,
             unavailable_sections=unavailable_sections,
+            query_error=("reason_code_evidence" in section_query_errors),
         ),
     }
 
@@ -249,6 +273,7 @@ def _load_rows(
     section_key: str,
     warnings: list[str],
     unavailable_sections: list[str],
+    section_query_errors: set[str],
     loader: Callable[[], list[_T]],
 ) -> list[_T]:
     try:
@@ -256,17 +281,29 @@ def _load_rows(
     except Exception:
         session.rollback()
         warnings.append(f"{section_key}_query_error")
+        section_query_errors.add(section_key)
         unavailable_sections.append(section_key)
         return []
 
 
-def _assessment_section(rows: list[AssessmentHistoryRow]) -> dict[str, object]:
+def _assessment_section(
+    rows: list[AssessmentHistoryRow],
+    *,
+    query_error: bool = False,
+) -> dict[str, object]:
     years = [row["year"] for row in rows if row["year"] is not None]
     summary: dict[str, object] = {
         "row_count": len(rows),
         "year_min": min(years) if years else None,
         "year_max": max(years) if years else None,
     }
+    if query_error:
+        return _section_payload(
+            rows=[],
+            summary=summary,
+            empty_message="assessment_history_query_error",
+            unavailable=True,
+        )
     return _section_payload(
         rows=rows,
         summary=summary,
@@ -274,7 +311,11 @@ def _assessment_section(rows: list[AssessmentHistoryRow]) -> dict[str, object]:
     )
 
 
-def _matched_sales_section(rows: list[MatchedSaleRow]) -> dict[str, object]:
+def _matched_sales_section(
+    rows: list[MatchedSaleRow],
+    *,
+    query_error: bool = False,
+) -> dict[str, object]:
     summary: dict[str, object] = {
         "row_count": len(rows),
         "arms_length_true_count": sum(
@@ -287,6 +328,13 @@ def _matched_sales_section(rows: list[MatchedSaleRow]) -> dict[str, object]:
             1 for row in rows if len(row["active_exclusion_codes"]) > 0
         ),
     }
+    if query_error:
+        return _section_payload(
+            rows=[],
+            summary=summary,
+            empty_message="matched_sales_query_error",
+            unavailable=True,
+        )
     return _section_payload(
         rows=rows,
         summary=summary,
@@ -301,6 +349,7 @@ def _peer_context_section(
     parcel_id: str,
     years_filter: Optional[list[int]],
     unavailable_sections: list[str],
+    query_error: bool = False,
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "row_count": len(rows),
@@ -316,6 +365,13 @@ def _peer_context_section(
     }
     if rows:
         return _section_payload(rows=rows, summary=summary, empty_message="")
+    if query_error:
+        return _section_payload(
+            rows=[],
+            summary=summary,
+            empty_message="peer_context_query_error",
+            unavailable=True,
+        )
 
     has_feature_rows = _has_feature_rows_for_scope(
         session,
@@ -338,7 +394,11 @@ def _peer_context_section(
     )
 
 
-def _permit_events_section(rows: list[PermitEventRow]) -> dict[str, object]:
+def _permit_events_section(
+    rows: list[PermitEventRow],
+    *,
+    query_error: bool = False,
+) -> dict[str, object]:
     summary: dict[str, object] = {
         "row_count": len(rows),
         "open_status_count": sum(
@@ -351,6 +411,13 @@ def _permit_events_section(rows: list[PermitEventRow]) -> dict[str, object]:
             1 for row in rows if row["declared_valuation"] is not None
         ),
     }
+    if query_error:
+        return _section_payload(
+            rows=[],
+            summary=summary,
+            empty_message="permit_events_query_error",
+            unavailable=True,
+        )
     return _section_payload(
         rows=rows,
         summary=summary,
@@ -358,7 +425,11 @@ def _permit_events_section(rows: list[PermitEventRow]) -> dict[str, object]:
     )
 
 
-def _appeal_events_section(rows: list[AppealEventRow]) -> dict[str, object]:
+def _appeal_events_section(
+    rows: list[AppealEventRow],
+    *,
+    query_error: bool = False,
+) -> dict[str, object]:
     summary: dict[str, object] = {
         "row_count": len(rows),
         "successful_reduction_count": sum(
@@ -371,6 +442,13 @@ def _appeal_events_section(rows: list[AppealEventRow]) -> dict[str, object]:
             1 for row in rows if row["outcome"] in (None, "unknown")
         ),
     }
+    if query_error:
+        return _section_payload(
+            rows=[],
+            summary=summary,
+            empty_message="appeal_events_query_error",
+            unavailable=True,
+        )
     return _section_payload(
         rows=rows,
         summary=summary,
@@ -385,6 +463,7 @@ def _reason_code_section(
     parcel_id: str,
     years_filter: Optional[list[int]],
     unavailable_sections: list[str],
+    query_error: bool = False,
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "row_count": len(rows),
@@ -395,6 +474,13 @@ def _reason_code_section(
     if rows:
         output_rows = [_reason_code_row_for_output(row) for row in rows]
         return _section_payload(rows=output_rows, summary=summary, empty_message="")
+    if query_error:
+        return _section_payload(
+            rows=[],
+            summary=summary,
+            empty_message="reason_code_evidence_query_error",
+            unavailable=True,
+        )
 
     has_any_scores = _has_scores_for_scope(
         session,

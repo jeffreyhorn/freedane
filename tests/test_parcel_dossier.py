@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import parcel_dossier as parcel_dossier_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     AppealEvent,
@@ -92,6 +93,119 @@ def test_parcel_dossier_cli_builds_full_chain_and_is_deterministic(
         "score",
     }
     assert payload["error"] is None
+
+
+def test_parcel_dossier_cli_supports_out_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "parcel_dossier_out.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    out_path = tmp_path / "parcel_dossier.json"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_full_dossier_fixture(session, parcel_id="P-1")
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["parcel-dossier", "--id", "P-1", "--out", str(out_path)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert result.stdout == ""
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["request"]["parcel_id"] == "P-1"
+
+
+def test_parcel_dossier_cli_marks_section_query_errors_as_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "parcel_dossier_query_error.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        session.add(Parcel(id="P-QERR", trs_code="TRS-QERR"))
+        session.add(
+            ParcelYearFact(
+                parcel_id="P-QERR",
+                year=2025,
+                municipality_name="Error Town",
+            )
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    def _raise_matched_sales(*_args, **_kwargs):
+        raise RuntimeError("query failed")
+
+    monkeypatch.setattr(
+        parcel_dossier_module,
+        "list_matched_sales",
+        _raise_matched_sales,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["parcel-dossier", "--id", "P-QERR"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+
+    assert payload["sections"]["matched_sales"]["status"] == "unavailable"
+    assert (
+        payload["sections"]["matched_sales"]["message"] == "matched_sales_query_error"
+    )
+    assert "matched_sales_query_error" in payload["diagnostics"]["warnings"]
+    assert "matched_sales" in payload["diagnostics"]["unavailable_sections"]
+
+
+def test_parcel_dossier_cli_sanitizes_source_query_error_message(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "parcel_dossier_source_error.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    def _raise_header(*_args, **_kwargs):
+        raise RuntimeError("db detail leaked /private/path")
+
+    monkeypatch.setattr(
+        parcel_dossier_module,
+        "get_parcel_header",
+        _raise_header,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli.app, ["parcel-dossier", "--id", "P-ERR"])
+    assert result.exit_code == 1, result.stdout
+    payload = json.loads(result.stdout)
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"]["code"] == "source_query_error"
+    assert payload["error"]["message"] == (
+        "Failed to query source data while building parcel dossier."
+    )
+    assert "private/path" not in payload["error"]["message"]
 
 
 def test_parcel_dossier_cli_marks_sparse_sections_empty(
