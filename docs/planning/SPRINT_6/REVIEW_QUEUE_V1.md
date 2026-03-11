@@ -204,16 +204,16 @@ Each row contains:
 
 - `queue_rank`
 - `score_id`
-- `run_id`
+- `run_id` (`fraud_scores.run_id`; scoring run identifier for this row)
 - `feature_run_id`
 - `parcel_id`
 - `year`
-- `score_value` (decimal string)
+- `score_value` (decimal string; never `null`)
 - `risk_band`
 - `requires_review`
 - `reason_code_count`
 - `primary_reason_code` (nullable string)
-- `primary_reason_weight` (decimal string or `null`)
+- `primary_reason_weight` (decimal string; nullable only when severity is unknown)
   - when `primary_reason_code` is `null`: emit `"0.0000"`
   - when `primary_reason_code` is present and severity is known: emit decimal string
   - when `primary_reason_code` is present but severity is unknown: emit `null`
@@ -289,6 +289,7 @@ Rows with missing optional enrichment fields are retained and not dropped.
 18. `dossier_ruleset_version`
 
 CSV and JSON row counts must match for the same command invocation.
+`run_id` in both JSON and CSV maps to `fraud_scores.run_id`.
 
 ## Comparability Semantics
 
@@ -305,7 +306,9 @@ If any differ, output is valid but not directly comparable for rank drift interp
 
 ## Null And Empty Semantics
 
-- Decimal values serialize as strings in JSON and CSV.
+- Decimal values, when present, serialize as strings in JSON and CSV.
+- Fields explicitly documented as nullable may emit `null` instead of a decimal string.
+  In v1 queue rows, `primary_reason_weight` is the only decimal-typed field that may be `null`.
 - Arrays are never `null`; use `[]` for empty.
 - In `request`, scope arrays (`parcel_ids`, `years`, `risk_bands`) always emit as arrays.
   Use `[]` to represent unscoped/default selection.
