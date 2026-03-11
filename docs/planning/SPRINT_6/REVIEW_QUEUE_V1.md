@@ -359,7 +359,7 @@ If any differ, output is valid but not directly comparable for rank drift interp
 - filters that return no rows
 - verify success payload with empty rows and non-error status
 
-## Non-Goals For Day 5
+## Non-Goals For This Contract
 
 - Implementing queue/report code paths.
 - Adding migrations or persistence for case reviews.
