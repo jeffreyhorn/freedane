@@ -102,16 +102,22 @@ accessdane review-queue \
 
 - Success (`exit 0`): payload emitted/written with required keys.
 - Request failure (`exit 1`): payload includes `run.status = failed` and `error`.
+  - These failures are emitted only after CLI parsing/validation succeeds.
 - Invalid CLI option values (`exit 2`): Typer/Click validation error; no JSON payload is emitted (only usage/error text from Typer/Click).
   - Includes mutually exclusive/conflicting flag combinations such as:
     - providing both `--requires-review-only` and `--all-scores`
     - providing `--top` together with `--page` or `--page-size`
+  - Also includes other Typer/Click validation failures at parse time.
+  - These conditions are never mapped to JSON `error.code` values (including `invalid_scope`).
   - Fixture expectation: assert exit code and CLI error text only; no JSON failure payload and no `error.code`.
 
 Failure codes (v1):
 
+- All failure codes below correspond to `exit 1` and a JSON failure payload.
 - `unsupported_version_selector`
 - `invalid_scope`
+  - Request passed CLI parsing/validation but defines a logically invalid/unsupported scope.
+  - Must not be used for Typer/Click validation errors or flag-conflict parse failures.
 - `source_query_error`
 
 ## Ranking Contract
@@ -359,7 +365,7 @@ If any differ, output is valid but not directly comparable for rank drift interp
 - filters that return no rows
 - verify success payload with empty rows and non-error status
 
-## Non-Goals For This Contract
+## Non-Goals For Sprint 6 Day 6 Contract
 
 - Implementing queue/report code paths.
 - Adding migrations or persistence for case reviews.
