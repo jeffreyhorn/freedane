@@ -282,6 +282,34 @@ Presence rules by `run.status`:
   - `reviewer`, `assigned_reviewer`, `parcel_id`, `feature_version`, `ruleset_version`
   - `limit`, `offset`
 
+`review` schema (create/update success only):
+
+- base fields always present:
+  - `id`, `parcel_id`, `year`, `score_id`, `score_run_id`
+  - `feature_version`, `ruleset_version`
+  - `status`, `disposition`
+  - `reviewer`, `assigned_reviewer`, `note`
+  - `evidence_links` (canonicalized array)
+  - `created_at`, `updated_at`, `reviewed_at`, `closed_at`
+- create command includes `review.created` (boolean):
+  - `true` when a new row is inserted
+  - `false` when idempotent replay returns an existing identical row
+- update command includes `review.updated` (boolean):
+  - `true` when a write occurs
+  - `false` when patch is a no-op after validation/normalization
+
+`summary` schema (list success only):
+
+- `total` (integer count before pagination)
+- `limit` (echoed applied limit)
+- `offset` (echoed applied offset)
+- `returned` (integer count of `reviews` items in this page)
+
+`reviews` schema (list success only):
+
+- array of objects using the same base `review` fields listed above
+- `reviews[]` entries do not include command-specific booleans (`created`/`updated`)
+
 `request` normalization rules:
 
 - trim surrounding whitespace for string fields (`reviewer`, `assigned_reviewer`, `note`, evidence `kind/ref/label`) before evidence-link normalization/deduplication
@@ -326,6 +354,8 @@ Typer/Click parse/option failures remain `exit 2` with no JSON payload.
 ## Day 9 Implementation Notes
 
 Day 9 should implement this contract directly with migration + CLI + tests.
+
+Before adding/enforcing a foreign key from `case_reviews.score_id` to `fraud_scores.id` in production, scoring rerun persistence must stop hard-deleting `fraud_scores` rows (for example, update-in-place, archival, or soft-delete strategy) so linked `case_reviews` rows remain valid.
 
 Minimum Day 9 test coverage implied by this contract:
 
