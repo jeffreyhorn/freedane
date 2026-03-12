@@ -133,6 +133,7 @@ Transition behavior:
 - entering `closed` sets `closed_at` and keeps `reviewed_at`
 - entering `pending` or `in_review` requires `disposition = null`
 - reopening (`resolved -> in_review` or `closed -> in_review`) explicitly clears `disposition`
+- reopening (`resolved -> in_review`) preserves historical `reviewed_at`
 - reopening (`closed -> in_review`) clears `closed_at` and preserves historical `reviewed_at`
 - re-entering `resolved` after reopen preserves existing `reviewed_at` (latest review activity is represented by `updated_at`, not by rewriting `reviewed_at`)
 
@@ -142,7 +143,13 @@ Transition behavior:
 
 - `kind` (required enum): `dossier`, `queue_row`, `reason_code`, `external_doc`, `field_visit`
 - `ref` (required string)
-- `label` (optional string)
+- `label` (optional string; normalized representation for no label is `null`)
+
+Canonical representation:
+
+- persisted `evidence_links_json` and emitted payload `evidence_links` use normalized objects
+- `label` is always present after normalization
+- omitted `label` or trimmed-empty `label` input normalizes to `"label": null`
 
 Requirements:
 
@@ -253,7 +260,7 @@ Deterministic order:
 
 ## Payload Contract
 
-Top-level key order (success):
+Top-level key order (canonical for both success and failure payloads; omitted keys are absent):
 
 1. `run`
 2. `request`
