@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -166,7 +167,12 @@ def build_review_queue(
     }
 
     if unsupported_risk_bands:
-        supported_values = ", ".join(sorted(RISK_BAND_PRECEDENCE))
+        supported_values = ", ".join(
+            sorted(
+                RISK_BAND_PRECEDENCE,
+                key=lambda risk_band: RISK_BAND_PRECEDENCE[risk_band],
+            )
+        )
         return _failure_payload(
             request=request,
             code="unsupported_risk_band",
@@ -375,7 +381,8 @@ def build_review_queue(
 def write_review_queue_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(",".join(CSV_COLUMNS) + "\n")
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(CSV_COLUMNS)
         for row in rows:
             dossier_args = row.get("dossier_args")
             if not isinstance(dossier_args, Mapping):
@@ -400,7 +407,7 @@ def write_review_queue_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> 
                 dossier_args.get("feature_version"),
                 dossier_args.get("ruleset_version"),
             ]
-            handle.write(",".join(_csv_cell(value) for value in ordered_values) + "\n")
+            writer.writerow(_csv_value(value) for value in ordered_values)
 
 
 def _run_payload(status: str) -> ReviewQueueRun:
@@ -640,19 +647,9 @@ def _chunked(items: Sequence, size: int) -> list[Sequence]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
-def _csv_cell(value: object) -> str:
+def _csv_value(value: object) -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
-        text = "true" if value else "false"
-    else:
-        text = str(value)
-
-    if text == "":
-        return '""'
-
-    if any(char in text for char in (",", "\n", "\r", '"')):
-        escaped = text.replace('"', '""')
-        return f'"{escaped}"'
-
-    return text
+        return "true" if value else "false"
+    return str(value)
