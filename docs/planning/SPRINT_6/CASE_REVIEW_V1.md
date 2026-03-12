@@ -126,6 +126,8 @@ Transition behavior:
 
 - entering `resolved` sets `reviewed_at` if not already set
 - entering `closed` sets `closed_at` and keeps `reviewed_at`
+- entering `pending` or `in_review` requires `disposition = null`
+- reopening (`resolved -> in_review` or `closed -> in_review`) explicitly clears `disposition`
 - reopening (`closed -> in_review`) clears `closed_at` and preserves historical `reviewed_at`
 
 ## Evidence Links Contract
@@ -138,10 +140,11 @@ Transition behavior:
 
 Requirements:
 
-- create requires at least 1 evidence link
+- create with initial status `resolved` or `closed` requires at least 1 evidence link
+- create with initial status `pending` or `in_review` may omit evidence links
 - update may omit evidence links (existing links remain unchanged)
 - update may replace evidence links only when explicitly requested
-- `resolved`/`closed` records must have at least 1 evidence link
+- any record ending in `resolved` or `closed` must have at least 1 evidence link (incoming and/or existing)
 
 ## Ownership Metadata Contract
 
@@ -178,13 +181,20 @@ Optional inputs:
 - `--reviewer <name>`
 - `--assigned-reviewer <name>`
 - `--note <text>`
-- `--evidence-link <kind=...,ref=...,label=...>` (repeatable)
+- `--evidence-link <kind=...,ref=...,label=...>` (repeatable; required when `--status resolved` or `--status closed`)
 
 Behavior:
 
 - create is idempotent on (`score_id`, `feature_version`, `ruleset_version`)
-- if same context exists and supplied fields are identical, return existing row with `created=false`
-- if same context exists and supplied fields conflict, fail with `duplicate_case_review`
+- idempotency comparison uses a canonicalized create payload that includes only client-controlled fields:
+  - `status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links_json`
+  - string fields are whitespace-trimmed before comparison
+  - `evidence_links_json` is normalized by `(kind, ref, label)` sorting and exact-item de-duplication before comparison
+  - server-managed fields (`id`, `created_at`, `updated_at`, `reviewed_at`, `closed_at`) are excluded
+  - score-derived linkage fields (`parcel_id`, `year`, `score_run_id`) are validated from `score_id` context, not caller-supplied
+- if same context exists and canonicalized fields are identical, return existing row with `created=false`
+- if same context exists and canonicalized fields differ, fail with `duplicate_case_review`
+- validation: if requested initial status is `resolved` or `closed` and no evidence links are present, fail with `evidence_link_required`
 
 ## `case-review update`
 
@@ -236,7 +246,20 @@ Top-level key order (success):
 3. `summary` (list only)
 4. `review` (create/update only)
 5. `reviews` (list only)
-6. `error`
+6. `diagnostics`
+7. `error`
+
+Presence rules by `run.status`:
+
+- when `run.status = succeeded`:
+  - required: `run`, `request`, `diagnostics`, `error`
+  - `error` must be present and `null`
+  - create/update: `review` required, `summary`/`reviews` omitted
+  - list: `summary` and `reviews` required, `review` omitted
+- when `run.status = failed`:
+  - required: `run`, `request`, `error`
+  - `diagnostics` optional
+  - `review`, `reviews`, `summary` must be omitted
 
 `run` fields:
 
@@ -245,6 +268,11 @@ Top-level key order (success):
 - `run_type: case_review`
 - `version_tag: case_review_v1`
 - `status: succeeded|failed`
+
+`diagnostics` (success or failure when available):
+
+- `warnings` (array; may be empty)
+- `normalization` (object; optional canonicalization details such as normalized evidence-link count)
 
 `error` fields when failed:
 
