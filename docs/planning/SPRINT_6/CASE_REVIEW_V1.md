@@ -274,7 +274,7 @@ Presence rules by `run.status`:
   - `id`
   - `patch` object containing only supplied fields (`status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links`)
 - list:
-  - `statuses`, `dispositions`, `years` (sorted unique arrays)
+  - `statuses`, `dispositions`, `years` (always arrays; sorted unique; `[]` means unscoped/no filter)
   - `reviewer`, `assigned_reviewer`, `parcel_id`, `feature_version`, `ruleset_version`
   - `limit`, `offset`
 
@@ -282,6 +282,7 @@ Presence rules by `run.status`:
 
 - trim surrounding whitespace for string fields (`reviewer`, `assigned_reviewer`, `note`, evidence `kind/ref/label`)
 - deduplicate repeatable filters and sort lexicographically (for enums/strings) or ascending (for years)
+- for list commands, always emit `statuses`, `dispositions`, and `years` in `request`; omitted/empty input normalizes to `[]` (unscoped), while non-empty arrays apply restrictive filtering
 - normalize evidence links as canonical tuples `(kind, ref, label)` with exact duplicate removal and deterministic ordering
 
 `run` fields:
