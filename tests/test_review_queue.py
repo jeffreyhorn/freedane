@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -202,6 +203,48 @@ def test_review_queue_cli_filters_pagination_and_csv_export(
     assert lines[0].split(",") == review_queue_module.CSV_COLUMNS
     assert len(lines) - 1 == payload["summary"]["returned_count"]
     assert ",true," in lines[1]
+
+
+def test_write_review_queue_csv_sanitizes_formula_like_cells(tmp_path: Path) -> None:
+    csv_out = tmp_path / "queue_formula_safe.csv"
+
+    review_queue_module.write_review_queue_csv(
+        csv_out,
+        [
+            {
+                "queue_rank": 1,
+                "score_id": 10,
+                "run_id": 20,
+                "feature_run_id": 30,
+                "parcel_id": "=2+2",
+                "year": 2025,
+                "score_value": "99.00",
+                "risk_band": "high",
+                "requires_review": True,
+                "reason_code_count": 1,
+                "primary_reason_code": "ratio__low",
+                "primary_reason_weight": "1.0000",
+                "municipality_name": "+Town",
+                "valuation_classification": "-res",
+                "dossier_args": {
+                    "parcel_id": "@P-1",
+                    "year": "2025",
+                    "feature_version": "=feature_v1",
+                    "ruleset_version": "scoring_rules_v1",
+                },
+            }
+        ],
+    )
+
+    with csv_out.open("r", encoding="utf-8", newline="") as handle:
+        row = next(csv.DictReader(handle))
+
+    assert row["parcel_id"] == "'=2+2"
+    assert row["municipality_name"] == "'+Town"
+    assert row["valuation_classification"] == "'-res"
+    assert row["dossier_parcel_id"] == "'@P-1"
+    assert row["dossier_feature_version"] == "'=feature_v1"
+    assert row["dossier_ruleset_version"] == "scoring_rules_v1"
 
 
 def test_review_queue_cli_validation_errors_exit_two_without_json(

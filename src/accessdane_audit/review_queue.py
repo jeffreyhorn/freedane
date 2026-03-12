@@ -652,4 +652,8 @@ def _csv_value(value: object) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, str):
+        if value and value[0] in ("=", "+", "-", "@"):
+            return f"'{value}"
+        return value
     return str(value)
