@@ -126,7 +126,9 @@ def test_investigation_report_normalizes_blank_risk_band_for_table_and_summary(
     monkeypatch,
 ) -> None:
     html_out = tmp_path / "blank_risk_band_report.html"
-    init_db("sqlite:///:memory:")
+    db_path = tmp_path / "blank_risk_band_report.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
 
     def _fake_build_review_queue(*_args, **_kwargs):
         return {
@@ -171,7 +173,7 @@ def test_investigation_report_normalizes_blank_risk_band_for_table_and_summary(
         _fake_build_parcel_dossier,
     )
 
-    with session_scope("sqlite:///:memory:") as session:
+    with session_scope(database_url) as session:
         payload = investigation_report_module.build_investigation_report(
             session,
             html_out=html_out,
