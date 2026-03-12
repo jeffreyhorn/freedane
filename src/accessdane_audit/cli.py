@@ -25,6 +25,10 @@ from .extraction_signals import (
     is_placeholder_payment_row,
 )
 from .html_utils import html_attr_text
+from .investigation_report import (
+    DEFAULT_REPORT_HTML_PATH,
+    build_investigation_report,
+)
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -726,6 +730,62 @@ def review_queue_cmd(
         rows = payload.get("rows", [])
         if isinstance(rows, list):
             write_review_queue_csv(csv_out, rows)
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("investigation-report")
+def investigation_report_cmd(
+    top: int = typer.Option(
+        100,
+        "--top",
+        min=1,
+        max=1000,
+        help="Top-N queue rows to include in the report",
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version selector",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version selector",
+    ),
+    requires_review_only: bool = typer.Option(
+        True,
+        "--requires-review-only/--all-scores",
+        help=(
+            "Filter queue rows to requires_review=true "
+            "(default: --requires-review-only)"
+        ),
+    ),
+    html_out: Path = typer.Option(
+        DEFAULT_REPORT_HTML_PATH,
+        "--html-out",
+        help="Static HTML report artifact path",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = build_investigation_report(
+            session,
+            html_out=html_out,
+            top=top,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            requires_review_only=requires_review_only,
+        )
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
