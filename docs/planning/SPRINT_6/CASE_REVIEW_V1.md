@@ -64,10 +64,10 @@ Required columns (v1):
 - `assigned_reviewer` (string, nullable)
 - `note` (text, nullable)
 - `evidence_links_json` (JSON array, not null; default `[]`)
-- `created_at` (timestamptz, not null, default now)
-- `updated_at` (timestamptz, not null, default now, auto-update)
-- `reviewed_at` (timestamptz, nullable)
-- `closed_at` (timestamptz, nullable)
+- `created_at` (timezone-aware timestamp, UTC; e.g., `DateTime(timezone=True)`; not null, default now)
+- `updated_at` (timezone-aware timestamp, UTC; e.g., `DateTime(timezone=True)`; not null, default now, auto-update)
+- `reviewed_at` (timezone-aware timestamp, UTC; e.g., `DateTime(timezone=True)`; nullable)
+- `closed_at` (timezone-aware timestamp, UTC; e.g., `DateTime(timezone=True)`; nullable)
 
 Required uniqueness and integrity:
 
@@ -177,7 +177,7 @@ Required inputs:
 
 Optional inputs:
 
-- `--disposition <...>`
+- `--disposition <...>` (required when `--status resolved` or `--status closed`)
 - `--reviewer <name>`
 - `--assigned-reviewer <name>`
 - `--note <text>`
@@ -194,6 +194,7 @@ Behavior:
   - score-derived linkage fields (`parcel_id`, `year`, `score_run_id`) are validated from `score_id` context, not caller-supplied
 - if same context exists and canonicalized fields are identical, return existing row with `created=false`
 - if same context exists and canonicalized fields differ, fail with `duplicate_case_review`
+- validation: if requested initial status is `resolved` or `closed` and `--disposition` is missing, fail with `invalid_disposition_for_status`
 - validation: if requested initial status is `resolved` or `closed` and no evidence links are present, fail with `evidence_link_required`
 
 ## `case-review update`
@@ -216,6 +217,8 @@ Behavior:
 - update is idempotent for same input patch
 - no-op patch returns success with `updated=false`
 - invalid transition/disposition combinations fail before write
+- updates that result in `resolved`/`closed` must have at least one evidence link after applying the patch
+- if an update would leave a `resolved`/`closed` record with no evidence links (including explicit clearing), fail with `evidence_link_required` before write
 
 ## `case-review list`
 
@@ -260,6 +263,26 @@ Presence rules by `run.status`:
   - required: `run`, `request`, `error`
   - `diagnostics` optional
   - `review`, `reviews`, `summary` must be omitted
+
+`request` schema (echoed, command-specific):
+
+- create:
+  - `score_id`, `status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`
+  - `feature_version`, `ruleset_version`
+  - `evidence_links` (canonicalized array after normalization)
+- update:
+  - `id`
+  - `patch` object containing only supplied fields (`status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links`)
+- list:
+  - `statuses`, `dispositions`, `years` (sorted unique arrays)
+  - `reviewer`, `assigned_reviewer`, `parcel_id`, `feature_version`, `ruleset_version`
+  - `limit`, `offset`
+
+`request` normalization rules:
+
+- trim surrounding whitespace for string fields (`reviewer`, `assigned_reviewer`, `note`, evidence `kind/ref/label`)
+- deduplicate repeatable filters and sort lexicographically (for enums/strings) or ascending (for years)
+- normalize evidence links as canonical tuples `(kind, ref, label)` with exact duplicate removal and deterministic ordering
 
 `run` fields:
 
