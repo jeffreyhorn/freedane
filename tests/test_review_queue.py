@@ -224,12 +224,12 @@ def test_write_review_queue_csv_sanitizes_formula_like_cells(tmp_path: Path) -> 
                 "reason_code_count": 1,
                 "primary_reason_code": "ratio__low",
                 "primary_reason_weight": "1.0000",
-                "municipality_name": "+Town",
-                "valuation_classification": "-res",
+                "municipality_name": " \t+Town",
+                "valuation_classification": "  -res",
                 "dossier_args": {
-                    "parcel_id": "@P-1",
+                    "parcel_id": "\t@P-1",
                     "year": "2025",
-                    "feature_version": "=feature_v1",
+                    "feature_version": "  =feature_v1",
                     "ruleset_version": "scoring_rules_v1",
                 },
             }
@@ -240,10 +240,10 @@ def test_write_review_queue_csv_sanitizes_formula_like_cells(tmp_path: Path) -> 
         row = next(csv.DictReader(handle))
 
     assert row["parcel_id"] == "'=2+2"
-    assert row["municipality_name"] == "'+Town"
-    assert row["valuation_classification"] == "'-res"
-    assert row["dossier_parcel_id"] == "'@P-1"
-    assert row["dossier_feature_version"] == "'=feature_v1"
+    assert row["municipality_name"] == "' \t+Town"
+    assert row["valuation_classification"] == "'  -res"
+    assert row["dossier_parcel_id"] == "'\t@P-1"
+    assert row["dossier_feature_version"] == "'  =feature_v1"
     assert row["dossier_ruleset_version"] == "scoring_rules_v1"
 
 

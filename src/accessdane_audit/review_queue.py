@@ -653,7 +653,8 @@ def _csv_value(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        if value and value[0] in ("=", "+", "-", "@"):
+        stripped = value.lstrip()
+        if stripped and stripped[0] in ("=", "+", "-", "@"):
             return f"'{value}"
         return value
     return str(value)
