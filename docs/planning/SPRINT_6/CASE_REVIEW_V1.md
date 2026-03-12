@@ -77,10 +77,12 @@ Required uniqueness and integrity:
 
 Required indexes (v1):
 
-- (`status`, `updated_at DESC`)
-- (`disposition`, `reviewed_at DESC`)
-- (`assigned_reviewer`, `status`, `updated_at DESC`)
+- (`status`, `updated_at`)
+- (`disposition`, `reviewed_at`)
+- (`assigned_reviewer`, `status`, `updated_at`)
 - (`parcel_id`, `year`)
+
+Index declarations remain column-based for portability; query-level DESC ordering is defined in the list contract.
 
 ## Lifecycle Contract
 
@@ -186,12 +188,13 @@ Optional inputs:
 Behavior:
 
 - create is idempotent on (`score_id`, `feature_version`, `ruleset_version`)
-- idempotency comparison uses a canonicalized create payload that includes only client-controlled fields:
-  - `status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links_json`
-  - string fields are whitespace-trimmed before comparison
-  - `evidence_links_json` is normalized by `(kind, ref, label)` sorting and exact-item de-duplication before comparison
-  - server-managed fields (`id`, `created_at`, `updated_at`, `reviewed_at`, `closed_at`) are excluded
-  - score-derived linkage fields (`parcel_id`, `year`, `score_run_id`) are validated from `score_id` context, not caller-supplied
+- idempotency comparison uses a canonicalized create payload that includes only client-controlled JSON payload fields:
+  - `status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links`
+- request fields persist to matching DB columns; specifically, `evidence_links` is serialized into `evidence_links_json`
+- string fields are whitespace-trimmed before comparison
+- `evidence_links` is normalized by `(kind, ref, label)` sorting and exact-item de-duplication, then compared via persisted `evidence_links_json`
+- server-managed fields (`id`, `created_at`, `updated_at`, `reviewed_at`, `closed_at`) are excluded
+- score-derived linkage fields (`parcel_id`, `year`, `score_run_id`) are validated from `score_id` context, not caller-supplied
 - if same context exists and canonicalized fields are identical, return existing row with `created=false`
 - if same context exists and canonicalized fields differ, fail with `duplicate_case_review`
 - validation: if requested initial status is `resolved` or `closed` and `--disposition` is missing, fail with `invalid_disposition_for_status`
@@ -280,10 +283,10 @@ Presence rules by `run.status`:
 
 `request` normalization rules:
 
-- trim surrounding whitespace for string fields (`reviewer`, `assigned_reviewer`, `note`, evidence `kind/ref/label`)
+- trim surrounding whitespace for string fields (`reviewer`, `assigned_reviewer`, `note`, evidence `kind/ref/label`) before evidence-link normalization/deduplication
 - deduplicate repeatable filters and sort lexicographically (for enums/strings) or ascending (for years)
 - for list commands, always emit `statuses`, `dispositions`, and `years` in `request`; omitted/empty input normalizes to `[]` (unscoped), while non-empty arrays apply restrictive filtering
-- normalize evidence links as canonical tuples `(kind, ref, label)` with exact duplicate removal and deterministic ordering
+- normalize evidence links as canonical tuples `(kind, ref, label)` with `kind`/`ref` required and non-empty after trimming, and `label` optional where omitted or trimmed-empty values normalize to `null`; perform exact duplicate removal and deterministic ordering on these normalized tuples
 
 `run` fields:
 
@@ -307,15 +310,15 @@ Presence rules by `run.status`:
 
 Expected JSON failure codes (`exit 1`):
 
-- `case_review_not_found`
-- `duplicate_case_review`
-- `score_not_found`
-- `score_context_mismatch`
-- `invalid_transition`
-- `invalid_disposition_for_status`
-- `evidence_link_required`
-- `invalid_evidence_link`
-- `source_query_error`
+- `case_review_not_found`: requested case-review id does not exist for an operation that requires it (for example, update/read by id).
+- `duplicate_case_review`: create encountered existing context (`score_id`, `feature_version`, `ruleset_version`) with non-identical canonicalized client-controlled fields.
+- `score_not_found`: referenced `score_id` does not exist.
+- `score_context_mismatch`: supplied context linkage is inconsistent with the referenced score record (parcel/year/version/run context mismatch).
+- `invalid_transition`: requested status change is not allowed by the transition matrix.
+- `invalid_disposition_for_status`: disposition is missing/invalid for the resulting status per lifecycle rules.
+- `evidence_link_required`: resulting state requires at least one evidence link, but none remain after validation/patch application.
+- `invalid_evidence_link`: one or more evidence-link entries fail required shape validation (`kind`/`ref` required after trimming).
+- `source_query_error`: source read failed for reasons other than not-found/validation conditions.
 
 Typer/Click parse/option failures remain `exit 2` with no JSON payload.
 
