@@ -74,6 +74,7 @@ Required uniqueness and integrity:
 - unique context key: (`score_id`, `feature_version`, `ruleset_version`)
 - `score_id` row must match (`parcel_id`, `year`, `feature_version`, `ruleset_version`)
 - `score_run_id` must match `fraud_scores.run_id` for referenced `score_id`
+- scoring reruns MUST NOT hard-delete `fraud_scores` rows referenced by `case_reviews`; reruns must preserve referenced `score_id` values (for example, update-in-place or archival without deleting linked rows)
 
 Required indexes (v1):
 
@@ -310,7 +311,7 @@ Presence rules by `run.status`:
 
 Expected JSON failure codes (`exit 1`):
 
-- `case_review_not_found`: requested case-review id does not exist for an operation that requires it (for example, update/read by id).
+- `case_review_not_found`: requested case-review id does not exist for an operation that requires it (for example, update by id).
 - `duplicate_case_review`: create encountered existing context (`score_id`, `feature_version`, `ruleset_version`) with non-identical canonicalized client-controlled fields.
 - `score_not_found`: referenced `score_id` does not exist.
 - `score_context_mismatch`: supplied context linkage is inconsistent with the referenced score record (parcel/year/version/run context mismatch).
