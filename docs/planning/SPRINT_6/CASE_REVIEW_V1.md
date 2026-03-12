@@ -55,7 +55,7 @@ Required columns (v1):
 - `parcel_id` (FK -> `parcels.id`, not null)
 - `year` (int, not null)
 - `score_id` (FK -> `fraud_scores.id`, not null)
-- `score_run_id` (FK -> `scoring_runs.id`, not null)
+- `run_id` (FK -> `scoring_runs.id`, not null)
 - `feature_version` (string, not null)
 - `ruleset_version` (string, not null)
 - `status` (string enum, not null)
@@ -73,7 +73,7 @@ Required uniqueness and integrity:
 
 - unique context key: (`score_id`, `feature_version`, `ruleset_version`)
 - `score_id` row must match (`parcel_id`, `year`, `feature_version`, `ruleset_version`)
-- `score_run_id` must match `fraud_scores.run_id` for referenced `score_id`
+- `run_id` must match `fraud_scores.run_id` for referenced `score_id`
 - scoring reruns MUST NOT hard-delete `fraud_scores` rows referenced by `case_reviews`; reruns must preserve referenced `score_id` values (for example, update-in-place or archival without deleting linked rows)
 
 Required indexes (v1):
@@ -194,7 +194,7 @@ Behavior:
 - string fields are whitespace-trimmed before comparison
 - `evidence_links` is normalized by `(kind, ref, label)` sorting and exact-item de-duplication, then compared via persisted `evidence_links_json`
 - server-managed fields (`id`, `created_at`, `updated_at`, `reviewed_at`, `closed_at`) are excluded
-- score-derived linkage fields (`parcel_id`, `year`, `score_run_id`) are validated from `score_id` context, not caller-supplied
+- score-derived linkage fields (`parcel_id`, `year`, `run_id`) are validated from `score_id` context, not caller-supplied
 - if same context exists and canonicalized fields are identical, return existing row with `created=false`
 - if same context exists and canonicalized fields differ, fail with `duplicate_case_review`
 - validation: if requested initial status is `resolved` or `closed` and `--disposition` is missing, fail with `invalid_disposition_for_status`
@@ -290,7 +290,7 @@ Presence rules by `run.status`:
 `review` schema (create/update success only):
 
 - base fields always present:
-  - `id`, `parcel_id`, `year`, `score_id`, `score_run_id`
+  - `id`, `parcel_id`, `year`, `score_id`, `run_id`
   - `feature_version`, `ruleset_version`
   - `status`, `disposition`
   - `reviewer`, `assigned_reviewer`, `note`
