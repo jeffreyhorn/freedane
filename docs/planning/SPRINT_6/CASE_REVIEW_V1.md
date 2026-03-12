@@ -175,8 +175,6 @@ Required inputs:
 
 - `--score-id <id>`
 - `--status <pending|in_review|resolved|closed>` (default `pending`)
-- `--feature-version <value>` (default `feature_v1`)
-- `--ruleset-version <value>` (default `scoring_rules_v1`)
 
 Optional inputs:
 
@@ -188,6 +186,7 @@ Optional inputs:
 
 Behavior:
 
+- `feature_version` and `ruleset_version` are derived from `score_id` (not caller-supplied create flags) and echoed in payloads
 - create is idempotent on (`score_id`, `feature_version`, `ruleset_version`)
 - idempotency comparison uses a canonicalized create payload that includes only client-controlled JSON payload fields:
   - `status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links`
@@ -214,15 +213,20 @@ Optional patch inputs:
 - `--reviewer ...`
 - `--assigned-reviewer ...`
 - `--note ...`
-- `--set-evidence-link ...` (replace full list)
+- `--set-evidence-link ...` (repeatable; replace full list)
+- `--clear-evidence-links` (explicitly set list to empty; mutually exclusive with `--set-evidence-link`)
 
 Behavior:
 
 - update is idempotent for same input patch
 - no-op patch returns success with `updated=false`
 - invalid transition/disposition combinations fail before write
+- mapping to `request.patch.evidence_links`:
+  - if neither `--set-evidence-link` nor `--clear-evidence-links` is supplied, omit `request.patch.evidence_links` (no change)
+  - if `--set-evidence-link` is supplied, emit normalized provided links as `request.patch.evidence_links`
+  - if `--clear-evidence-links` is supplied, emit `request.patch.evidence_links = []` (explicit clear)
 - updates that result in `resolved`/`closed` must have at least one evidence link after applying the patch
-- if an update would leave a `resolved`/`closed` record with no evidence links (including explicit clearing), fail with `evidence_link_required` before write
+- if an update would leave a `resolved`/`closed` record with no evidence links (including `--clear-evidence-links`), fail with `evidence_link_required` before write
 
 ## `case-review list`
 
@@ -277,6 +281,7 @@ Presence rules by `run.status`:
 - update:
   - `id`
   - `patch` object containing only supplied fields (`status`, `disposition`, `reviewer`, `assigned_reviewer`, `note`, `evidence_links`)
+  - for `patch.evidence_links`: omitted means no change; `[]` means explicit clear
 - list:
   - `statuses`, `dispositions`, `years` (always arrays; sorted unique; `[]` means unscoped/no filter)
   - `reviewer`, `assigned_reviewer`, `parcel_id`, `feature_version`, `ruleset_version`
