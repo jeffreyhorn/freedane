@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import investigation_report as investigation_report_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     FraudFlag,
@@ -54,6 +55,13 @@ def test_investigation_report_cli_generates_html_with_required_sections(
     assert payload["summary"]["queue_row_count"] == 2
     assert payload["summary"]["dossier_failure_count"] == 0
     assert payload["artifacts"]["html_path"] == str(html_out)
+    timing = payload["diagnostics"]["timing_seconds"]
+    assert set(timing.keys()) == {
+        "report_build_total",
+        "dossier_build_total",
+        "dossier_build_avg",
+        "dossier_build_max",
+    }
 
     html = html_out.read_text(encoding="utf-8")
     assert "<h1>AccessDane Investigation Report</h1>" in html
@@ -111,6 +119,69 @@ def test_investigation_report_cli_html_output_is_deterministic(
     assert html_out_a.read_text(encoding="utf-8") == html_out_b.read_text(
         encoding="utf-8"
     )
+
+
+def test_investigation_report_normalizes_blank_risk_band_for_table_and_summary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    html_out = tmp_path / "blank_risk_band_report.html"
+    init_db("sqlite:///:memory:")
+
+    def _fake_build_review_queue(*_args, **_kwargs):
+        return {
+            "run": {"status": "succeeded"},
+            "summary": {
+                "candidate_count": 1,
+                "filtered_count": 0,
+                "skipped_count": 0,
+                "returned_count": 1,
+            },
+            "rows": [
+                {
+                    "queue_rank": 1,
+                    "score_id": 10,
+                    "parcel_id": "P-BLANK",
+                    "year": 2025,
+                    "score_value": "10.00",
+                    "risk_band": "",
+                    "primary_reason_code": "",
+                }
+            ],
+        }
+
+    def _fake_build_parcel_dossier(*_args, **_kwargs):
+        return {
+            "run": {"status": "succeeded"},
+            "parcel": {},
+            "sections": {},
+            "section_order": [],
+            "timeline": {"event_count": 0},
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        investigation_report_module,
+        "build_review_queue",
+        _fake_build_review_queue,
+    )
+    monkeypatch.setattr(
+        investigation_report_module,
+        "build_parcel_dossier",
+        _fake_build_parcel_dossier,
+    )
+
+    with session_scope("sqlite:///:memory:") as session:
+        payload = investigation_report_module.build_investigation_report(
+            session,
+            html_out=html_out,
+            top=1,
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    html = html_out.read_text(encoding="utf-8")
+    assert "<td>(none)</td>" in html
+    assert '<span class="pill">(none): 1</span>' in html
 
 
 def _seed_report_fixture(session) -> None:

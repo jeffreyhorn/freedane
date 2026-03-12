@@ -4,12 +4,13 @@ from collections import Counter
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
+from time import perf_counter
 from typing import Mapping, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
 from .parcel_dossier import build_parcel_dossier
-from .review_queue import build_review_queue
+from .review_queue import RISK_BAND_PRECEDENCE, build_review_queue
 
 RUN_TYPE_INVESTIGATION_REPORT = "investigation_report"
 INVESTIGATION_REPORT_VERSION_TAG = "investigation_report_v1"
@@ -38,6 +39,7 @@ def build_investigation_report(
     ruleset_version: str = "scoring_rules_v1",
     requires_review_only: bool = True,
 ) -> dict[str, object]:
+    report_build_start = perf_counter()
     request = {
         "top": top,
         "feature_version": feature_version,
@@ -74,6 +76,7 @@ def build_investigation_report(
 
     dossier_rows: list[_DossierReportRow] = []
     dossier_failures: list[dict[str, object]] = []
+    dossier_build_seconds: list[float] = []
     reason_counts: Counter[str] = Counter()
     risk_band_counts: Counter[str] = Counter()
     for row in queue_rows:
@@ -84,12 +87,13 @@ def build_investigation_report(
         if queue_rank is None or score_id is None or year is None or not parcel_id:
             continue
         score_value = _text(row.get("score_value"))
-        risk_band = _text(row.get("risk_band"))
+        risk_band = _text(row.get("risk_band")) or "(none)"
         primary_reason_code = _text(row.get("primary_reason_code")) or "(none)"
 
         reason_counts[primary_reason_code] += 1
-        risk_band_counts[risk_band or "(none)"] += 1
+        risk_band_counts[risk_band] += 1
 
+        dossier_start = perf_counter()
         dossier_payload = build_parcel_dossier(
             session,
             parcel_id=parcel_id,
@@ -97,6 +101,7 @@ def build_investigation_report(
             feature_version=feature_version,
             ruleset_version=ruleset_version,
         )
+        dossier_build_seconds.append(perf_counter() - dossier_start)
         dossier_run = _mapping(dossier_payload.get("run"))
         if dossier_run.get("status") != "succeeded":
             dossier_error = _mapping(dossier_payload.get("error"))
@@ -128,10 +133,9 @@ def build_investigation_report(
         reason_counts.items(),
         key=lambda item: (-item[1], item[0]),
     )
-    risk_band_order = {"high": 0, "medium": 1, "low": 2}
     risk_summary = sorted(
         risk_band_counts.items(),
-        key=lambda item: (risk_band_order.get(item[0], 99), item[0]),
+        key=lambda item: (RISK_BAND_PRECEDENCE.get(item[0], 99), item[0]),
     )
 
     html_text = _render_html(
@@ -147,6 +151,14 @@ def build_investigation_report(
 
     html_out.parent.mkdir(parents=True, exist_ok=True)
     html_out.write_text(html_text, encoding="utf-8")
+    report_build_seconds_total = perf_counter() - report_build_start
+    dossier_seconds_total = sum(dossier_build_seconds)
+    dossier_seconds_max = max(dossier_build_seconds) if dossier_build_seconds else 0.0
+    dossier_seconds_avg = (
+        dossier_seconds_total / len(dossier_build_seconds)
+        if dossier_build_seconds
+        else 0.0
+    )
 
     return {
         "run": _run_payload("succeeded"),
@@ -164,6 +176,12 @@ def build_investigation_report(
         "diagnostics": {
             "queue_summary": _mapping(queue_payload.get("summary")),
             "dossier_failures": dossier_failures,
+            "timing_seconds": {
+                "report_build_total": round(report_build_seconds_total, 6),
+                "dossier_build_total": round(dossier_seconds_total, 6),
+                "dossier_build_avg": round(dossier_seconds_avg, 6),
+                "dossier_build_max": round(dossier_seconds_max, 6),
+            },
         },
         "error": None,
     }
