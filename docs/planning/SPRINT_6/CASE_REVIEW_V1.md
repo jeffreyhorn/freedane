@@ -107,6 +107,8 @@ Rules:
 - `disposition` must be null for `pending` and `in_review`.
 - `disposition` is required for `resolved` and `closed`.
 - `reviewed_at` is required when status enters `resolved`.
+- `reviewed_at` uses first-resolution semantics: set the first time a record reaches `resolved` or `closed`, then preserve on later reopen/re-resolve cycles.
+- create with initial status `closed` must set both `reviewed_at` and `closed_at` at create time.
 - `closed_at` is required when status enters `closed`.
 
 ## Valid Transitions
@@ -127,11 +129,12 @@ Disallowed:
 
 Transition behavior:
 
-- entering `resolved` sets `reviewed_at` if not already set
+- entering `resolved` sets `reviewed_at` if not already set (and does not overwrite it if already populated)
 - entering `closed` sets `closed_at` and keeps `reviewed_at`
 - entering `pending` or `in_review` requires `disposition = null`
 - reopening (`resolved -> in_review` or `closed -> in_review`) explicitly clears `disposition`
 - reopening (`closed -> in_review`) clears `closed_at` and preserves historical `reviewed_at`
+- re-entering `resolved` after reopen preserves existing `reviewed_at` (latest review activity is represented by `updated_at`, not by rewriting `reviewed_at`)
 
 ## Evidence Links Contract
 
