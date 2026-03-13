@@ -48,6 +48,7 @@ def test_score_fraud_computes_scores_and_persists_flags(tmp_path: Path) -> None:
     assert payload["summary"] == {
         "features_considered": 4,
         "scores_inserted": 4,
+        "scores_updated": 0,
         "flags_inserted": 10,
         "high_risk_count": 1,
         "medium_risk_count": 1,
@@ -376,6 +377,8 @@ def test_score_fraud_rerun_preserves_case_reviews_for_reviewed_scores(
         assert second_payload["run"]["status"] == "succeeded"
         second_run_id = second_payload["run"]["run_id"]
         assert second_run_id is not None
+        assert second_payload["summary"]["scores_inserted"] == 2
+        assert second_payload["summary"]["scores_updated"] == 1
 
     with session_scope(database_url) as session:
         remaining_case_reviews = session.execute(select(CaseReview)).scalars().all()
@@ -528,6 +531,8 @@ def test_score_fraud_preserved_reviewed_scores_keep_flags_when_feature_skips(
         )
         assert rerun_payload["run"]["status"] == "succeeded"
         assert rerun_payload["summary"]["skipped_feature_rows"] == 1
+        assert rerun_payload["summary"]["scores_inserted"] == 3
+        assert rerun_payload["summary"]["scores_updated"] == 0
 
     with session_scope(database_url) as session:
         remaining_flags = (
@@ -755,6 +760,7 @@ def test_score_fraud_cli_supports_scope_filter_and_output_file(
     assert payload["summary"] == {
         "features_considered": 2,
         "scores_inserted": 2,
+        "scores_updated": 0,
         "flags_inserted": 6,
         "high_risk_count": 1,
         "medium_risk_count": 0,

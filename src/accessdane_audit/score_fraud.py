@@ -45,6 +45,7 @@ class ScoreFraudRun(TypedDict):
 class ScoreFraudSummary(TypedDict):
     features_considered: int
     scores_inserted: int
+    scores_updated: int
     flags_inserted: int
     high_risk_count: int
     medium_risk_count: int
@@ -468,6 +469,7 @@ def _persist_scores_and_flags(
     existing_scores_by_key: Mapping[tuple[str, int], FraudScore],
 ) -> tuple[ScoreFraudSummary, list[ScoreFraudTopFlag], ScoreFraudRankings]:
     scores_inserted = 0
+    scores_updated = 0
     flags_inserted = 0
     high_risk_count = 0
     medium_risk_count = 0
@@ -565,13 +567,18 @@ def _persist_scores_and_flags(
                 score_summary_json=score_summary_json,
             )
             session.add(score_row)
+            scores_inserted += 1
         else:
             score_id = score_row.id
             assert score_id is not None
             session.execute(delete(FraudFlag).where(FraudFlag.score_id == score_id))
             session.execute(
                 update(CaseReview)
-                .where(CaseReview.score_id == score_id)
+                .where(
+                    CaseReview.score_id == score_id,
+                    CaseReview.feature_version == feature_version,
+                    CaseReview.ruleset_version == ruleset_version,
+                )
                 .values(run_id=run_id)
             )
             score_row.run_id = run_id
@@ -583,7 +590,7 @@ def _persist_scores_and_flags(
             score_row.requires_review = requires_review
             score_row.reason_code_count = len(ranked_triggers)
             score_row.score_summary_json = score_summary_json
-        scores_inserted += 1
+            scores_updated += 1
 
         if risk_band == "high":
             high_risk_count += 1
@@ -685,6 +692,7 @@ def _persist_scores_and_flags(
     summary: ScoreFraudSummary = {
         "features_considered": len(features),
         "scores_inserted": scores_inserted,
+        "scores_updated": scores_updated,
         "flags_inserted": flags_inserted,
         "high_risk_count": high_risk_count,
         "medium_risk_count": medium_risk_count,
@@ -877,6 +885,7 @@ def _empty_summary() -> ScoreFraudSummary:
     return {
         "features_considered": 0,
         "scores_inserted": 0,
+        "scores_updated": 0,
         "flags_inserted": 0,
         "high_risk_count": 0,
         "medium_risk_count": 0,
