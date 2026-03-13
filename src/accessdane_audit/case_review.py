@@ -910,9 +910,9 @@ def _build_raw_update_patch(
     if note is not None:
         patch["note"] = note
     if set_evidence_links is not None:
-        patch["set_evidence_links"] = list(set_evidence_links)
-    if clear_evidence_links:
-        patch["clear_evidence_links"] = True
+        patch["evidence_links"] = list(set_evidence_links)
+    elif clear_evidence_links:
+        patch["evidence_links"] = []
     return patch
 
 
