@@ -62,6 +62,7 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             "parcel_features",
             "fraud_scores",
             "fraud_flags",
+            "case_reviews",
         }.issubset(tables)
 
         with engine.connect() as conn:
@@ -385,6 +386,50 @@ def test_init_db_applies_migrations_to_empty_database(tmp_path: Path) -> None:
             "source_refs_json",
             "flagged_at",
         }.issubset(fraud_flag_columns)
+        case_review_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("case_reviews")
+        }
+        assert case_review_indexes[
+            "ux_case_reviews_score_id_feature_version_ruleset_version"
+        ] == ("score_id", "feature_version", "ruleset_version")
+        assert case_review_indexes["ix_case_reviews_status_updated_at"] == (
+            "status",
+            "updated_at",
+        )
+        assert case_review_indexes["ix_case_reviews_disposition_reviewed_at"] == (
+            "disposition",
+            "reviewed_at",
+        )
+        assert case_review_indexes[
+            "ix_case_reviews_assigned_reviewer_status_updated_at"
+        ] == ("assigned_reviewer", "status", "updated_at")
+        assert case_review_indexes["ix_case_reviews_parcel_id_year"] == (
+            "parcel_id",
+            "year",
+        )
+        case_review_columns = {
+            column["name"] for column in inspector.get_columns("case_reviews")
+        }
+        assert {
+            "id",
+            "parcel_id",
+            "year",
+            "score_id",
+            "run_id",
+            "feature_version",
+            "ruleset_version",
+            "status",
+            "disposition",
+            "reviewer",
+            "assigned_reviewer",
+            "note",
+            "evidence_links_json",
+            "created_at",
+            "updated_at",
+            "reviewed_at",
+            "closed_at",
+        }.issubset(case_review_columns)
         with engine.connect() as conn:
             partial_index_sql = conn.execute(
                 text(
@@ -452,6 +497,7 @@ def test_init_db_stamps_compatible_legacy_schema_before_upgrading(
         assert "parcel_features" in set(inspector.get_table_names())
         assert "fraud_scores" in set(inspector.get_table_names())
         assert "fraud_flags" in set(inspector.get_table_names())
+        assert "case_reviews" in set(inspector.get_table_names())
     finally:
         engine.dispose()
 
@@ -493,6 +539,7 @@ def test_init_db_is_idempotent_on_already_versioned_database(tmp_path: Path) -> 
         assert "parcel_features" in set(inspector.get_table_names())
         assert "fraud_scores" in set(inspector.get_table_names())
         assert "fraud_flags" in set(inspector.get_table_names())
+        assert "case_reviews" in set(inspector.get_table_names())
         with engine.connect() as conn:
             revision = conn.execute(
                 text("SELECT version_num FROM alembic_version")
