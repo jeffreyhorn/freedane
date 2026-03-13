@@ -11,7 +11,7 @@ from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from sqlalchemy.orm import Session, load_only
 
-from .models import FraudFlag, FraudScore, ParcelFeature, ScoringRun
+from .models import CaseReview, FraudFlag, FraudScore, ParcelFeature, ScoringRun
 
 RUN_TYPE_SCORE_FRAUD = "score_fraud"
 IN_CLAUSE_BATCH_SIZE = 800
@@ -373,6 +373,10 @@ def _delete_existing_scored_rows(
     for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
         session.execute(
             delete(FraudFlag).where(FraudFlag.score_id.in_(batch_score_ids))
+        )
+    for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
+        session.execute(
+            delete(CaseReview).where(CaseReview.score_id.in_(batch_score_ids))
         )
     for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
         session.execute(delete(FraudScore).where(FraudScore.id.in_(batch_score_ids)))

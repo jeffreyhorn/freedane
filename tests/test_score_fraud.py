@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from accessdane_audit import cli
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
+    CaseReview,
     FraudFlag,
     FraudScore,
     Parcel,
@@ -322,6 +323,60 @@ def test_score_fraud_is_idempotent_for_same_scope(tmp_path: Path) -> None:
     assert first_payload["scope"] == second_payload["scope"]
     assert first_payload["summary"] == second_payload["summary"]
     assert first_payload["top_flags"] == second_payload["top_flags"]
+
+
+def test_score_fraud_rerun_removes_case_reviews_for_replaced_scores(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "score_fraud_case_review_fk_cleanup.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_score_fraud_fixture(session)
+
+    with session_scope(database_url) as session:
+        first_payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+            years=[2025],
+        )
+        assert first_payload["run"]["status"] == "succeeded"
+
+    with session_scope(database_url) as session:
+        score_row = session.execute(
+            select(FraudScore).where(
+                FraudScore.ruleset_version == "scoring_rules_v1",
+                FraudScore.feature_version == "feature_v1",
+                FraudScore.parcel_id == "parcel-1",
+                FraudScore.year == 2025,
+            )
+        ).scalar_one()
+        session.add(
+            CaseReview(
+                parcel_id=score_row.parcel_id,
+                year=score_row.year,
+                score_id=score_row.id,
+                run_id=score_row.run_id,
+                feature_version=score_row.feature_version,
+                ruleset_version=score_row.ruleset_version,
+                status="pending",
+            )
+        )
+
+    with session_scope(database_url) as session:
+        second_payload = score_fraud(
+            session,
+            ruleset_version="scoring_rules_v1",
+            feature_version="feature_v1",
+            years=[2025],
+        )
+        assert second_payload["run"]["status"] == "succeeded"
+
+    with session_scope(database_url) as session:
+        remaining_case_reviews = session.execute(select(CaseReview)).scalars().all()
+        assert remaining_case_reviews == []
 
 
 def test_score_fraud_feature_run_filter_replaces_rows_after_feature_run_id_changes(

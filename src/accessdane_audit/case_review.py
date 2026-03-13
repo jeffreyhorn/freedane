@@ -349,9 +349,19 @@ def update_case_review(
     set_evidence_links: Optional[Sequence[str]] = None,
     clear_evidence_links: bool = False,
 ) -> CaseReviewPayload:
+    raw_patch = _build_raw_update_patch(
+        status=status,
+        disposition=disposition,
+        reviewer=reviewer,
+        assigned_reviewer=assigned_reviewer,
+        note=note,
+        set_evidence_links=set_evidence_links,
+        clear_evidence_links=clear_evidence_links,
+    )
+
     if clear_evidence_links and set_evidence_links is not None:
         return _failure_payload(
-            request={"id": case_review_id, "patch": {}},
+            request={"id": case_review_id, "patch": raw_patch},
             code="invalid_evidence_link",
             message=(
                 "Cannot combine set_evidence_links with clear_evidence_links in one "
@@ -380,7 +390,7 @@ def update_case_review(
             )
     except _CaseReviewValidationError as exc:
         return _failure_payload(
-            request={"id": case_review_id, "patch": {}},
+            request={"id": case_review_id, "patch": raw_patch},
             code=exc.code,
             message=exc.message,
         )
@@ -876,6 +886,34 @@ def _canonical_client_fields(
         "note": _normalize_optional_string(note),
         "evidence_links": _normalize_evidence_link_objects(evidence_links),
     }
+
+
+def _build_raw_update_patch(
+    *,
+    status: Optional[str],
+    disposition: Optional[str],
+    reviewer: Optional[str],
+    assigned_reviewer: Optional[str],
+    note: Optional[str],
+    set_evidence_links: Optional[Sequence[str]],
+    clear_evidence_links: bool,
+) -> dict[str, object]:
+    patch: dict[str, object] = {}
+    if status is not None:
+        patch["status"] = status
+    if disposition is not None:
+        patch["disposition"] = disposition
+    if reviewer is not None:
+        patch["reviewer"] = reviewer
+    if assigned_reviewer is not None:
+        patch["assigned_reviewer"] = assigned_reviewer
+    if note is not None:
+        patch["note"] = note
+    if set_evidence_links is not None:
+        patch["set_evidence_links"] = list(set_evidence_links)
+    if clear_evidence_links:
+        patch["clear_evidence_links"] = True
+    return patch
 
 
 def _resolve_existing_case_review(

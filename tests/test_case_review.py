@@ -478,6 +478,22 @@ def test_case_review_validation_codes_for_invalid_status_and_disposition(
         )
         assert invalid_update_status["run"]["status"] == "failed"
         assert invalid_update_status["error"]["code"] == "invalid_status"
+        assert invalid_update_status["request"]["patch"] == {
+            "status": "still_not_a_status"
+        }
+
+        mutually_exclusive_links = update_case_review(
+            session,
+            case_review_id=case_review_id,
+            set_evidence_links=["kind=dossier,ref=CASE-1"],
+            clear_evidence_links=True,
+        )
+        assert mutually_exclusive_links["run"]["status"] == "failed"
+        assert mutually_exclusive_links["error"]["code"] == "invalid_evidence_link"
+        assert mutually_exclusive_links["request"]["patch"] == {
+            "set_evidence_links": ["kind=dossier,ref=CASE-1"],
+            "clear_evidence_links": True,
+        }
 
         invalid_list_status = list_case_reviews(session, statuses=["nope"])
         assert invalid_list_status["run"]["status"] == "failed"
