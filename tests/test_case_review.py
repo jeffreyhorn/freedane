@@ -14,7 +14,7 @@ from accessdane_audit.case_review import (
     update_case_review,
 )
 from accessdane_audit.db import init_db, session_scope
-from accessdane_audit.models import FraudScore, Parcel, ScoringRun
+from accessdane_audit.models import CaseReview, FraudScore, Parcel, ScoringRun
 
 
 def test_case_review_create_idempotent_and_payload_contract(
@@ -448,6 +448,31 @@ def test_case_review_list_filters_and_ordering(
     assert filtered_payload["summary"]["total"] == 1
     assert filtered_payload["summary"]["returned"] == 1
     assert filtered_payload["reviews"][0]["id"] == c2["review"]["id"]
+
+
+def test_case_review_list_returns_failure_for_malformed_stored_review_row(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "case_review_list_malformed_row.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        score_id = _seed_single_score(session, parcel_id="P-1", year=2025)
+        created = create_case_review(session, score_id=score_id)
+        assert created["error"] is None
+        review_id = int(created["review"]["id"])
+
+    with session_scope(database_url) as session:
+        row = session.get(CaseReview, review_id)
+        assert row is not None
+        row.evidence_links_json = "invalid-shape"
+
+    with session_scope(database_url) as session:
+        payload = list_case_reviews(session)
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"]["code"] == "source_query_error"
 
 
 def test_case_review_validation_codes_for_invalid_status_and_disposition(

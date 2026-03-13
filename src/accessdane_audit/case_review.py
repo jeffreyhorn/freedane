@@ -653,6 +653,14 @@ def list_case_reviews(
             .scalars()
             .all()
         )
+        reviews = [_review_payload(row) for row in rows]
+    except _CaseReviewValidationError:
+        session.rollback()
+        return _failure_payload(
+            request=request,
+            code="source_query_error",
+            message=_SOURCE_QUERY_ERROR_MESSAGE,
+        )
     except Exception:
         session.rollback()
         return _failure_payload(
@@ -660,8 +668,6 @@ def list_case_reviews(
             code="source_query_error",
             message=_SOURCE_QUERY_ERROR_MESSAGE,
         )
-
-    reviews = [_review_payload(row) for row in rows]
 
     return {
         "run": _run_payload("succeeded"),

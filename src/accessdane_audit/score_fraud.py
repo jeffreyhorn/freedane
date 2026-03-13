@@ -7,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from typing import Callable, Mapping, Optional, Sequence, TypedDict, TypeVar
 
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import delete, select, tuple_, update
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
 from sqlalchemy.orm import Session, load_only
 
@@ -382,14 +382,14 @@ def _delete_existing_scored_rows(
         if score_row.id is not None
     }
 
-    for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
+    score_ids_to_delete = [
+        score_id for score_id in score_ids if score_id not in reviewed_score_ids
+    ]
+    for batch_score_ids in _chunked(score_ids_to_delete, IN_CLAUSE_BATCH_SIZE):
         session.execute(
             delete(FraudFlag).where(FraudFlag.score_id.in_(batch_score_ids))
         )
 
-    score_ids_to_delete = [
-        score_id for score_id in score_ids if score_id not in reviewed_score_ids
-    ]
     for batch_score_ids in _chunked(score_ids_to_delete, IN_CLAUSE_BATCH_SIZE):
         session.execute(delete(FraudScore).where(FraudScore.id.in_(batch_score_ids)))
 
@@ -566,6 +566,14 @@ def _persist_scores_and_flags(
             )
             session.add(score_row)
         else:
+            score_id = score_row.id
+            assert score_id is not None
+            session.execute(delete(FraudFlag).where(FraudFlag.score_id == score_id))
+            session.execute(
+                update(CaseReview)
+                .where(CaseReview.score_id == score_id)
+                .values(run_id=run_id)
+            )
             score_row.run_id = run_id
             score_row.feature_run_id = feature.run_id
             score_row.ruleset_version = ruleset_version
