@@ -579,7 +579,10 @@ def _persist_scores_and_flags(
                     CaseReview.feature_version == feature_version,
                     CaseReview.ruleset_version == ruleset_version,
                 )
-                .values(run_id=run_id)
+                .values(
+                    run_id=run_id,
+                    updated_at=datetime.now(timezone.utc),
+                )
             )
             score_row.run_id = run_id
             score_row.feature_run_id = feature.run_id
