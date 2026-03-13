@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence, TypedDict
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import CaseReview, FraudScore
@@ -65,6 +66,13 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
+class _CaseReviewValidationError(ValueError):
+    def __init__(self, *, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class CaseReviewRun(TypedDict):
     run_id: Optional[int]
     run_persisted: bool
@@ -106,13 +114,7 @@ def create_case_review(
         normalized_assigned_reviewer = _normalize_optional_string(assigned_reviewer)
         normalized_note = _normalize_optional_string(note)
         parsed_evidence_links = _normalize_evidence_link_inputs(evidence_links)
-    except ValueError as exc:
-        message = str(exc)
-        code = (
-            "invalid_evidence_link"
-            if "evidence" in message.lower()
-            else "invalid_disposition_for_status"
-        )
+    except _CaseReviewValidationError as exc:
         return _failure_payload(
             request={
                 "score_id": score_id,
@@ -125,8 +127,8 @@ def create_case_review(
                 "ruleset_version": None,
                 "evidence_links": list(evidence_links or []),
             },
-            code=code,
-            message=message,
+            code=exc.code,
+            message=exc.message,
         )
 
     if not _is_disposition_valid_for_status(
@@ -239,67 +241,16 @@ def create_case_review(
         )
 
     if existing is not None:
-        if (
-            existing.parcel_id != score.parcel_id
-            or existing.year != score.year
-            or existing.run_id != score.run_id
-        ):
-            return _failure_payload(
-                request=request,
-                code="score_context_mismatch",
-                message=(
-                    "Existing case review linkage does not match the referenced "
-                    "score context."
-                ),
-            )
-
-        try:
-            incoming_canonical = _canonical_client_fields(
-                status=normalized_status,
-                disposition=normalized_disposition,
-                reviewer=normalized_reviewer,
-                assigned_reviewer=normalized_assigned_reviewer,
-                note=normalized_note,
-                evidence_links=parsed_evidence_links,
-            )
-            existing_canonical = _canonical_client_fields(
-                status=existing.status,
-                disposition=existing.disposition,
-                reviewer=existing.reviewer,
-                assigned_reviewer=existing.assigned_reviewer,
-                note=existing.note,
-                evidence_links=_normalize_evidence_link_objects(
-                    existing.evidence_links_json
-                ),
-            )
-        except ValueError:
-            return _failure_payload(
-                request=request,
-                code="source_query_error",
-                message=_SOURCE_QUERY_ERROR_MESSAGE,
-            )
-
-        if incoming_canonical == existing_canonical:
-            return {
-                "run": _run_payload("succeeded"),
-                "request": request,
-                "review": _review_payload(existing, created=False),
-                "diagnostics": {
-                    "warnings": [],
-                    "normalization": {
-                        "evidence_links_count": len(parsed_evidence_links),
-                    },
-                },
-                "error": None,
-            }
-
-        return _failure_payload(
+        return _resolve_existing_case_review(
+            existing=existing,
+            score=score,
             request=request,
-            code="duplicate_case_review",
-            message=(
-                "A case review already exists for this score context with different "
-                "client-controlled fields."
-            ),
+            status=normalized_status,
+            disposition=normalized_disposition,
+            reviewer=normalized_reviewer,
+            assigned_reviewer=normalized_assigned_reviewer,
+            note=normalized_note,
+            evidence_links=parsed_evidence_links,
         )
 
     now = datetime.now(timezone.utc)
@@ -330,6 +281,40 @@ def create_case_review(
     try:
         session.add(row)
         session.flush()
+    except IntegrityError:
+        session.rollback()
+        try:
+            existing_after_conflict = session.execute(
+                select(CaseReview).where(
+                    CaseReview.score_id == score.id,
+                    CaseReview.feature_version == score.feature_version,
+                    CaseReview.ruleset_version == score.ruleset_version,
+                )
+            ).scalar_one_or_none()
+        except Exception:
+            session.rollback()
+            return _failure_payload(
+                request=request,
+                code="source_query_error",
+                message=_SOURCE_QUERY_ERROR_MESSAGE,
+            )
+        if existing_after_conflict is None:
+            return _failure_payload(
+                request=request,
+                code="source_query_error",
+                message=_SOURCE_QUERY_ERROR_MESSAGE,
+            )
+        return _resolve_existing_case_review(
+            existing=existing_after_conflict,
+            score=score,
+            request=request,
+            status=normalized_status,
+            disposition=normalized_disposition,
+            reviewer=normalized_reviewer,
+            assigned_reviewer=normalized_assigned_reviewer,
+            note=normalized_note,
+            evidence_links=parsed_evidence_links,
+        )
     except Exception:
         session.rollback()
         return _failure_payload(
@@ -393,17 +378,11 @@ def update_case_review(
             patch["evidence_links"] = _normalize_evidence_link_inputs(
                 set_evidence_links
             )
-    except ValueError as exc:
-        message = str(exc)
-        code = (
-            "invalid_evidence_link"
-            if "evidence" in message.lower()
-            else "invalid_disposition_for_status"
-        )
+    except _CaseReviewValidationError as exc:
         return _failure_payload(
             request={"id": case_review_id, "patch": {}},
-            code=code,
-            message=message,
+            code=exc.code,
+            message=exc.message,
         )
 
     request = {
@@ -434,7 +413,7 @@ def update_case_review(
         current_evidence_links = _normalize_evidence_link_objects(
             row.evidence_links_json
         )
-    except ValueError:
+    except _CaseReviewValidationError:
         return _failure_payload(
             request=request,
             code="source_query_error",
@@ -585,17 +564,39 @@ def list_case_reviews(
     limit: int = 100,
     offset: int = 0,
 ) -> CaseReviewPayload:
-    normalized_statuses = _normalize_string_sequence(statuses)
-    normalized_dispositions = _normalize_string_sequence(dispositions)
+    raw_statuses = list(statuses or [])
+    raw_dispositions = list(dispositions or [])
     normalized_years = sorted(set(years or []))
-    normalized_reviewer = _normalize_optional_string(reviewer)
-    normalized_assigned_reviewer = _normalize_optional_string(assigned_reviewer)
-    normalized_parcel_id = _normalize_optional_string(parcel_id)
-
     normalized_limit = max(1, min(limit, 1000))
     normalized_offset = max(offset, 0)
 
     request: dict[str, object] = {
+        "statuses": raw_statuses,
+        "dispositions": raw_dispositions,
+        "years": normalized_years,
+        "reviewer": reviewer,
+        "assigned_reviewer": assigned_reviewer,
+        "parcel_id": parcel_id,
+        "feature_version": feature_version,
+        "ruleset_version": ruleset_version,
+        "limit": normalized_limit,
+        "offset": normalized_offset,
+    }
+
+    try:
+        normalized_statuses = _normalize_status_sequence(statuses)
+        normalized_dispositions = _normalize_disposition_sequence(dispositions)
+        normalized_reviewer = _normalize_optional_string(reviewer)
+        normalized_assigned_reviewer = _normalize_optional_string(assigned_reviewer)
+        normalized_parcel_id = _normalize_optional_string(parcel_id)
+    except _CaseReviewValidationError as exc:
+        return _failure_payload(
+            request=request,
+            code=exc.code,
+            message=exc.message,
+        )
+
+    request = {
         "statuses": normalized_statuses,
         "dispositions": normalized_dispositions,
         "years": normalized_years,
@@ -609,28 +610,29 @@ def list_case_reviews(
     }
 
     try:
-        query = select(CaseReview).where(
+        predicates = [
             CaseReview.feature_version == feature_version,
             CaseReview.ruleset_version == ruleset_version,
-        )
+        ]
         if normalized_statuses:
-            query = query.where(CaseReview.status.in_(normalized_statuses))
+            predicates.append(CaseReview.status.in_(normalized_statuses))
         if normalized_dispositions:
-            query = query.where(CaseReview.disposition.in_(normalized_dispositions))
+            predicates.append(CaseReview.disposition.in_(normalized_dispositions))
         if normalized_years:
-            query = query.where(CaseReview.year.in_(normalized_years))
+            predicates.append(CaseReview.year.in_(normalized_years))
         if normalized_reviewer is not None:
-            query = query.where(CaseReview.reviewer == normalized_reviewer)
+            predicates.append(CaseReview.reviewer == normalized_reviewer)
         if normalized_assigned_reviewer is not None:
-            query = query.where(
+            predicates.append(
                 CaseReview.assigned_reviewer == normalized_assigned_reviewer
             )
         if normalized_parcel_id is not None:
-            query = query.where(CaseReview.parcel_id == normalized_parcel_id)
+            predicates.append(CaseReview.parcel_id == normalized_parcel_id)
 
-        total = session.execute(
-            select(func.count()).select_from(query.subquery())
-        ).scalar_one()
+        query = select(CaseReview).where(*predicates)
+        count_query = select(func.count()).select_from(CaseReview).where(*predicates)
+
+        total = session.execute(count_query).scalar_one()
 
         rows = (
             session.execute(
@@ -676,7 +678,10 @@ def list_case_reviews(
 def _normalize_status(value: str) -> str:
     normalized = value.strip().lower()
     if normalized not in STATUS_VALUES:
-        raise ValueError(f"Unsupported status '{value}'.")
+        raise _CaseReviewValidationError(
+            code="invalid_status",
+            message=f"Unsupported status '{value}'.",
+        )
     return normalized
 
 
@@ -687,7 +692,10 @@ def _normalize_disposition(value: Optional[str]) -> Optional[str]:
     if not normalized:
         return None
     if normalized not in DISPOSITION_VALUES:
-        raise ValueError(f"Unsupported disposition '{value}'.")
+        raise _CaseReviewValidationError(
+            code="invalid_disposition",
+            message=f"Unsupported disposition '{value}'.",
+        )
     return normalized
 
 
@@ -700,11 +708,26 @@ def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-def _normalize_string_sequence(values: Optional[Sequence[str]]) -> list[str]:
-    normalized = sorted(
-        {value.strip().lower() for value in values or [] if value.strip()}
-    )
-    return normalized
+def _normalize_status_sequence(values: Optional[Sequence[str]]) -> list[str]:
+    normalized: set[str] = set()
+    for value in values or []:
+        stripped = _normalize_optional_string(value)
+        if stripped is None:
+            continue
+        normalized.add(_normalize_status(stripped))
+    return sorted(normalized)
+
+
+def _normalize_disposition_sequence(values: Optional[Sequence[str]]) -> list[str]:
+    normalized: set[str] = set()
+    for value in values or []:
+        stripped = _normalize_optional_string(value)
+        if stripped is None:
+            continue
+        disposition = _normalize_disposition(stripped)
+        if disposition is not None:
+            normalized.add(disposition)
+    return sorted(normalized)
 
 
 def _normalize_evidence_link_inputs(
@@ -721,19 +744,31 @@ def _normalize_evidence_link_objects(values: object) -> list[dict[str, object]]:
     if values is None:
         return []
     if not isinstance(values, list):
-        raise ValueError("Evidence links must be a list.")
+        raise _CaseReviewValidationError(
+            code="invalid_evidence_link",
+            message="Evidence links must be a list.",
+        )
 
     tuples: set[tuple[str, str, Optional[str]]] = set()
     for item in values:
         if not isinstance(item, Mapping):
-            raise ValueError("Evidence link entries must be objects.")
+            raise _CaseReviewValidationError(
+                code="invalid_evidence_link",
+                message="Evidence link entries must be objects.",
+            )
         kind = _normalize_optional_string(_coerce_str(item.get("kind")))
         ref = _normalize_optional_string(_coerce_str(item.get("ref")))
         label = _normalize_optional_string(_coerce_str(item.get("label")))
         if kind is None or ref is None:
-            raise ValueError("Evidence links require non-empty kind and ref.")
+            raise _CaseReviewValidationError(
+                code="invalid_evidence_link",
+                message="Evidence links require non-empty kind and ref.",
+            )
         if kind not in EVIDENCE_KIND_VALUES:
-            raise ValueError(f"Unsupported evidence link kind '{kind}'.")
+            raise _CaseReviewValidationError(
+                code="invalid_evidence_link",
+                message=f"Unsupported evidence link kind '{kind}'.",
+            )
         tuples.add((kind, ref, label))
 
     return _canonicalize_evidence_tuples(tuples)
@@ -750,7 +785,10 @@ def _coerce_str(value: object) -> Optional[str]:
 def _parse_evidence_link_input(value: str) -> tuple[str, str, Optional[str]]:
     text = value.strip()
     if not text:
-        raise ValueError("Evidence link cannot be empty.")
+        raise _CaseReviewValidationError(
+            code="invalid_evidence_link",
+            message="Evidence link cannot be empty.",
+        )
 
     pairs: dict[str, str] = {}
     for chunk in text.split(","):
@@ -758,15 +796,22 @@ def _parse_evidence_link_input(value: str) -> tuple[str, str, Optional[str]]:
         if not part:
             continue
         if "=" not in part:
-            raise ValueError(
-                "Evidence link must use kind=...,ref=...,label=... format."
+            raise _CaseReviewValidationError(
+                code="invalid_evidence_link",
+                message="Evidence link must use kind=...,ref=...,label=... format.",
             )
         key, raw_val = part.split("=", 1)
         normalized_key = key.strip().lower()
         if normalized_key not in {"kind", "ref", "label"}:
-            raise ValueError(f"Unsupported evidence link key '{normalized_key}'.")
+            raise _CaseReviewValidationError(
+                code="invalid_evidence_link",
+                message=f"Unsupported evidence link key '{normalized_key}'.",
+            )
         if normalized_key in pairs:
-            raise ValueError(f"Duplicate evidence link key '{normalized_key}'.")
+            raise _CaseReviewValidationError(
+                code="invalid_evidence_link",
+                message=f"Duplicate evidence link key '{normalized_key}'.",
+            )
         pairs[normalized_key] = raw_val
 
     kind = _normalize_optional_string(pairs.get("kind"))
@@ -774,9 +819,15 @@ def _parse_evidence_link_input(value: str) -> tuple[str, str, Optional[str]]:
     label = _normalize_optional_string(pairs.get("label"))
 
     if kind is None or ref is None:
-        raise ValueError("Evidence links require non-empty kind and ref.")
+        raise _CaseReviewValidationError(
+            code="invalid_evidence_link",
+            message="Evidence links require non-empty kind and ref.",
+        )
     if kind not in EVIDENCE_KIND_VALUES:
-        raise ValueError(f"Unsupported evidence link kind '{kind}'.")
+        raise _CaseReviewValidationError(
+            code="invalid_evidence_link",
+            message=f"Unsupported evidence link kind '{kind}'.",
+        )
 
     return (kind, ref, label)
 
@@ -825,6 +876,82 @@ def _canonical_client_fields(
         "note": _normalize_optional_string(note),
         "evidence_links": _normalize_evidence_link_objects(evidence_links),
     }
+
+
+def _resolve_existing_case_review(
+    *,
+    existing: CaseReview,
+    score: FraudScore,
+    request: Mapping[str, object],
+    status: str,
+    disposition: Optional[str],
+    reviewer: Optional[str],
+    assigned_reviewer: Optional[str],
+    note: Optional[str],
+    evidence_links: list[dict[str, object]],
+) -> CaseReviewPayload:
+    if (
+        existing.parcel_id != score.parcel_id
+        or existing.year != score.year
+        or existing.run_id != score.run_id
+    ):
+        return _failure_payload(
+            request=request,
+            code="score_context_mismatch",
+            message=(
+                "Existing case review linkage does not match the referenced "
+                "score context."
+            ),
+        )
+
+    try:
+        incoming_canonical = _canonical_client_fields(
+            status=status,
+            disposition=disposition,
+            reviewer=reviewer,
+            assigned_reviewer=assigned_reviewer,
+            note=note,
+            evidence_links=evidence_links,
+        )
+        existing_canonical = _canonical_client_fields(
+            status=existing.status,
+            disposition=existing.disposition,
+            reviewer=existing.reviewer,
+            assigned_reviewer=existing.assigned_reviewer,
+            note=existing.note,
+            evidence_links=_normalize_evidence_link_objects(
+                existing.evidence_links_json
+            ),
+        )
+    except _CaseReviewValidationError:
+        return _failure_payload(
+            request=request,
+            code="source_query_error",
+            message=_SOURCE_QUERY_ERROR_MESSAGE,
+        )
+
+    if incoming_canonical == existing_canonical:
+        return {
+            "run": _run_payload("succeeded"),
+            "request": dict(request),
+            "review": _review_payload(existing, created=False),
+            "diagnostics": {
+                "warnings": [],
+                "normalization": {
+                    "evidence_links_count": len(evidence_links),
+                },
+            },
+            "error": None,
+        }
+
+    return _failure_payload(
+        request=request,
+        code="duplicate_case_review",
+        message=(
+            "A case review already exists for this score context with different "
+            "client-controlled fields."
+        ),
+    )
 
 
 def _run_payload(status: str) -> CaseReviewRun:

@@ -8,6 +8,11 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit.case_review import (
+    create_case_review,
+    list_case_reviews,
+    update_case_review,
+)
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import FraudScore, Parcel, ScoringRun
 
@@ -443,6 +448,96 @@ def test_case_review_list_filters_and_ordering(
     assert filtered_payload["summary"]["total"] == 1
     assert filtered_payload["summary"]["returned"] == 1
     assert filtered_payload["reviews"][0]["id"] == c2["review"]["id"]
+
+
+def test_case_review_validation_codes_for_invalid_status_and_disposition(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "case_review_validation_codes.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        score_id = _seed_single_score(session, parcel_id="P-1", year=2025)
+        created = create_case_review(session, score_id=score_id)
+        assert created["error"] is None
+        case_review_id = int(created["review"]["id"])
+
+        invalid_create_status = create_case_review(
+            session,
+            score_id=score_id,
+            status="not_a_status",
+        )
+        assert invalid_create_status["run"]["status"] == "failed"
+        assert invalid_create_status["error"]["code"] == "invalid_status"
+
+        invalid_update_status = update_case_review(
+            session,
+            case_review_id=case_review_id,
+            status="still_not_a_status",
+        )
+        assert invalid_update_status["run"]["status"] == "failed"
+        assert invalid_update_status["error"]["code"] == "invalid_status"
+
+        invalid_list_status = list_case_reviews(session, statuses=["nope"])
+        assert invalid_list_status["run"]["status"] == "failed"
+        assert invalid_list_status["error"]["code"] == "invalid_status"
+
+        invalid_list_disposition = list_case_reviews(
+            session,
+            dispositions=["bogus_disposition"],
+        )
+        assert invalid_list_disposition["run"]["status"] == "failed"
+        assert invalid_list_disposition["error"]["code"] == "invalid_disposition"
+
+
+def test_case_review_create_handles_unique_conflict_idempotently(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "case_review_unique_conflict.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        score_id = _seed_single_score(session, parcel_id="P-9", year=2025)
+        first = create_case_review(
+            session,
+            score_id=score_id,
+            reviewer="Alice",
+            note="same note",
+        )
+        assert first["error"] is None
+        existing_id = int(first["review"]["id"])
+
+    with session_scope(database_url) as session:
+        real_execute = session.execute
+        seen_case_review_lookup = False
+
+        def execute_with_stale_lookup(statement, *args, **kwargs):
+            nonlocal seen_case_review_lookup
+            statement_text = str(statement).lower()
+            if (
+                "from case_reviews" in statement_text
+                and "score_id" in statement_text
+                and not seen_case_review_lookup
+            ):
+                seen_case_review_lookup = True
+                return SimpleNamespace(scalar_one_or_none=lambda: None)
+            return real_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "execute", execute_with_stale_lookup)
+
+        payload = create_case_review(
+            session,
+            score_id=score_id,
+            reviewer="Alice",
+            note="same note",
+        )
+
+        assert payload["error"] is None
+        assert payload["review"]["created"] is False
+        assert payload["review"]["id"] == existing_id
 
 
 def _seed_single_score(session, *, parcel_id: str, year: int) -> int:
