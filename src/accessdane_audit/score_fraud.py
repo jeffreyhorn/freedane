@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
-from typing import Callable, Optional, Sequence, TypedDict, TypeVar
+from typing import Callable, Mapping, Optional, Sequence, TypedDict, TypeVar
 
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import InvalidRequestError, PendingRollbackError
@@ -239,7 +239,7 @@ def score_fraud(
         )
 
         with session.begin_nested():
-            _delete_existing_scored_rows(
+            existing_scores_by_key = _delete_existing_scored_rows(
                 session,
                 ruleset_version=ruleset_version,
                 feature_version=feature_version,
@@ -251,6 +251,7 @@ def score_fraud(
                 ruleset_version=ruleset_version,
                 feature_version=feature_version,
                 features=features,
+                existing_scores_by_key=existing_scores_by_key,
             )
 
         run.status = "succeeded"
@@ -361,7 +362,7 @@ def _delete_existing_scored_rows(
     ruleset_version: str,
     feature_version: str,
     features: Sequence[ParcelFeature],
-) -> None:
+) -> dict[tuple[str, int], FraudScore]:
     score_ids = _load_existing_score_ids_for_feature_keys(
         session,
         ruleset_version=ruleset_version,
@@ -369,17 +370,53 @@ def _delete_existing_scored_rows(
         feature_keys=_feature_keys(features),
     )
     if not score_ids:
-        return
+        return {}
+
+    score_rows_with_reviews = _load_existing_scores_with_case_reviews(
+        session,
+        score_ids=score_ids,
+    )
+    reviewed_score_ids = {
+        score_row.id
+        for score_row in score_rows_with_reviews
+        if score_row.id is not None
+    }
+
     for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
         session.execute(
             delete(FraudFlag).where(FraudFlag.score_id.in_(batch_score_ids))
         )
-    for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
-        session.execute(
-            delete(CaseReview).where(CaseReview.score_id.in_(batch_score_ids))
-        )
-    for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
+
+    score_ids_to_delete = [
+        score_id for score_id in score_ids if score_id not in reviewed_score_ids
+    ]
+    for batch_score_ids in _chunked(score_ids_to_delete, IN_CLAUSE_BATCH_SIZE):
         session.execute(delete(FraudScore).where(FraudScore.id.in_(batch_score_ids)))
+
+    return {
+        (score_row.parcel_id, score_row.year): score_row
+        for score_row in score_rows_with_reviews
+    }
+
+
+def _load_existing_scores_with_case_reviews(
+    session: Session,
+    *,
+    score_ids: Sequence[int],
+) -> list[FraudScore]:
+    if not score_ids:
+        return []
+
+    score_rows: list[FraudScore] = []
+    for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
+        query = (
+            select(FraudScore)
+            .join(CaseReview, CaseReview.score_id == FraudScore.id)
+            .where(FraudScore.id.in_(batch_score_ids))
+            .distinct()
+        )
+        score_rows.extend(session.execute(query).scalars().all())
+    return score_rows
 
 
 def _feature_keys(features: Sequence[ParcelFeature]) -> list[tuple[str, int]]:
@@ -428,6 +465,7 @@ def _persist_scores_and_flags(
     ruleset_version: str,
     feature_version: str,
     features: Sequence[ParcelFeature],
+    existing_scores_by_key: Mapping[tuple[str, int], FraudScore],
 ) -> tuple[ScoreFraudSummary, list[ScoreFraudTopFlag], ScoreFraudRankings]:
     scores_inserted = 0
     flags_inserted = 0
@@ -493,36 +531,50 @@ def _persist_scores_and_flags(
         if invalid_source_refs:
             quality_flags = sorted({*quality_flags, "source_refs_json_invalid_shape"})
 
-        score_row = FraudScore(
-            run_id=run_id,
-            feature_run_id=feature.run_id,
-            parcel_id=parcel_id,
-            year=year,
-            ruleset_version=ruleset_version,
-            feature_version=feature_version,
-            score_value=score_value,
-            risk_band=risk_band,
-            requires_review=requires_review,
-            reason_code_count=len(ranked_triggers),
-            score_summary_json={
-                "ruleset_version": ruleset_version,
-                "feature_version": feature_version,
-                "raw_score": _decimal_to_str(raw_score),
-                "score_value": _decimal_to_str(score_value),
-                "risk_band": risk_band,
-                "quality_flags": quality_flags,
-                "triggered_reason_codes": reason_codes,
-                "skipped_rules": [
-                    {
-                        "reason_code": skip.reason_code,
-                        "skip_reason": skip.skip_reason,
-                        "missing_inputs": skip.missing_inputs,
-                    }
-                    for skip in sorted(skips, key=lambda item: item.reason_code)
-                ],
-            },
-        )
-        session.add(score_row)
+        score_summary_json: dict[str, object] = {
+            "ruleset_version": ruleset_version,
+            "feature_version": feature_version,
+            "raw_score": _decimal_to_str(raw_score),
+            "score_value": _decimal_to_str(score_value),
+            "risk_band": risk_band,
+            "quality_flags": quality_flags,
+            "triggered_reason_codes": reason_codes,
+            "skipped_rules": [
+                {
+                    "reason_code": skip.reason_code,
+                    "skip_reason": skip.skip_reason,
+                    "missing_inputs": skip.missing_inputs,
+                }
+                for skip in sorted(skips, key=lambda item: item.reason_code)
+            ],
+        }
+        score_key = (parcel_id, year)
+        score_row = existing_scores_by_key.get(score_key)
+        if score_row is None:
+            score_row = FraudScore(
+                run_id=run_id,
+                feature_run_id=feature.run_id,
+                parcel_id=parcel_id,
+                year=year,
+                ruleset_version=ruleset_version,
+                feature_version=feature_version,
+                score_value=score_value,
+                risk_band=risk_band,
+                requires_review=requires_review,
+                reason_code_count=len(ranked_triggers),
+                score_summary_json=score_summary_json,
+            )
+            session.add(score_row)
+        else:
+            score_row.run_id = run_id
+            score_row.feature_run_id = feature.run_id
+            score_row.ruleset_version = ruleset_version
+            score_row.feature_version = feature_version
+            score_row.score_value = score_value
+            score_row.risk_band = risk_band
+            score_row.requires_review = requires_review
+            score_row.reason_code_count = len(ranked_triggers)
+            score_row.score_summary_json = score_summary_json
         scores_inserted += 1
 
         if risk_band == "high":

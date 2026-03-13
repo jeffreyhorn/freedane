@@ -325,7 +325,7 @@ def test_score_fraud_is_idempotent_for_same_scope(tmp_path: Path) -> None:
     assert first_payload["top_flags"] == second_payload["top_flags"]
 
 
-def test_score_fraud_rerun_removes_case_reviews_for_replaced_scores(
+def test_score_fraud_rerun_preserves_case_reviews_for_reviewed_scores(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "score_fraud_case_review_fk_cleanup.sqlite"
@@ -353,6 +353,7 @@ def test_score_fraud_rerun_removes_case_reviews_for_replaced_scores(
                 FraudScore.year == 2025,
             )
         ).scalar_one()
+        original_score_id = score_row.id
         session.add(
             CaseReview(
                 parcel_id=score_row.parcel_id,
@@ -373,10 +374,19 @@ def test_score_fraud_rerun_removes_case_reviews_for_replaced_scores(
             years=[2025],
         )
         assert second_payload["run"]["status"] == "succeeded"
+        second_run_id = second_payload["run"]["run_id"]
+        assert second_run_id is not None
 
     with session_scope(database_url) as session:
         remaining_case_reviews = session.execute(select(CaseReview)).scalars().all()
-        assert remaining_case_reviews == []
+        assert len(remaining_case_reviews) == 1
+        case_review = remaining_case_reviews[0]
+        assert case_review.score_id == original_score_id
+
+        rerun_score = session.execute(
+            select(FraudScore).where(FraudScore.id == case_review.score_id)
+        ).scalar_one()
+        assert rerun_score.run_id == second_run_id
 
 
 def test_score_fraud_feature_run_filter_replaces_rows_after_feature_run_id_changes(
