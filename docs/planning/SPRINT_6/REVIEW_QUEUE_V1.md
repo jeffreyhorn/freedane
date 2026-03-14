@@ -38,6 +38,13 @@ Out of scope for v1:
 - Preserve traceability to concrete score rows and reason-code evidence.
 - Keep exports stable enough for analyst handoff and rerun comparison.
 - Make queue filtering/skipping explicit through diagnostics.
+- Keep queue/report language framed as triage signal, not proof.
+
+## Methodology Guardrails
+
+Queue and report consumers must apply score-interpretation guardrails from:
+
+- [METHODOLOGY_MEMO.md](METHODOLOGY_MEMO.md)
 
 ## Baseline Assumptions
 

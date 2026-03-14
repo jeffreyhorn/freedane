@@ -99,6 +99,7 @@ For Sprint 5 scoring changes, use:
 - Calibrate thresholds in SQL/notebook workflow first; publish threshold/rule changes under a new `ruleset_version`.
 - Use `rankings.skipped_feature_breakdown` and feature diagnostics before analyst handoff to avoid triaging structurally invalid rows.
 - Treat score output as risk triage, not proof.
+- Apply Sprint 6 framing guardrails when sharing score output with analysts or stakeholders: [../SPRINT_6/METHODOLOGY_MEMO.md](../SPRINT_6/METHODOLOGY_MEMO.md).
 
 ## Reference Docs
 
@@ -109,3 +110,4 @@ For Sprint 5 scoring changes, use:
 - [CALIBRATION_SQL_V1.sql](CALIBRATION_SQL_V1.sql)
 - [FRAUD_SIGNAL_V1.md](FRAUD_SIGNAL_V1.md)
 - [SCORING_RULES_V1.md](SCORING_RULES_V1.md)
+- [../SPRINT_6/METHODOLOGY_MEMO.md](../SPRINT_6/METHODOLOGY_MEMO.md)
