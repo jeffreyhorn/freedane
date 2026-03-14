@@ -407,6 +407,29 @@ def _delete_flags_for_score_ids(session: Session, *, score_ids: Sequence[int]) -
         )
 
 
+def _sync_case_review_run_ids_for_scores(
+    session: Session,
+    *,
+    score_ids: Sequence[int],
+    run_id: int,
+    feature_version: str,
+    ruleset_version: str,
+) -> None:
+    unique_score_ids = sorted(set(score_ids))
+    if not unique_score_ids:
+        return
+    for batch_score_ids in _chunked(unique_score_ids, IN_CLAUSE_BATCH_SIZE):
+        session.execute(
+            update(CaseReview)
+            .where(
+                CaseReview.score_id.in_(batch_score_ids),
+                CaseReview.feature_version == feature_version,
+                CaseReview.ruleset_version == ruleset_version,
+            )
+            .values(run_id=run_id)
+        )
+
+
 def _load_existing_scores_with_case_reviews(
     session: Session,
     *,
@@ -486,6 +509,7 @@ def _persist_scores_and_flags(
     top_parcel_candidates: list[_TopParcelCandidate] = []
     pending_scores: list[_PendingScoreBatchItem] = []
     flag_refresh_score_ids: list[int] = []
+    case_review_sync_score_ids: list[int] = []
     reason_code_flag_counts: dict[str, int] = {}
     skipped_feature_reason_counts: dict[str, int] = {}
 
@@ -580,15 +604,7 @@ def _persist_scores_and_flags(
             score_id = score_row.id
             assert score_id is not None
             flag_refresh_score_ids.append(score_id)
-            session.execute(
-                update(CaseReview)
-                .where(
-                    CaseReview.score_id == score_id,
-                    CaseReview.feature_version == feature_version,
-                    CaseReview.ruleset_version == ruleset_version,
-                )
-                .values(run_id=run_id)
-            )
+            case_review_sync_score_ids.append(score_id)
             score_row.run_id = run_id
             score_row.feature_run_id = feature.run_id
             score_row.ruleset_version = ruleset_version
@@ -683,6 +699,14 @@ def _persist_scores_and_flags(
         if len(pending_scores) >= SCORE_INSERT_BATCH_SIZE:
             _delete_flags_for_score_ids(session, score_ids=flag_refresh_score_ids)
             flag_refresh_score_ids.clear()
+            _sync_case_review_run_ids_for_scores(
+                session,
+                score_ids=case_review_sync_score_ids,
+                run_id=run_id,
+                feature_version=feature_version,
+                ruleset_version=ruleset_version,
+            )
+            case_review_sync_score_ids.clear()
             flags_inserted += _flush_score_batch(
                 session=session,
                 pending_scores=pending_scores,
@@ -692,6 +716,13 @@ def _persist_scores_and_flags(
             pending_scores.clear()
 
     _delete_flags_for_score_ids(session, score_ids=flag_refresh_score_ids)
+    _sync_case_review_run_ids_for_scores(
+        session,
+        score_ids=case_review_sync_score_ids,
+        run_id=run_id,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+    )
     flags_inserted += _flush_score_batch(
         session=session,
         pending_scores=pending_scores,
