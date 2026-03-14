@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Mapping, Optional, Sequence, TypedDict
+from typing import Mapping, Optional, Sequence, TypedDict, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -219,14 +219,12 @@ def _load_reviewed_cases(
 
     reviewed_cases: list[_ReviewedCase] = []
     for case_review, score in rows:
-        if case_review.disposition is None:
-            continue
         reviewed_cases.append(
             _ReviewedCase(
                 score_id=score.id,
                 risk_band=score.risk_band,
                 score_value=score.score_value,
-                disposition=case_review.disposition,
+                disposition=cast(str, case_review.disposition),
             )
         )
     return reviewed_cases
