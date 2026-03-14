@@ -12,6 +12,7 @@ from accessdane_audit import cli
 from accessdane_audit import review_queue as review_queue_module
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
+    CaseReview,
     FraudFlag,
     FraudScore,
     Parcel,
@@ -72,6 +73,8 @@ def test_review_queue_cli_default_mode_is_deterministic_and_contract_stable(
         "ruleset_version": "scoring_rules_v1",
         "risk_bands": [],
         "requires_review_only": True,
+        "review_states": [],
+        "review_dispositions": [],
     }
 
     assert [row["parcel_id"] for row in payload["rows"]] == [
@@ -84,9 +87,20 @@ def test_review_queue_cli_default_mode_is_deterministic_and_contract_stable(
     assert [row["queue_rank"] for row in payload["rows"]] == [1, 2, 3, 4, 5]
 
     p2 = payload["rows"][0]
+    p3 = payload["rows"][1]
+    p1 = payload["rows"][2]
+    p6 = payload["rows"][3]
     p5 = payload["rows"][-1]
     assert p2["primary_reason_code"] == "ratio__low"
     assert p2["primary_reason_weight"] is None
+    assert p2["review_status"] == "unreviewed"
+    assert p2["review_disposition"] is None
+    assert p3["review_status"] == "in_review"
+    assert p3["review_disposition"] is None
+    assert p1["review_status"] == "resolved"
+    assert p1["review_disposition"] == "false_positive"
+    assert p6["review_status"] == "closed"
+    assert p6["review_disposition"] == "confirmed_issue"
     assert p5["primary_reason_code"] is None
     assert p5["primary_reason_weight"] is None
 
@@ -112,6 +126,8 @@ def test_review_queue_cli_default_mode_is_deterministic_and_contract_stable(
             "ruleset_version": "scoring_rules_v1",
             "requires_review_only": True,
             "risk_bands": [],
+            "review_states": [],
+            "review_dispositions": [],
             "years": [],
             "parcel_ids": [],
             "sort_key_version": "review_queue_sort_v1",
@@ -180,6 +196,8 @@ def test_review_queue_cli_filters_pagination_and_csv_export(
         "ruleset_version": "scoring_rules_v1",
         "risk_bands": ["high"],
         "requires_review_only": False,
+        "review_states": [],
+        "review_dispositions": [],
     }
     assert payload["summary"] == {
         "candidate_count": 7,
@@ -306,6 +324,56 @@ def test_review_queue_cli_unsupported_ruleset_returns_exit_one_json(
     payload = json.loads(result.stdout)
     assert payload["run"]["status"] == "failed"
     assert payload["error"]["code"] == "unsupported_version_selector"
+
+
+def test_review_queue_cli_supports_review_state_and_disposition_filters(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "review_queue_review_filters.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        _seed_review_queue_fixture(session)
+
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    reviewed_result = runner.invoke(
+        cli.app,
+        [
+            "review-queue",
+            "--review-state",
+            "reviewed",
+            "--review-disposition",
+            "false_positive",
+        ],
+    )
+    assert reviewed_result.exit_code == 0, reviewed_result.stdout
+    reviewed_payload = json.loads(reviewed_result.stdout)
+    assert reviewed_payload["request"]["review_states"] == ["reviewed"]
+    assert reviewed_payload["request"]["review_dispositions"] == ["false_positive"]
+    assert [row["parcel_id"] for row in reviewed_payload["rows"]] == ["P-1"]
+    assert reviewed_payload["rows"][0]["review_status"] == "resolved"
+    assert reviewed_payload["rows"][0]["review_disposition"] == "false_positive"
+
+    unreviewed_result = runner.invoke(
+        cli.app,
+        ["review-queue", "--review-state", "unreviewed"],
+    )
+    assert unreviewed_result.exit_code == 0, unreviewed_result.stdout
+    unreviewed_payload = json.loads(unreviewed_result.stdout)
+    assert unreviewed_payload["request"]["review_states"] == ["unreviewed"]
+    assert unreviewed_payload["request"]["review_dispositions"] == []
+    assert [row["parcel_id"] for row in unreviewed_payload["rows"]] == ["P-2", "P-5"]
+    assert all(
+        row["review_status"] == "unreviewed" for row in unreviewed_payload["rows"]
+    )
 
 
 def test_review_queue_module_invalid_risk_band_returns_specific_failure_payload(
@@ -621,6 +689,69 @@ def _seed_review_queue_fixture(session) -> None:
                 comparison_operator="<",
                 explanation="e",
                 source_refs_json={},
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            CaseReview(
+                parcel_id="P-1",
+                year=2025,
+                score_id=scores[0].id,
+                run_id=run.id,
+                feature_version="feature_v1",
+                ruleset_version="scoring_rules_v1",
+                status="resolved",
+                disposition="false_positive",
+                reviewer="Analyst A",
+                assigned_reviewer="Analyst A",
+                note="Reviewed false positive",
+                evidence_links_json=[],
+            ),
+            CaseReview(
+                parcel_id="P-3",
+                year=2024,
+                score_id=scores[2].id,
+                run_id=run.id,
+                feature_version="feature_v1",
+                ruleset_version="scoring_rules_v1",
+                status="in_review",
+                disposition=None,
+                reviewer="Analyst B",
+                assigned_reviewer="Analyst B",
+                note="In progress",
+                evidence_links_json=[],
+            ),
+            CaseReview(
+                parcel_id="P-6",
+                year=2023,
+                score_id=scores[5].id,
+                run_id=run.id,
+                feature_version="feature_v1",
+                ruleset_version="scoring_rules_v1",
+                status="closed",
+                disposition="confirmed_issue",
+                reviewer="Analyst C",
+                assigned_reviewer="Analyst C",
+                note="Closed with evidence",
+                evidence_links_json=[
+                    {"kind": "dossier", "ref": "P-6-2023", "label": "Closed case"}
+                ],
+            ),
+            # Version-mismatched review should not affect feature_v1 queue overlays.
+            CaseReview(
+                parcel_id="P-2",
+                year=2025,
+                score_id=scores[1].id,
+                run_id=run.id,
+                feature_version="feature_v2",
+                ruleset_version="scoring_rules_v1",
+                status="resolved",
+                disposition="false_positive",
+                reviewer="Analyst X",
+                assigned_reviewer="Analyst X",
+                note="Different version context",
+                evidence_links_json=[],
             ),
         ]
     )
