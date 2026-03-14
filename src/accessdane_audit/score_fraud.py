@@ -426,7 +426,10 @@ def _sync_case_review_run_ids_for_scores(
                 CaseReview.feature_version == feature_version,
                 CaseReview.ruleset_version == ruleset_version,
             )
-            .values(run_id=run_id)
+            .values(
+                run_id=run_id,
+                updated_at=datetime.now(timezone.utc),
+            )
         )
 
 

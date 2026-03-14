@@ -826,7 +826,7 @@ def case_review_create_cmd(
 
 @case_review_app.command("update")
 def case_review_update_cmd(
-    id: int = typer.Option(..., "--id", help="Case review id"),
+    case_review_id: int = typer.Option(..., "--id", help="Case review id"),
     status: Optional[_CaseReviewStatus] = typer.Option(
         None,
         "--status",
@@ -880,7 +880,7 @@ def case_review_update_cmd(
     with session_scope(settings.database_url) as session:
         payload = update_case_review(
             session,
-            case_review_id=id,
+            case_review_id=case_review_id,
             status=(status.value if status is not None else None),
             disposition=(disposition.value if disposition is not None else None),
             reviewer=reviewer,
