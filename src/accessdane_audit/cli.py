@@ -7,6 +7,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from enum import Enum
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence, TypedDict
 
@@ -17,6 +18,11 @@ from sqlalchemy import delete, select
 from .anomaly import detect_anomalies
 from .appeals import AppealImportFileError, ingest_appeals_csv
 from .build_features import build_features
+from .case_review import (
+    create_case_review,
+    list_case_reviews,
+    update_case_review,
+)
 from .config import load_settings
 from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
@@ -64,6 +70,23 @@ from .spatial import detect_spatial_support, spatial_support_status_to_dict
 from .trs import DEFAULT_SPLIT_PARTS, enumerate_trs, parse_trs_code
 
 app = typer.Typer(add_completion=False)
+case_review_app = typer.Typer(add_completion=False)
+app.add_typer(case_review_app, name="case-review")
+
+
+class _CaseReviewStatus(str, Enum):
+    pending = "pending"
+    in_review = "in_review"
+    resolved = "resolved"
+    closed = "closed"
+
+
+class _CaseReviewDisposition(str, Enum):
+    confirmed_issue = "confirmed_issue"
+    false_positive = "false_positive"
+    inconclusive = "inconclusive"
+    needs_field_review = "needs_field_review"
+    duplicate_case = "duplicate_case"
 
 
 @dataclass(frozen=True)
@@ -730,6 +753,227 @@ def review_queue_cmd(
         rows = payload.get("rows", [])
         if isinstance(rows, list):
             write_review_queue_csv(csv_out, rows)
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@case_review_app.command("create")
+def case_review_create_cmd(
+    score_id: int = typer.Option(..., "--score-id", help="Fraud score id"),
+    status: _CaseReviewStatus = typer.Option(
+        _CaseReviewStatus.pending,
+        "--status",
+        help="Initial case review status",
+    ),
+    disposition: Optional[_CaseReviewDisposition] = typer.Option(
+        None,
+        "--disposition",
+        help="Disposition for resolved/closed status",
+    ),
+    reviewer: Optional[str] = typer.Option(
+        None,
+        "--reviewer",
+        help="Reviewer name",
+    ),
+    assigned_reviewer: Optional[str] = typer.Option(
+        None,
+        "--assigned-reviewer",
+        help="Assigned reviewer name",
+    ),
+    note: Optional[str] = typer.Option(
+        None,
+        "--note",
+        help="Analyst note",
+    ),
+    evidence_link: list[str] = typer.Option(
+        [],
+        "--evidence-link",
+        help="Evidence link in kind=...,ref=...,label=... format (repeatable)",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = create_case_review(
+            session,
+            score_id=score_id,
+            status=status.value,
+            disposition=(disposition.value if disposition is not None else None),
+            reviewer=reviewer,
+            assigned_reviewer=assigned_reviewer,
+            note=note,
+            evidence_links=evidence_link,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@case_review_app.command("update")
+def case_review_update_cmd(
+    case_review_id: int = typer.Option(..., "--id", help="Case review id"),
+    status: Optional[_CaseReviewStatus] = typer.Option(
+        None,
+        "--status",
+        help="Updated case review status",
+    ),
+    disposition: Optional[_CaseReviewDisposition] = typer.Option(
+        None,
+        "--disposition",
+        help="Updated disposition",
+    ),
+    reviewer: Optional[str] = typer.Option(
+        None,
+        "--reviewer",
+        help="Updated reviewer name",
+    ),
+    assigned_reviewer: Optional[str] = typer.Option(
+        None,
+        "--assigned-reviewer",
+        help="Updated assigned reviewer name",
+    ),
+    note: Optional[str] = typer.Option(
+        None,
+        "--note",
+        help="Updated analyst note",
+    ),
+    set_evidence_link: list[str] = typer.Option(
+        [],
+        "--set-evidence-link",
+        help="Replace evidence links with provided entries (repeatable)",
+    ),
+    clear_evidence_links: bool = typer.Option(
+        False,
+        "--clear-evidence-links",
+        help="Clear all evidence links",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    if clear_evidence_links and set_evidence_link:
+        raise typer.BadParameter(
+            "Cannot combine --clear-evidence-links with --set-evidence-link.",
+            param_hint="--clear-evidence-links",
+        )
+
+    normalized_set_evidence_links: Optional[list[str]]
+    if set_evidence_link:
+        normalized_set_evidence_links = set_evidence_link
+    else:
+        normalized_set_evidence_links = None
+
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = update_case_review(
+            session,
+            case_review_id=case_review_id,
+            status=(status.value if status is not None else None),
+            disposition=(disposition.value if disposition is not None else None),
+            reviewer=reviewer,
+            assigned_reviewer=assigned_reviewer,
+            note=note,
+            set_evidence_links=normalized_set_evidence_links,
+            clear_evidence_links=clear_evidence_links,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@case_review_app.command("list")
+def case_review_list_cmd(
+    status: list[_CaseReviewStatus] = typer.Option(
+        [],
+        "--status",
+        help="Status filter (repeatable)",
+    ),
+    disposition: list[_CaseReviewDisposition] = typer.Option(
+        [],
+        "--disposition",
+        help="Disposition filter (repeatable)",
+    ),
+    reviewer: Optional[str] = typer.Option(
+        None,
+        "--reviewer",
+        help="Reviewer filter",
+    ),
+    assigned_reviewer: Optional[str] = typer.Option(
+        None,
+        "--assigned-reviewer",
+        help="Assigned reviewer filter",
+    ),
+    parcel_id: Optional[str] = typer.Option(
+        None,
+        "--parcel-id",
+        help="Parcel id filter",
+    ),
+    year: list[int] = typer.Option(
+        [],
+        "--year",
+        help="Year filter (repeatable)",
+        min=1,
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version selector",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version selector",
+    ),
+    limit: int = typer.Option(
+        100,
+        "--limit",
+        min=1,
+        max=1000,
+        help="Maximum rows to return",
+    ),
+    offset: int = typer.Option(
+        0,
+        "--offset",
+        min=0,
+        help="Starting offset",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+) -> None:
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = list_case_reviews(
+            session,
+            statuses=[value.value for value in status],
+            dispositions=[value.value for value in disposition],
+            reviewer=reviewer,
+            assigned_reviewer=assigned_reviewer,
+            parcel_id=parcel_id,
+            years=year,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            limit=limit,
+            offset=offset,
+        )
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)

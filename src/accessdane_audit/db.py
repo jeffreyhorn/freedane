@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 BASELINE_REVISION = "20260301_0001"
-HEAD_REVISION = "20260310_0012"
+HEAD_REVISION = "20260312_0013"
 EXPECTED_SCHEMA: dict[str, set[str]] = {
     "parcels": {"id", "trs_code", "section", "subsection", "created_at"},
     "fetches": {

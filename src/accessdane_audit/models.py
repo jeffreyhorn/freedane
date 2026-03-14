@@ -967,3 +967,78 @@ class FraudFlag(Base):
     flagged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class CaseReview(Base):
+    __tablename__ = "case_reviews"
+    __table_args__ = (
+        Index(
+            "ux_case_reviews_score_id_feature_version_ruleset_version",
+            "score_id",
+            "feature_version",
+            "ruleset_version",
+            unique=True,
+        ),
+        Index("ix_case_reviews_status_updated_at", "status", "updated_at"),
+        Index("ix_case_reviews_disposition_reviewed_at", "disposition", "reviewed_at"),
+        Index(
+            "ix_case_reviews_assigned_reviewer_status_updated_at",
+            "assigned_reviewer",
+            "status",
+            "updated_at",
+        ),
+        Index("ix_case_reviews_parcel_id_year", "parcel_id", "year"),
+        CheckConstraint(
+            "status IN ('pending', 'in_review', 'resolved', 'closed')",
+            name="ck_case_reviews_status",
+        ),
+        CheckConstraint(
+            "disposition IS NULL OR disposition IN ("
+            "'confirmed_issue', "
+            "'false_positive', "
+            "'inconclusive', "
+            "'needs_field_review', "
+            "'duplicate_case'"
+            ")",
+            name="ck_case_reviews_disposition",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parcel_id: Mapped[str] = mapped_column(
+        String, ForeignKey("parcels.id"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    score_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("fraud_scores.id"), nullable=False
+    )
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("scoring_runs.id"), nullable=False
+    )
+    feature_version: Mapped[str] = mapped_column(String, nullable=False)
+    ruleset_version: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    disposition: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    reviewer: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    assigned_reviewer: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    evidence_links_json: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON,
+        nullable=False,
+        server_default=text("'[]'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
