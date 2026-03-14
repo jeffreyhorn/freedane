@@ -443,11 +443,12 @@ def _load_existing_scores_with_case_reviews(
 
     score_rows: list[FraudScore] = []
     for batch_score_ids in _chunked(score_ids, IN_CLAUSE_BATCH_SIZE):
-        query = (
-            select(FraudScore)
-            .join(CaseReview, CaseReview.score_id == FraudScore.id)
-            .where(FraudScore.id.in_(batch_score_ids))
-            .distinct()
+        case_review_exists = (
+            select(CaseReview.id).where(CaseReview.score_id == FraudScore.id).exists()
+        )
+        query = select(FraudScore).where(
+            FraudScore.id.in_(batch_score_ids),
+            case_review_exists,
         )
         score_rows.extend(session.execute(query).scalars().all())
     return score_rows
