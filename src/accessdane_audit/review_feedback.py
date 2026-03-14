@@ -27,6 +27,7 @@ _SOURCE_QUERY_ERROR_MESSAGE = (
 _FALSE_POSITIVE_RATE_THRESHOLD = Decimal("0.5000")
 _EXCLUSION_CANDIDATE_RATE_THRESHOLD = Decimal("0.7500")
 _MIN_REVIEWED_CASES_FOR_RECOMMENDATION = 2
+_SCALAR_IN_CLAUSE_BATCH_SIZE = 800
 
 
 class ReviewFeedbackRun(TypedDict):
@@ -240,29 +241,31 @@ def _load_reason_flags_by_score(
         return {}
 
     flags_by_score: dict[int, list[_ReasonFlag]] = defaultdict(list)
-    flags = (
-        session.execute(
-            select(FraudFlag)
-            .where(FraudFlag.score_id.in_(sorted(set(score_ids))))
-            .order_by(
-                FraudFlag.score_id.asc(),
-                FraudFlag.reason_rank.asc(),
-                FraudFlag.reason_code.asc(),
-                FraudFlag.id.asc(),
+    unique_score_ids = sorted(set(score_ids))
+    for batch in _chunked(unique_score_ids, _SCALAR_IN_CLAUSE_BATCH_SIZE):
+        flags = (
+            session.execute(
+                select(FraudFlag)
+                .where(FraudFlag.score_id.in_(batch))
+                .order_by(
+                    FraudFlag.score_id.asc(),
+                    FraudFlag.reason_rank.asc(),
+                    FraudFlag.reason_code.asc(),
+                    FraudFlag.id.asc(),
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
-    for flag in flags:
-        flags_by_score[flag.score_id].append(
-            _ReasonFlag(
-                reason_code=flag.reason_code,
-                metric_name=flag.metric_name,
-                comparison_operator=flag.comparison_operator,
-                threshold_value=flag.threshold_value,
+        for flag in flags:
+            flags_by_score[flag.score_id].append(
+                _ReasonFlag(
+                    reason_code=flag.reason_code,
+                    metric_name=flag.metric_name,
+                    comparison_operator=flag.comparison_operator,
+                    threshold_value=flag.threshold_value,
+                )
             )
-        )
     return dict(flags_by_score)
 
 
@@ -509,6 +512,10 @@ def _coerce_int(value: object, *, default: int) -> int:
         except ValueError:
             return default
     return default
+
+
+def _chunked(items: Sequence[int], size: int) -> list[Sequence[int]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def _update_outcome_accumulator(

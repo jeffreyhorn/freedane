@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from accessdane_audit import cli
+from accessdane_audit import cli, review_feedback
 from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     CaseReview,
@@ -310,6 +310,36 @@ def test_review_feedback_cli_unsupported_ruleset_returns_exit_one_json(
     payload = json.loads(result.stdout)
     assert payload["run"]["status"] == "failed"
     assert payload["error"]["code"] == "unsupported_version_selector"
+
+
+def test_load_reason_flags_by_score_batches_queries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class _CountingSession:
+        def __init__(self, wrapped_session):
+            self._wrapped_session = wrapped_session
+            self.execute_calls = 0
+
+        def execute(self, *args, **kwargs):
+            self.execute_calls += 1
+            return self._wrapped_session.execute(*args, **kwargs)
+
+    db_path = tmp_path / "review_feedback_batching.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+
+    with session_scope(database_url) as session:
+        wrapped = _CountingSession(session)
+        monkeypatch.setattr(review_feedback, "_SCALAR_IN_CLAUSE_BATCH_SIZE", 2)
+
+        result = review_feedback._load_reason_flags_by_score(
+            wrapped,  # type: ignore[arg-type]
+            score_ids=[1, 2, 3, 4, 5],
+        )
+
+    assert result == {}
+    assert wrapped.execute_calls == 3
 
 
 def _seed_review_feedback_fixture(session) -> None:
