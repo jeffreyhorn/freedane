@@ -57,6 +57,7 @@ from .retr import (
     ingest_retr_csv,
     match_sales_transactions,
 )
+from .review_feedback import build_review_feedback
 from .review_queue import (
     RISK_BAND_PRECEDENCE,
     build_review_queue,
@@ -778,6 +779,57 @@ def review_queue_cmd(
         typer.echo(json.dumps(payload, indent=2))
 
     run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("review-feedback")
+def review_feedback_cmd(
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version selector",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version selector",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+    sql_out: Optional[Path] = typer.Option(
+        None,
+        "--sql-out",
+        help="Optional SQL artifact output path",
+    ),
+) -> None:
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = build_review_feedback(
+            session,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+        )
+
+    run = payload.get("run", {})
+    if (
+        sql_out is not None
+        and isinstance(run, dict)
+        and run.get("status") == "succeeded"
+    ):
+        artifacts = payload.get("artifacts", {})
+        if isinstance(artifacts, dict):
+            sql_script = artifacts.get("sql_script")
+            if isinstance(sql_script, str):
+                sql_out.parent.mkdir(parents=True, exist_ok=True)
+                sql_out.write_text(sql_script, encoding="utf-8")
+                artifacts["sql_out_path"] = str(sql_out)
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
     if isinstance(run, dict) and run.get("status") == "failed":
         raise typer.Exit(code=1)
 
