@@ -39,6 +39,12 @@ Out of scope for v1:
 - Prevent ambiguous lifecycle transitions.
 - Keep payloads deterministic for downstream queue/dossier overlays.
 
+## Methodology Guardrails
+
+Disposition selection and analyst note language should follow:
+
+- [METHODOLOGY_MEMO.md](METHODOLOGY_MEMO.md)
+
 ## Baseline Assumptions
 
 - Sprint 5/6 scored data exists: `scoring_runs`, `fraud_scores`, `fraud_flags`, `parcel_year_facts`.

@@ -47,6 +47,12 @@ Out of scope for v1:
 - Avoid silent section omissions; empty or unavailable sections must be explicit.
 - Keep score framing as triage signal, not proof.
 
+## Methodology Guardrails
+
+Score interpretation language in dossier output and analyst workflow notes must follow:
+
+- [METHODOLOGY_MEMO.md](METHODOLOGY_MEMO.md)
+
 ## Baseline Assumptions
 
 - Sprint 5 baseline tables are present: `parcel_features`, `fraud_scores`, `fraud_flags`, `scoring_runs`.
