@@ -149,3 +149,12 @@ Analyst outputs and stakeholder communication must follow:
 - [METHODOLOGY_MEMO.md](METHODOLOGY_MEMO.md)
 
 Always treat score output as triage signal, not proof.
+
+## Reference Docs
+
+- [ACCEPTANCE_REVIEW.md](ACCEPTANCE_REVIEW.md)
+- [METHODOLOGY_MEMO.md](METHODOLOGY_MEMO.md)
+- [CASE_REVIEW_V1.md](CASE_REVIEW_V1.md)
+- [REVIEW_QUEUE_V1.md](REVIEW_QUEUE_V1.md)
+- [PARCEL_DOSSIER_V1.md](PARCEL_DOSSIER_V1.md)
+- [../SPRINT_7/HANDOFF.md](../SPRINT_7/HANDOFF.md)
