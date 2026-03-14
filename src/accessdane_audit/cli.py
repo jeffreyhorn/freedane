@@ -89,6 +89,11 @@ class _CaseReviewDisposition(str, Enum):
     duplicate_case = "duplicate_case"
 
 
+class _ReviewQueueReviewState(str, Enum):
+    reviewed = "reviewed"
+    unreviewed = "unreviewed"
+
+
 @dataclass(frozen=True)
 class ParseWorkItem:
     fetch_id: int
@@ -700,6 +705,16 @@ def review_queue_cmd(
         "--requires-review-only/--all-scores",
         help="Filter to requires_review=true rows (default: --requires-review-only)",
     ),
+    review_state: list[_ReviewQueueReviewState] = typer.Option(
+        [],
+        "--review-state",
+        help="Review state filter (repeatable: reviewed, unreviewed)",
+    ),
+    review_disposition: list[_CaseReviewDisposition] = typer.Option(
+        [],
+        "--review-disposition",
+        help="Review disposition filter (repeatable)",
+    ),
     out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
     csv_out: Optional[Path] = typer.Option(
         None,
@@ -747,6 +762,8 @@ def review_queue_cmd(
             ruleset_version=ruleset_version,
             risk_bands=normalized_risk_bands,
             requires_review_only=requires_review_only,
+            review_states=[value.value for value in review_state],
+            review_dispositions=[value.value for value in review_disposition],
         )
 
     if csv_out is not None and payload.get("run", {}).get("status") == "succeeded":

@@ -14,6 +14,7 @@ from accessdane_audit.db import init_db, session_scope
 from accessdane_audit.models import (
     AppealEvent,
     AssessmentRecord,
+    CaseReview,
     FraudFlag,
     FraudScore,
     Parcel,
@@ -85,6 +86,13 @@ def test_parcel_dossier_cli_builds_full_chain_and_is_deterministic(
         payload["sections"]["assessment_history"]["rows"][0]["total_value"]
         == "300000.00"
     )
+    reason_row = payload["sections"]["reason_code_evidence"]["rows"][0]
+    assert reason_row["review_status"] == "resolved"
+    assert reason_row["review_disposition"] == "false_positive"
+    reason_summary = payload["sections"]["reason_code_evidence"]["summary"]
+    assert reason_summary["reviewed_row_count"] == 1
+    assert reason_summary["unreviewed_row_count"] == 0
+    assert reason_summary["disposition_counts"] == {"false_positive": 1}
     assert set(row["event_type"] for row in payload["timeline"]["rows"]) == {
         "assessment",
         "sale",
@@ -834,4 +842,39 @@ def _seed_full_dossier_fixture(session, *, parcel_id: str) -> None:
             explanation="permit gap is elevated",
             source_refs_json={"permits": {"basis": "declared"}},
         )
+    )
+    session.add_all(
+        [
+            CaseReview(
+                parcel_id=parcel_id,
+                year=2025,
+                score_id=score_row.id,
+                run_id=score_run.id,
+                feature_version="feature_v1",
+                ruleset_version="scoring_rules_v1",
+                status="resolved",
+                disposition="false_positive",
+                reviewer="Analyst One",
+                assigned_reviewer="Analyst One",
+                note="Likely false positive",
+                evidence_links_json=[
+                    {"kind": "dossier", "ref": f"{parcel_id}-2025", "label": None}
+                ],
+            ),
+            # Mismatched version context should be ignored for feature_v1 overlays.
+            CaseReview(
+                parcel_id=parcel_id,
+                year=2025,
+                score_id=score_row.id,
+                run_id=score_run.id,
+                feature_version="feature_v2",
+                ruleset_version="scoring_rules_v1",
+                status="closed",
+                disposition="confirmed_issue",
+                reviewer="Analyst Two",
+                assigned_reviewer="Analyst Two",
+                note="Different version context",
+                evidence_links_json=[],
+            ),
+        ]
     )

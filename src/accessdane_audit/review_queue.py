@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, TypedDict
@@ -11,7 +12,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
-from .models import FraudFlag, FraudScore, ParcelYearFact
+from .case_review import DISPOSITION_VALUES
+from .models import CaseReview, FraudFlag, FraudScore, ParcelYearFact
 from .score_fraud import SUPPORTED_RULESET_VERSIONS
 
 RUN_TYPE_REVIEW_QUEUE = "review_queue"
@@ -23,6 +25,9 @@ _PAGE_DEFAULT = 1
 _PAGE_SIZE_DEFAULT = 100
 _SCALAR_IN_CLAUSE_BATCH_SIZE = 800
 _COMPOSITE_KEY_IN_CLAUSE_BATCH_SIZE = 400
+REVIEW_STATE_REVIEWED = "reviewed"
+REVIEW_STATE_UNREVIEWED = "unreviewed"
+REVIEW_STATE_VALUES = (REVIEW_STATE_REVIEWED, REVIEW_STATE_UNREVIEWED)
 
 RISK_BAND_PRECEDENCE: dict[str, int] = {
     "high": 0,
@@ -40,6 +45,9 @@ CSV_COLUMNS = [
     "score_value",
     "risk_band",
     "requires_review",
+    "review_status",
+    "review_disposition",
+    "review_updated_at",
     "reason_code_count",
     "primary_reason_code",
     "primary_reason_weight",
@@ -70,6 +78,8 @@ class ReviewQueueRequest(TypedDict):
     ruleset_version: str
     risk_bands: list[str]
     requires_review_only: bool
+    review_states: list[str]
+    review_dispositions: list[str]
 
 
 class ReviewQueueSummary(TypedDict):
@@ -93,6 +103,9 @@ class ReviewQueueRow(TypedDict):
     score_value: str
     risk_band: str
     requires_review: bool
+    review_status: str
+    review_disposition: Optional[str]
+    review_updated_at: Optional[str]
     reason_code_count: int
     primary_reason_code: Optional[str]
     primary_reason_weight: Optional[str]
@@ -147,11 +160,19 @@ def build_review_queue(
     ruleset_version: str = "scoring_rules_v1",
     risk_bands: Optional[Sequence[str]] = None,
     requires_review_only: bool = True,
+    review_states: Optional[Sequence[str]] = None,
+    review_dispositions: Optional[Sequence[str]] = None,
 ) -> ReviewQueuePayload:
     normalized_parcel_ids = _normalize_parcel_ids(parcel_ids)
     normalized_years = sorted(set(years or []))
     normalized_risk_bands = _normalize_risk_bands(risk_bands)
     unsupported_risk_bands = _unsupported_risk_bands(risk_bands)
+    normalized_review_states = _normalize_review_states(review_states)
+    unsupported_review_states = _unsupported_review_states(review_states)
+    normalized_review_dispositions = _normalize_review_dispositions(review_dispositions)
+    unsupported_review_dispositions = _unsupported_review_dispositions(
+        review_dispositions
+    )
     resolved_mode = _resolve_mode(top=top, page=page, page_size=page_size)
 
     request: ReviewQueueRequest = {
@@ -164,6 +185,8 @@ def build_review_queue(
         "ruleset_version": ruleset_version,
         "risk_bands": normalized_risk_bands,
         "requires_review_only": requires_review_only,
+        "review_states": normalized_review_states,
+        "review_dispositions": normalized_review_dispositions,
     }
 
     if unsupported_risk_bands:
@@ -179,6 +202,30 @@ def build_review_queue(
             message=(
                 "Unsupported risk_bands: "
                 f"{', '.join(unsupported_risk_bands)}. "
+                f"Supported values: {supported_values}."
+            ),
+        )
+
+    if unsupported_review_states:
+        supported_values = ", ".join(REVIEW_STATE_VALUES)
+        return _failure_payload(
+            request=request,
+            code="unsupported_review_state",
+            message=(
+                "Unsupported review_states: "
+                f"{', '.join(unsupported_review_states)}. "
+                f"Supported values: {supported_values}."
+            ),
+        )
+
+    if unsupported_review_dispositions:
+        supported_values = ", ".join(DISPOSITION_VALUES)
+        return _failure_payload(
+            request=request,
+            code="unsupported_review_disposition",
+            message=(
+                "Unsupported review_dispositions: "
+                f"{', '.join(unsupported_review_dispositions)}. "
                 f"Supported values: {supported_values}."
             ),
         )
@@ -204,6 +251,10 @@ def build_review_queue(
         filtered_reason_counts: dict[str, int] = {}
         filtered_conditions = list(base_conditions)
         filtered_total_count = candidate_count
+        matching_review_exists = _case_review_exists_condition(
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+        )
 
         if normalized_parcel_ids:
             filtered_total_count = _advance_filter_stage(
@@ -241,6 +292,37 @@ def build_review_queue(
                 filtered_reason_counts=filtered_reason_counts,
                 reason_key="filtered_by_requires_review",
             )
+        if normalized_review_states == [REVIEW_STATE_REVIEWED]:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=matching_review_exists,
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_review_state",
+            )
+        elif normalized_review_states == [REVIEW_STATE_UNREVIEWED]:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=~matching_review_exists,
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_review_state",
+            )
+        if normalized_review_dispositions:
+            filtered_total_count = _advance_filter_stage(
+                session,
+                filtered_conditions=filtered_conditions,
+                previous_count=filtered_total_count,
+                extra_condition=_case_review_exists_condition(
+                    feature_version=feature_version,
+                    ruleset_version=ruleset_version,
+                    dispositions=normalized_review_dispositions,
+                ),
+                filtered_reason_counts=filtered_reason_counts,
+                reason_key="filtered_by_review_disposition",
+            )
 
         valid_conditions = [*filtered_conditions, *_required_identifier_conditions()]
         valid_count = _count_scores(session, conditions=valid_conditions)
@@ -268,6 +350,12 @@ def build_review_queue(
             queue_rank_start = offset + 1
 
         scored_rows = _load_base_scores(session, query=paged_query)
+        case_review_map = _load_case_review_overlay_map(
+            session,
+            score_ids=[row.id for row in scored_rows],
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+        )
         primary_reason_map = _load_primary_reason_map(
             session,
             score_ids=[row.id for row in scored_rows],
@@ -279,6 +367,7 @@ def build_review_queue(
 
         returned_rows: list[ReviewQueueRow] = []
         for index, score in enumerate(scored_rows, start=queue_rank_start):
+            case_review = case_review_map.get(score.id)
             reason_code, reason_weight = primary_reason_map.get(score.id, (None, None))
             primary_reason_weight = _format_primary_reason_weight(
                 primary_reason_code=reason_code,
@@ -306,6 +395,19 @@ def build_review_queue(
                     "score_value": _decimal_to_str(score.score_value, scale=2),
                     "risk_band": score.risk_band,
                     "requires_review": bool(score.requires_review),
+                    "review_status": (
+                        case_review.status
+                        if case_review is not None
+                        else REVIEW_STATE_UNREVIEWED
+                    ),
+                    "review_disposition": (
+                        case_review.disposition if case_review is not None else None
+                    ),
+                    "review_updated_at": (
+                        _iso_datetime(case_review.updated_at)
+                        if case_review is not None
+                        else None
+                    ),
                     "reason_code_count": score.reason_code_count,
                     "primary_reason_code": reason_code,
                     "primary_reason_weight": primary_reason_weight,
@@ -350,6 +452,8 @@ def build_review_queue(
                     "ruleset_version": ruleset_version,
                     "requires_review_only": requires_review_only,
                     "risk_bands": normalized_risk_bands,
+                    "review_states": normalized_review_states,
+                    "review_dispositions": normalized_review_dispositions,
                     "years": normalized_years,
                     "parcel_ids": normalized_parcel_ids,
                     "sort_key_version": REVIEW_QUEUE_SORT_KEY_VERSION,
@@ -397,6 +501,9 @@ def write_review_queue_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> 
                 row.get("score_value"),
                 row.get("risk_band"),
                 row.get("requires_review"),
+                row.get("review_status"),
+                row.get("review_disposition"),
+                row.get("review_updated_at"),
                 row.get("reason_code_count"),
                 row.get("primary_reason_code"),
                 row.get("primary_reason_weight"),
@@ -476,6 +583,44 @@ def _normalize_risk_bands(risk_bands: Optional[Sequence[str]]) -> list[str]:
     normalized = {band.strip().lower() for band in risk_bands if band.strip()}
     supported = {band for band in normalized if band in RISK_BAND_PRECEDENCE}
     return sorted(supported, key=lambda value: RISK_BAND_PRECEDENCE[value])
+
+
+def _normalize_review_states(review_states: Optional[Sequence[str]]) -> list[str]:
+    if not review_states:
+        return []
+    normalized = {value.strip().lower() for value in review_states if value.strip()}
+    supported = {value for value in normalized if value in REVIEW_STATE_VALUES}
+    return sorted(supported)
+
+
+def _unsupported_review_states(review_states: Optional[Sequence[str]]) -> list[str]:
+    if not review_states:
+        return []
+    normalized = {value.strip().lower() for value in review_states if value.strip()}
+    return sorted(value for value in normalized if value not in REVIEW_STATE_VALUES)
+
+
+def _normalize_review_dispositions(
+    review_dispositions: Optional[Sequence[str]],
+) -> list[str]:
+    if not review_dispositions:
+        return []
+    normalized = {
+        value.strip().lower() for value in review_dispositions if value.strip()
+    }
+    supported = {value for value in normalized if value in DISPOSITION_VALUES}
+    return sorted(supported)
+
+
+def _unsupported_review_dispositions(
+    review_dispositions: Optional[Sequence[str]],
+) -> list[str]:
+    if not review_dispositions:
+        return []
+    normalized = {
+        value.strip().lower() for value in review_dispositions if value.strip()
+    }
+    return sorted(value for value in normalized if value not in DISPOSITION_VALUES)
 
 
 def _unsupported_risk_bands(risk_bands: Optional[Sequence[str]]) -> list[str]:
@@ -592,6 +737,36 @@ def _load_primary_reason_map(
     return primary_map
 
 
+def _load_case_review_overlay_map(
+    session: Session,
+    *,
+    score_ids: Sequence[int],
+    feature_version: str,
+    ruleset_version: str,
+) -> dict[int, CaseReview]:
+    if not score_ids:
+        return {}
+
+    review_map: dict[int, CaseReview] = {}
+    for batch in _chunked(score_ids, _SCALAR_IN_CLAUSE_BATCH_SIZE):
+        rows = (
+            session.execute(
+                select(CaseReview)
+                .where(
+                    CaseReview.score_id.in_(batch),
+                    CaseReview.feature_version == feature_version,
+                    CaseReview.ruleset_version == ruleset_version,
+                )
+                .order_by(CaseReview.updated_at.desc(), CaseReview.id.desc())
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            review_map.setdefault(row.score_id, row)
+    return review_map
+
+
 def _load_parcel_fact_map(
     session: Session,
     *,
@@ -645,6 +820,30 @@ def _decimal_to_str(value: Decimal, *, scale: int) -> str:
 
 def _chunked(items: Sequence, size: int) -> list[Sequence]:
     return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _case_review_exists_condition(
+    *,
+    feature_version: str,
+    ruleset_version: str,
+    dispositions: Optional[Sequence[str]] = None,
+) -> ColumnElement[bool]:
+    query = select(CaseReview.id).where(
+        CaseReview.score_id == FraudScore.id,
+        CaseReview.feature_version == feature_version,
+        CaseReview.ruleset_version == ruleset_version,
+    )
+    if dispositions:
+        query = query.where(CaseReview.disposition.in_(dispositions))
+    return query.exists()
+
+
+def _iso_datetime(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 
 def _csv_value(value: object) -> str:

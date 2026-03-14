@@ -27,6 +27,8 @@ class _DossierReportRow:
     score_value: str
     risk_band: str
     primary_reason_code: str
+    review_status: str
+    review_disposition: str
     dossier_payload: Mapping[str, object]
 
 
@@ -89,6 +91,8 @@ def build_investigation_report(
         score_value = _text(row.get("score_value"))
         risk_band = _text(row.get("risk_band")) or "(none)"
         primary_reason_code = _text(row.get("primary_reason_code")) or "(none)"
+        review_status = _text(row.get("review_status")) or "unreviewed"
+        review_disposition = _text(row.get("review_disposition")) or "(none)"
 
         reason_counts[primary_reason_code] += 1
         risk_band_counts[risk_band] += 1
@@ -125,6 +129,8 @@ def build_investigation_report(
                 score_value=score_value,
                 risk_band=risk_band,
                 primary_reason_code=primary_reason_code,
+                review_status=review_status,
+                review_disposition=review_disposition,
                 dossier_payload=dossier_payload,
             )
         )
@@ -332,8 +338,8 @@ def _render_html(
         "          <tr>",
         (
             "            <th>Rank</th><th>Parcel</th><th>Year</th>"
-            "<th>Score</th><th>Risk</th><th>Primary reason</th>"
-            "<th>Dossier</th>"
+            "<th>Score</th><th>Risk</th><th>Review status</th>"
+            "<th>Disposition</th><th>Primary reason</th><th>Dossier</th>"
         ),
         "          </tr>",
         "        </thead>",
@@ -349,6 +355,8 @@ def _render_html(
                 f"            <td>{row.year}</td>",
                 f"            <td>{escape(row.score_value)}</td>",
                 f"            <td>{escape(row.risk_band)}</td>",
+                f"            <td>{escape(row.review_status)}</td>",
+                f"            <td>{escape(row.review_disposition)}</td>",
                 f"            <td>{escape(row.primary_reason_code)}</td>",
                 (
                     "            <td>"

@@ -7,7 +7,7 @@ from typing import Callable, Iterable, Mapping, Optional, Sequence, TypeVar
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import FraudScore, ParcelFeature
+from .models import CaseReview, FraudScore, ParcelFeature
 from .parcel_dossier_queries import (
     AppealEventRow,
     AssessmentHistoryRow,
@@ -175,6 +175,12 @@ def build_parcel_dossier(
             years=years_filter,
         ),
     )
+    reason_code_review_map = _load_case_review_overlay_map(
+        session,
+        score_ids=[row["score_id"] for row in reason_code_rows],
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+    )
 
     sections = {
         "assessment_history": _assessment_section(
@@ -206,6 +212,7 @@ def build_parcel_dossier(
             rows=reason_code_rows,
             parcel_id=parcel_id,
             years_filter=years_filter,
+            case_review_map=reason_code_review_map,
             unavailable_sections=unavailable_sections,
             query_error=("reason_code_evidence" in section_query_errors),
         ),
@@ -463,17 +470,30 @@ def _reason_code_section(
     rows: list[ReasonCodeEvidenceRow],
     parcel_id: str,
     years_filter: Optional[list[int]],
+    case_review_map: Mapping[int, CaseReview],
     unavailable_sections: list[str],
     query_error: bool = False,
 ) -> dict[str, object]:
+    output_rows = [
+        _reason_code_row_for_output(
+            row, case_review=case_review_map.get(row["score_id"])
+        )
+        for row in rows
+    ]
     summary: dict[str, object] = {
         "row_count": len(rows),
         "high_risk_count": sum(1 for row in rows if row["risk_band"] == "high"),
         "medium_risk_count": sum(1 for row in rows if row["risk_band"] == "medium"),
         "review_required_count": sum(1 for row in rows if row["requires_review"]),
+        "reviewed_row_count": sum(
+            1 for row in output_rows if row["review_status"] != "unreviewed"
+        ),
+        "unreviewed_row_count": sum(
+            1 for row in output_rows if row["review_status"] == "unreviewed"
+        ),
+        "disposition_counts": _review_disposition_counts(output_rows),
     }
     if rows:
-        output_rows = [_reason_code_row_for_output(row) for row in rows]
         return _section_payload(rows=output_rows, summary=summary, empty_message="")
     if query_error:
         return _section_payload(
@@ -504,7 +524,11 @@ def _reason_code_section(
     )
 
 
-def _reason_code_row_for_output(row: ReasonCodeEvidenceRow) -> dict[str, object]:
+def _reason_code_row_for_output(
+    row: ReasonCodeEvidenceRow,
+    *,
+    case_review: Optional[CaseReview],
+) -> dict[str, object]:
     return {
         "score_id": row["score_id"],
         "run_id": row["run_id"],
@@ -513,6 +537,17 @@ def _reason_code_row_for_output(row: ReasonCodeEvidenceRow) -> dict[str, object]
         "score_value": row["score_value"],
         "risk_band": row["risk_band"],
         "requires_review": row["requires_review"],
+        "review_status": (
+            case_review.status if case_review is not None else "unreviewed"
+        ),
+        "review_disposition": (
+            case_review.disposition if case_review is not None else None
+        ),
+        "review_updated_at": (
+            case_review.updated_at if case_review is not None else None
+        ),
+        "reviewed_at": case_review.reviewed_at if case_review is not None else None,
+        "closed_at": case_review.closed_at if case_review is not None else None,
         "reason_code_count": row["reason_code_count"],
         "reason_codes": row["reason_codes"],
     }
@@ -564,6 +599,45 @@ def _has_scores_for_scope(
     if years_filter is not None:
         query = query.where(FraudScore.year.in_(years_filter))
     return session.execute(query.limit(1)).first() is not None
+
+
+def _load_case_review_overlay_map(
+    session: Session,
+    *,
+    score_ids: Sequence[int],
+    feature_version: str,
+    ruleset_version: str,
+) -> dict[int, CaseReview]:
+    if not score_ids:
+        return {}
+
+    rows = (
+        session.execute(
+            select(CaseReview)
+            .where(
+                CaseReview.score_id.in_(score_ids),
+                CaseReview.feature_version == feature_version,
+                CaseReview.ruleset_version == ruleset_version,
+            )
+            .order_by(CaseReview.updated_at.desc(), CaseReview.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+    review_map: dict[int, CaseReview] = {}
+    for row in rows:
+        review_map.setdefault(row.score_id, row)
+    return review_map
+
+
+def _review_disposition_counts(rows: Sequence[Mapping[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        disposition = row.get("review_disposition")
+        if not isinstance(disposition, str) or not disposition:
+            continue
+        counts[disposition] = counts.get(disposition, 0) + 1
+    return counts
 
 
 def _ordered_unavailable_sections(unavailable_sections: Sequence[str]) -> list[str]:
