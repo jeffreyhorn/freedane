@@ -68,12 +68,12 @@ The recurring refresh workflow uses ordered stages:
 
 ### Stage: `ingest_context`
 
-Required commands:
+Stage substeps:
 
-- `.venv/bin/accessdane ingest-retr --file <retr_export.csv>`
-- `.venv/bin/accessdane match-sales`
-- `.venv/bin/accessdane ingest-permits --file <permits.csv>`
-- `.venv/bin/accessdane ingest-appeals --file <appeals.csv>`
+- Conditional: `.venv/bin/accessdane ingest-retr --file <retr_export.csv>` (runs only when RETR source file is provided)
+- Conditional: `.venv/bin/accessdane match-sales` (runs only when RETR source file is provided)
+- Conditional: `.venv/bin/accessdane ingest-permits --file <permits.csv>` (runs only when permit source file is provided)
+- Conditional: `.venv/bin/accessdane ingest-appeals --file <appeals.csv>` (runs only when appeal source file is provided)
 
 Behavior:
 
@@ -170,6 +170,7 @@ Required run-scoped context:
 - `run_id` (unique run identifier; must include `feature_version` and `ruleset_version` components)
 - `feature_version`
 - `ruleset_version`
+- `sales_ratio_base` (operator-selected base token used for sales-ratio versioning, for example `sales_ratio_v1`)
 - `profile_name`
 
 Required artifact root:
@@ -265,6 +266,7 @@ Presence rules:
 - `run_date`
 - `feature_version`
 - `ruleset_version`
+- `sales_ratio_base`
 - `top` (requested top-N selector, aligned to `--top`; `top_n` is not a valid v1 request field)
 - `source_files` (object with stable keys `retr`, `permits`, `appeals`; each value is a source path string or `null`)
 
@@ -301,7 +303,7 @@ Presence rules:
 `artifacts` fields:
 
 - `root_path` (run-scoped artifact root)
-- `latest_pointer_path` (latest alias root for `profile_name`)
+- `latest_pointer_path` (latest alias root for `profile_name` + `feature_version` + `ruleset_version`, matching `data/refresh_runs/latest/<profile_name>/<feature_version>/<ruleset_version>/...`)
 - `stage_artifacts` (object keyed by `stage_id`, each value is an array of artifact paths)
 
 `diagnostics` fields:
