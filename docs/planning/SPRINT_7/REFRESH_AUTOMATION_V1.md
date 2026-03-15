@@ -4,7 +4,7 @@ Prepared on: 2026-03-15
 
 ## Purpose
 
-Define the first stable contract for recurring Sprint 6 refresh automation before implementing scheduler and runner code.
+Define the first stable contract for recurring refresh automation delivered in Sprint 7, where scheduled runs refresh the Sprint 6 investigation workflow and artifacts, before implementing scheduler and runner code.
 
 This contract locks v1 behavior for:
 
@@ -95,7 +95,7 @@ Behavior:
 
 Required commands:
 
-- `.venv/bin/accessdane sales-ratio-study --version-tag <sales_ratio_version>`
+- `.venv/bin/accessdane sales-ratio-study --version-tag <sales_ratio_version_tag>`
 - `.venv/bin/accessdane build-features --feature-version <feature_version>`
 - `.venv/bin/accessdane score-fraud --feature-version <feature_version> --ruleset-version <ruleset_version>`
 
@@ -108,8 +108,8 @@ Behavior:
 
 Required commands:
 
-- `.venv/bin/accessdane review-queue --top <n> --out <path> --csv-out <path>`
-- `.venv/bin/accessdane review-feedback --out <path> --sql-out <path>`
+- `.venv/bin/accessdane review-queue --top <n> --feature-version <feature_version> --ruleset-version <ruleset_version> --out <path> --csv-out <path>`
+- `.venv/bin/accessdane review-feedback --feature-version <feature_version> --ruleset-version <ruleset_version> --out <path> --sql-out <path>`
 
 Behavior:
 
@@ -120,7 +120,7 @@ Behavior:
 
 Required command:
 
-- `.venv/bin/accessdane investigation-report --top <n> --html-out <path> --out <path>`
+- `.venv/bin/accessdane investigation-report --top <n> --feature-version <feature_version> --ruleset-version <ruleset_version> --html-out <path> --out <path>`
 
 Behavior:
 
@@ -177,6 +177,7 @@ Required latest pointers:
 Version/tag conventions:
 
 - `sales_ratio_study.version_tag`: `<profile_name>_<run_date>_<sales_ratio_base>`
+- In stage command examples, `<sales_ratio_version_tag>` means the full `sales_ratio_study.version_tag` value above.
 - `build_features.feature_version`: operator-selected version (for example `feature_v1`) unless explicitly promoting
 - `score_fraud.ruleset_version`: operator-selected ruleset (for example `scoring_rules_v1`)
 
@@ -279,6 +280,18 @@ Top-level keys (canonical order):
 - `code`
 - `message`
 - `failed_stage_id`
+
+`artifacts` fields:
+
+- `root_path` (run-scoped artifact root)
+- `latest_pointer_path` (latest alias root for `profile_name`)
+- `stage_artifacts` (object keyed by `stage_id`, each value is an array of artifact paths)
+
+`diagnostics` fields:
+
+- `warnings` (array of warning strings; empty when none)
+- `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`)
+- `retry` (object with `attempt_count`, `retried_from_stage_id` nullable)
 
 ## Validation Fixtures (Day 3+ Test Targets)
 
