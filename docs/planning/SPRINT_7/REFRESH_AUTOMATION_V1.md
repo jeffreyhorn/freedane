@@ -156,26 +156,33 @@ v1 scheduling profiles:
 
 Profile must be recorded in the run payload as `profile_name`.
 
+Profile stage representation rules:
+
+- `stages[]` always includes all six canonical stages in canonical order, even when a profile selects only a subset.
+- Stages not selected by the active profile must be emitted with `status = skipped`.
+- `summary.stage_count` is always `6` (canonical stage count); `stage_*_count` values are computed from the emitted `stages[]` statuses, including profile-driven skips.
+
 ## Version/Tag And Artifact Path Conventions
 
 Required run-scoped context:
 
 - `run_date` in `YYYYMMDD`
+- `run_id` (unique run identifier; must include `feature_version` and `ruleset_version` components)
 - `feature_version`
 - `ruleset_version`
 - `profile_name`
 
 Required artifact root:
 
-- `data/refresh_runs/<run_date>/<profile_name>/`
+- `data/refresh_runs/<run_date>/<profile_name>/<run_id>/`
 
 Required stage artifact path pattern:
 
-- `data/refresh_runs/<run_date>/<profile_name>/<stage_id>/<artifact_name>`
+- `data/refresh_runs/<run_date>/<profile_name>/<run_id>/<stage_id>/<artifact_name>`
 
 Required latest pointers:
 
-- `data/refresh_runs/latest/<profile_name>/...` as copies or symlinks
+- `data/refresh_runs/latest/<profile_name>/<feature_version>/<ruleset_version>/...` as copies or symlinks to the selected run scope
 
 Version/tag conventions:
 
