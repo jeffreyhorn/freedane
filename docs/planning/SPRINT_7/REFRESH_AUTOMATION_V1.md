@@ -297,7 +297,7 @@ Presence rules:
 - `attempt`
 - `command_results[]` with:
   - `command_id`
-  - `status`
+  - `status` (`succeeded|failed|skipped|blocked`)
   - `exit_code`
   - `artifact_paths` (array of artifact path strings; empty array when no artifacts are produced)
   - `error_code` (nullable)
@@ -317,13 +317,13 @@ Non-executed semantics:
 
 - `root_path` (run-scoped artifact root)
 - `latest_pointer_path` (latest alias root for `profile_name` + `feature_version` + `ruleset_version`, matching `data/refresh_runs/latest/<profile_name>/<feature_version>/<ruleset_version>/...`)
-- `stage_artifacts` (object keyed by `stage_id`, each value is an array of artifact paths)
+- `stage_artifacts` (object keyed by all six canonical `stage_id` values in canonical order; each value is an array of artifact paths, using empty arrays for stages with no artifacts including `skipped`/`blocked` stages)
 
 `diagnostics` fields:
 
 - `warnings` (array of warning strings; empty when none)
 - `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`; empty array when no skips)
-- `retry` (object with `attempt_count`, `retried_from_stage_id` nullable)
+- `retry` (always-present object with `attempt_count`, `retried_from_stage_id` nullable; when no retry occurred, emit `attempt_count = 1` and `retried_from_stage_id = null`)
 
 ## Validation Fixtures (Day 3+ Test Targets)
 
