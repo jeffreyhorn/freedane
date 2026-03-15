@@ -262,8 +262,10 @@ Presence rules:
 
 - `run_type` (`refresh_automation`)
 - `version_tag` (`refresh_automation_v1`)
+- `run_id` (matches the run-scoped context and artifact path segment)
 - `profile_name`
 - `status` (`succeeded|failed`)
+- `run_persisted` (boolean indicating whether run metadata/artifacts were durably written)
 - `started_at`, `finished_at`
 
 `request` fields:
