@@ -68,7 +68,7 @@ The recurring refresh workflow uses ordered stages:
 
 ### Stage: `ingest_context`
 
-Required commands (enabled by input availability):
+Required commands:
 
 - `.venv/bin/accessdane ingest-retr --file <retr_export.csv>`
 - `.venv/bin/accessdane match-sales`
@@ -77,7 +77,8 @@ Required commands (enabled by input availability):
 
 Behavior:
 
-- Stage may skip permit/appeal/retr substeps when source files are not provided.
+- `ingest-retr`, `ingest-permits`, and `ingest-appeals` substeps may be `skipped` when their source files are not provided.
+- `match-sales` runs only when `ingest-retr` has a source file for the run; otherwise `match-sales` is recorded as `skipped` with an explicit skip reason.
 - Each substep records `status = succeeded|failed|skipped`.
 
 ### Stage: `build_context`
@@ -149,7 +150,8 @@ v1 scheduling profiles:
   - `analysis_artifacts`, `investigation_artifacts`, `health_summary`
   - used when data/scoring are already current
 - `annual_refresh`:
-  - full stage chain with annual source files and explicit checkpoint metadata
+  - reserved profile contract for a future runner
+  - not supported by v1 runner; v1 must reject it as unsupported
 
 Profile must be recorded in the run payload as `profile_name`.
 
@@ -256,7 +258,7 @@ Presence rules:
 - `feature_version`
 - `ruleset_version`
 - `top_n`
-- `source_files` (object with retr/permits/appeals paths or null)
+- `source_files` (object with stable keys `retr`, `permits`, `appeals`; each value is a source path string or `null`)
 
 `summary` fields:
 
@@ -297,7 +299,7 @@ Presence rules:
 `diagnostics` fields:
 
 - `warnings` (array of warning strings; empty when none)
-- `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`)
+- `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`; empty array when no skips)
 - `retry` (object with `attempt_count`, `retried_from_stage_id` nullable)
 
 ## Validation Fixtures (Day 3+ Test Targets)
