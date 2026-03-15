@@ -257,7 +257,7 @@ Presence rules:
 - `run_date`
 - `feature_version`
 - `ruleset_version`
-- `top_n`
+- `top` (requested top-N selector, aligned to `--top`)
 - `source_files` (object with stable keys `retr`, `permits`, `appeals`; each value is a source path string or `null`)
 
 `summary` fields:
@@ -281,7 +281,7 @@ Presence rules:
   - `command_id`
   - `status`
   - `exit_code`
-  - `artifact_paths`
+  - `artifact_paths` (array of artifact path strings; empty array when no artifacts are produced)
   - `error_code` (nullable)
 
 `error` fields when failed:
