@@ -152,6 +152,7 @@ v1 scheduling profiles:
 - `annual_refresh`:
   - reserved profile contract for a future runner
   - not supported by v1 runner; v1 must reject it as unsupported
+  - rejection is a pre-stage validation failure with `error.code = unsupported_profile`
 
 Profile must be recorded in the run payload as `profile_name`.
 
@@ -240,7 +241,7 @@ Presence rules:
 
 - `run`, `request`, `summary`, `stages`, `artifacts`, `diagnostics`, and `error` are always present.
 - When `run.status = succeeded`, `error` must be `null`.
-- When `run.status = failed`, `error` must be an object with `code`, `message`, and `failed_stage_id`.
+- When `run.status = failed`, `error` must be an object with `code`, `message`, and `failed_stage_id` (nullable for pre-stage failures).
 - On failed runs, non-error sections still appear and reflect partial execution (including `failed`, `blocked`, and `skipped` stage statuses where applicable).
 
 `run` fields:
@@ -257,7 +258,7 @@ Presence rules:
 - `run_date`
 - `feature_version`
 - `ruleset_version`
-- `top` (requested top-N selector, aligned to `--top`)
+- `top` (requested top-N selector, aligned to `--top`; `top_n` is not a valid v1 request field)
 - `source_files` (object with stable keys `retr`, `permits`, `appeals`; each value is a source path string or `null`)
 
 `summary` fields:
@@ -286,9 +287,9 @@ Presence rules:
 
 `error` fields when failed:
 
-- `code`
+- `code` (for example `unsupported_profile` for pre-stage validation failure, or stage-specific execution error codes)
 - `message`
-- `failed_stage_id`
+- `failed_stage_id` (stage id when a stage fails; `null` for pre-stage validation failures)
 
 `artifacts` fields:
 
