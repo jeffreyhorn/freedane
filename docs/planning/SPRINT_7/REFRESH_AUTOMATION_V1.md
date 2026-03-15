@@ -64,9 +64,9 @@ The recurring refresh workflow uses ordered stages:
 5. `investigation_artifacts`
 6. `health_summary`
 
-### Stage Definitions
+## Stage Definitions
 
-## Stage: `ingest_context`
+### Stage: `ingest_context`
 
 Required commands (enabled by input availability):
 
@@ -80,7 +80,7 @@ Behavior:
 - Stage may skip permit/appeal/retr substeps when source files are not provided.
 - Each substep records `status = succeeded|failed|skipped`.
 
-## Stage: `build_context`
+### Stage: `build_context`
 
 Required command:
 
@@ -91,7 +91,7 @@ Behavior:
 - Must run after any ingest changes.
 - Must fail hard when context build fails.
 
-## Stage: `score_pipeline`
+### Stage: `score_pipeline`
 
 Required commands:
 
@@ -104,7 +104,7 @@ Behavior:
 - Stage must run in fixed order.
 - `score-fraud` runs only after `build-features` succeeds.
 
-## Stage: `analysis_artifacts`
+### Stage: `analysis_artifacts`
 
 Required commands:
 
@@ -113,10 +113,10 @@ Required commands:
 
 Behavior:
 
-- Stage uses current configured `feature_version` and `ruleset_version`.
+- Stage uses run-context `feature_version` and `ruleset_version` values and passes them explicitly to stage commands.
 - Stage succeeds with zero reviewed cases; that is not treated as a failure.
 
-## Stage: `investigation_artifacts`
+### Stage: `investigation_artifacts`
 
 Required command:
 
@@ -127,7 +127,7 @@ Behavior:
 - Stage fails if report command fails.
 - HTML and JSON artifacts are both required outputs.
 
-## Stage: `health_summary`
+### Stage: `health_summary`
 
 Required actions:
 
@@ -233,6 +233,13 @@ Top-level keys (canonical order):
 5. `artifacts`
 6. `diagnostics`
 7. `error`
+
+Presence rules:
+
+- `run`, `request`, `summary`, `stages`, `artifacts`, `diagnostics`, and `error` are always present.
+- When `run.status = succeeded`, `error` must be `null`.
+- When `run.status = failed`, `error` must be an object with `code`, `message`, and `failed_stage_id`.
+- On failed runs, non-error sections still appear and reflect partial execution (including `failed`, `blocked`, and `skipped` stage statuses where applicable).
 
 `run` fields:
 
