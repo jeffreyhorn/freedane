@@ -161,6 +161,8 @@ Profile stage representation rules:
 - `stages[]` always includes all six canonical stages in canonical order, even when a profile selects only a subset.
 - Stages not selected by the active profile must be emitted with `status = skipped`.
 - `summary.stage_count` is always `6` (canonical stage count); `stage_*_count` values are computed from the emitted `stages[]` statuses, including profile-driven skips.
+- For pre-stage validation failures (for example `unsupported_profile`), all six canonical stages are emitted with `status = blocked`.
+- For pre-stage validation failures, summary counts are: `stage_count = 6`, `stage_failed_count = 0`, `stage_blocked_count = 6`, and `stage_succeeded_count = stage_skipped_count = 0`.
 
 ## Version/Tag And Artifact Path Conventions
 
@@ -245,6 +247,10 @@ Top-level keys (canonical order):
 6. `diagnostics`
 7. `error`
 
+Key-order note:
+
+- Canonical key order is for presentation/readability only; JSON parsers and validators must rely on field presence rules, not object member order.
+
 Presence rules:
 
 - `run`, `request`, `summary`, `stages`, `artifacts`, `diagnostics`, and `error` are always present.
@@ -293,6 +299,11 @@ Presence rules:
   - `exit_code`
   - `artifact_paths` (array of artifact path strings; empty array when no artifacts are produced)
   - `error_code` (nullable)
+
+Non-executed semantics:
+
+- When a stage `status` is `skipped` or `blocked`, stage timing fields (`started_at`, `finished_at`, `duration_seconds`) must be `null`.
+- When a stage `status` is `skipped` or `blocked`, `command_results[]` should be an empty array; if command entries are emitted, each non-executed command must set `exit_code = null` and `artifact_paths = []`.
 
 `error` fields when failed:
 
