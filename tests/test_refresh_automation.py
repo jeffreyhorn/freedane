@@ -71,6 +71,13 @@ def test_run_scheduled_refresh_daily_profile_executes_deterministic_command_orde
         "review-feedback",
         "investigation-report",
     ]
+    assert payload["artifacts"]["latest_pointer_path"] == str(
+        artifact_base_dir
+        / "latest"
+        / "daily_refresh"
+        / "feature_v1"
+        / "scoring_rules_v1"
+    )
 
 
 def test_run_scheduled_refresh_blocks_downstream_stages_after_failure(
@@ -253,6 +260,80 @@ def test_run_scheduled_refresh_retry_run_reexecutes_from_stage_boundary_only(
             "retry_boundary_before:score_pipeline",
         ),
     }
+
+
+def test_run_scheduled_refresh_rejects_unsupported_profile() -> None:
+    payload = run_scheduled_refresh(
+        profile_name="annual_refresh",
+        run_date="20260316",
+        run_id="20260316_annual_refresh_feature_v1_scoring_rules_v1_050505",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=Path("data/refresh_runs"),
+        accessdane_bin="accessdane",
+    )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"] == {
+        "code": "unsupported_profile",
+        "message": "Unsupported profile_name 'annual_refresh' for v1 runner.",
+        "failed_stage_id": None,
+    }
+    assert [stage["status"] for stage in payload["stages"]] == [
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+    ]
+
+
+def test_run_scheduled_refresh_rejects_invalid_retry_boundary_without_execution(
+    tmp_path: Path,
+) -> None:
+    executed_commands: list[list[str]] = []
+
+    def _executor(command: list[str]) -> int:
+        executed_commands.append(command)
+        return 0
+
+    payload = run_scheduled_refresh(
+        profile_name="daily_refresh",
+        run_date="20260316",
+        run_id="20260316_daily_refresh_feature_v1_scoring_rules_v1_060606",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=tmp_path / "refresh_runs",
+        accessdane_bin="accessdane",
+        attempt_count=2,
+        retried_from_stage_id="not_a_stage",
+        command_executor=_executor,
+    )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"] is not None
+    assert payload["error"]["code"] == "invalid_retry_boundary"
+    assert payload["error"]["failed_stage_id"] is None
+    assert executed_commands == []
+    assert [stage["status"] for stage in payload["stages"]] == [
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+    ]
 
 
 def test_run_scheduled_refresh_rejects_unsafe_run_context_without_executing_commands(

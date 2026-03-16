@@ -202,6 +202,7 @@ def run_scheduled_refresh(
             stage_artifacts=stage_artifacts,
             diagnostics=diagnostics,
             root_path=root_path,
+            artifact_base_dir=artifact_base_dir,
             feature_version=feature_version,
             ruleset_version=ruleset_version,
             run_status="failed",
@@ -229,12 +230,44 @@ def run_scheduled_refresh(
             stage_artifacts=stage_artifacts,
             diagnostics=diagnostics,
             root_path=root_path,
+            artifact_base_dir=artifact_base_dir,
             feature_version=feature_version,
             ruleset_version=ruleset_version,
             run_status="failed",
             error={
                 "code": "unsupported_profile",
                 "message": f"Unsupported profile_name '{profile_name}' for v1 runner.",
+                "failed_stage_id": None,
+            },
+        )
+    retry_error = _validate_retry_context(
+        attempt_count=attempt_count,
+        retried_from_stage_id=retried_from_stage_id,
+        selected_stages=selected_stages,
+    )
+    if retry_error is not None:
+        stages = [
+            _blocked_stage(stage_id=stage_id, attempt=1)
+            for stage_id in CANONICAL_STAGES
+        ]
+        finished_dt = _now_utc()
+        return _build_payload(
+            run_id=run_id,
+            profile_name=profile_name,
+            request=request,
+            started_dt=started_dt,
+            finished_dt=finished_dt,
+            stages=stages,
+            stage_artifacts=stage_artifacts,
+            diagnostics=diagnostics,
+            root_path=root_path,
+            artifact_base_dir=artifact_base_dir,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            run_status="failed",
+            error={
+                "code": "invalid_retry_boundary",
+                "message": retry_error,
                 "failed_stage_id": None,
             },
         )
@@ -389,6 +422,7 @@ def run_scheduled_refresh(
         stage_artifacts=stage_artifacts,
         diagnostics=diagnostics,
         root_path=root_path,
+        artifact_base_dir=artifact_base_dir,
         feature_version=feature_version,
         ruleset_version=ruleset_version,
         run_status=run_status,
@@ -397,7 +431,7 @@ def run_scheduled_refresh(
 
 
 def _default_command_executor(command: list[str]) -> int:
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    completed = subprocess.run(command, check=False)
     return int(completed.returncode)
 
 
@@ -597,6 +631,7 @@ def _build_payload(
     stage_artifacts: dict[str, list[str]],
     diagnostics: RefreshDiagnostics,
     root_path: Path,
+    artifact_base_dir: Path,
     feature_version: str,
     ruleset_version: str,
     run_status: str,
@@ -617,7 +652,8 @@ def _build_payload(
     artifacts: RefreshArtifacts = {
         "root_path": str(root_path),
         "latest_pointer_path": str(
-            Path("data/refresh_runs/latest")
+            artifact_base_dir
+            / "latest"
             / profile_name
             / feature_version
             / ruleset_version
@@ -677,8 +713,6 @@ def _latest_pass_stages(
 ) -> set[str]:
     if attempt_count <= 1 or not retried_from_stage_id:
         return set(selected_stages)
-    if retried_from_stage_id not in CANONICAL_STAGES:
-        return set(selected_stages)
     start_index = CANONICAL_STAGES.index(retried_from_stage_id)
     return {
         stage_id
@@ -712,6 +746,30 @@ def _validate_run_context(
         target_resolved.relative_to(base_resolved)
     except ValueError:
         return "artifact root escapes artifact_base_dir."
+    return None
+
+
+def _validate_retry_context(
+    *,
+    attempt_count: int,
+    retried_from_stage_id: Optional[str],
+    selected_stages: tuple[str, ...],
+) -> Optional[str]:
+    if attempt_count <= 1:
+        return None
+    if retried_from_stage_id is None:
+        return None
+    if retried_from_stage_id not in CANONICAL_STAGES:
+        return (
+            "retried_from_stage_id must be one of the canonical stage ids: "
+            + ", ".join(CANONICAL_STAGES)
+            + "."
+        )
+    if retried_from_stage_id not in selected_stages:
+        return (
+            "retried_from_stage_id must be selected by the active profile; "
+            f"got '{retried_from_stage_id}' for profile stages {list(selected_stages)}."
+        )
     return None
 
 
