@@ -51,6 +51,7 @@ from .parse import ParsedPage, parse_page
 from .permits import PermitImportFileError, ingest_permits_csv
 from .profiling import build_data_profile
 from .quality import quality_report_to_dict, run_data_quality_checks
+from .refresh_automation import run_scheduled_refresh
 from .retr import (
     RetrImportFileError,
     build_sales_match_audit_report,
@@ -1099,6 +1100,144 @@ def investigation_report_cmd(
             ruleset_version=ruleset_version,
             requires_review_only=requires_review_only,
         )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("refresh-runner")
+def refresh_runner_cmd(
+    profile_name: str = typer.Option(
+        "daily_refresh",
+        "--profile-name",
+        help="Refresh profile (daily_refresh, analysis_only)",
+    ),
+    run_date: Optional[str] = typer.Option(
+        None,
+        "--run-date",
+        help="Run date in YYYYMMDD (default: current UTC date)",
+    ),
+    run_id: Optional[str] = typer.Option(
+        None,
+        "--run-id",
+        help="Explicit run identifier (default generated from date/profile/versions)",
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version for stage commands",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version for stage commands",
+    ),
+    sales_ratio_base: str = typer.Option(
+        "sales_ratio_v1",
+        "--sales-ratio-base",
+        help="Sales ratio base token used in sales-ratio-study version tag",
+    ),
+    top: int = typer.Option(
+        100,
+        "--top",
+        min=1,
+        max=1000,
+        help="Top-N selector passed to review-queue and investigation-report",
+    ),
+    retr_file: Optional[Path] = typer.Option(
+        None,
+        "--retr-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional RETR CSV source file",
+    ),
+    permits_file: Optional[Path] = typer.Option(
+        None,
+        "--permits-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional permits CSV source file",
+    ),
+    appeals_file: Optional[Path] = typer.Option(
+        None,
+        "--appeals-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional appeals CSV source file",
+    ),
+    artifact_base_dir: Path = typer.Option(
+        Path("data/refresh_runs"),
+        "--artifact-base-dir",
+        help="Base directory for refresh run artifact roots",
+    ),
+    accessdane_bin: str = typer.Option(
+        ".venv/bin/accessdane",
+        "--accessdane-bin",
+        help="Executable used for chained accessdane commands",
+    ),
+    attempt_count: int = typer.Option(
+        1,
+        "--attempt-count",
+        min=1,
+        help="Run-level attempt number for manual retries",
+    ),
+    retried_from_stage_id: Optional[str] = typer.Option(
+        None,
+        "--retried-from-stage-id",
+        help="Stage ID boundary for retry attempts",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path for refresh payload",
+    ),
+) -> None:
+    now_utc = datetime.now(timezone.utc)
+    resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            "--run-date must be in YYYYMMDD format.",
+            param_hint="--run-date",
+        )
+    if retried_from_stage_id and attempt_count <= 1:
+        raise typer.BadParameter(
+            "--retried-from-stage-id requires --attempt-count >= 2.",
+            param_hint="--retried-from-stage-id",
+        )
+    resolved_run_id = run_id or (
+        f"{resolved_run_date}_{profile_name}_{feature_version}_{ruleset_version}"
+        f"_{now_utc.strftime('%H%M%S')}"
+    )
+
+    payload = run_scheduled_refresh(
+        profile_name=profile_name,
+        run_date=resolved_run_date,
+        run_id=resolved_run_id,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+        sales_ratio_base=sales_ratio_base,
+        top=top,
+        retr_file=retr_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin=accessdane_bin,
+        attempt_count=attempt_count,
+        retried_from_stage_id=retried_from_stage_id,
+    )
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
