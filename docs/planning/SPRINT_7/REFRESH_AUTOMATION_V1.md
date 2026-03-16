@@ -206,7 +206,7 @@ Stage status values:
 Rules:
 
 - If a stage fails, downstream dependent stages are marked `blocked`.
-- `health_summary` is never blocked.
+- `health_summary` is never blocked for stage-execution failures; pre-stage validation failures are the exception and may emit `health_summary` as `blocked` per profile stage representation rules.
 - Profile-driven stage skips are allowed for stages not selected by the active scheduling profile.
 - Ingest soft-skips are allowed only for ingest substeps with missing optional source files.
 
