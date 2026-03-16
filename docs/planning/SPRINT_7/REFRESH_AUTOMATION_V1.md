@@ -215,6 +215,7 @@ Retry policy:
 - v1 runner supports manual rerun with same run context.
 - Runner must support per-stage rerun from first failed stage boundary.
 - Retried stage must overwrite only its own stage artifacts in the same run scope.
+- Retries within the same run context must keep the same `run_id` and artifact root.
 
 ## Idempotency Expectations
 
@@ -234,7 +235,7 @@ Expected idempotent outcomes:
 Non-idempotent allowances:
 
 - timestamps (`started_at`, `finished_at`, duration fields)
-- run identifiers in metadata
+- sub-command identifiers in metadata (for example internal attempt IDs); top-level `run_id` remains stable for reruns in the same run context
 
 ## Observability Payload Contract (v1)
 
@@ -258,6 +259,18 @@ Presence rules:
 - When `run.status = succeeded`, `error` must be `null`.
 - When `run.status = failed`, `error` must be an object with `code`, `message`, and `failed_stage_id` (nullable for pre-stage failures).
 - On failed runs, non-error sections still appear and reflect partial execution (including `failed`, `blocked`, and `skipped` stage statuses where applicable).
+
+Run status derivation rules:
+
+- If any stage has `status = failed`, then `run.status = failed`.
+- When `run.status = failed` due stage failure, `error.failed_stage_id` must be the first failed stage in canonical stage order.
+- If failure occurs before stage execution (for example `unsupported_profile`), all stages are `blocked`, `run.status = failed`, and `error.failed_stage_id = null`.
+- `health_summary` participates in terminal status like any other stage; if it fails, `run.status = failed` with `error.failed_stage_id = health_summary`.
+
+Datetime format rules:
+
+- `run.started_at`, `run.finished_at`, `stages[].started_at`, and `stages[].finished_at` must use RFC3339/ISO-8601 UTC timestamps with a trailing `Z` (for example `2026-03-15T22:10:29Z`).
+- For non-executed stages, these fields remain `null` per non-executed semantics.
 
 `run` fields:
 
