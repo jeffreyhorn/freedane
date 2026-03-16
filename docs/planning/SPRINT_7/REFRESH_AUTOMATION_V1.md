@@ -207,7 +207,8 @@ Rules:
 
 - If a stage fails, downstream dependent stages are marked `blocked`.
 - `health_summary` is never blocked.
-- Soft-skips are allowed only for ingest substeps with missing optional source files.
+- Profile-driven stage skips are allowed for stages not selected by the active scheduling profile.
+- Ingest soft-skips are allowed only for ingest substeps with missing optional source files.
 
 Retry policy:
 
@@ -298,7 +299,7 @@ Presence rules:
 - `command_results[]` with:
   - `command_id`
   - `status` (`succeeded|failed|skipped|blocked`)
-  - `exit_code`
+  - `exit_code` (nullable integer; `null` for non-executed `skipped|blocked` commands)
   - `artifact_paths` (array of artifact path strings; empty array when no artifacts are produced)
   - `error_code` (nullable)
 
@@ -322,7 +323,7 @@ Non-executed semantics:
 `diagnostics` fields:
 
 - `warnings` (array of warning strings; empty when none)
-- `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`; empty array when no skips)
+- `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`; empty array when no skips, and `reason` must distinguish profile-driven stage skips vs missing-input ingest skips)
 - `retry` (always-present object with `attempt_count`, `retried_from_stage_id` nullable; when no retry occurred, emit `attempt_count = 1` and `retried_from_stage_id = null`)
 
 ## Validation Fixtures (Day 3+ Test Targets)
