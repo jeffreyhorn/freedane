@@ -475,7 +475,8 @@ def run_scheduled_refresh(
     finally:
         if in_progress_marker is not None:
             _safe_unlink(in_progress_marker)
-        _release_profile_lock(lock_path)
+        if lock_path is not None:
+            _release_profile_lock(lock_path)
 
 
 def _default_command_executor(command: list[str]) -> int:
@@ -872,9 +873,20 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
     health_dir = root_path / "health_summary"
     health_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_json_atomic(health_dir / "refresh_run_payload.json", payload)
+    health_stage_artifacts = payload["artifacts"]["stage_artifacts"].setdefault(
+        "health_summary", []
+    )
+    refresh_payload_path = health_dir / "refresh_run_payload.json"
+    run_manifest_path = root_path / "run_manifest.json"
+    failure_artifact_path = health_dir / "failure_artifact.json"
+
+    payload["run"]["run_persisted"] = True
+
+    _write_json_atomic(refresh_payload_path, payload)
+    if str(refresh_payload_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(refresh_payload_path))
     _write_json_atomic(
-        root_path / "run_manifest.json",
+        run_manifest_path,
         {
             "run_id": payload["run"]["run_id"],
             "profile_name": payload["run"]["profile_name"],
@@ -886,7 +898,9 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
     )
 
     if payload["error"] is not None:
-        _write_json_atomic(health_dir / "failure_artifact.json", payload["error"])
+        _write_json_atomic(failure_artifact_path, payload["error"])
+        if str(failure_artifact_path) not in health_stage_artifacts:
+            health_stage_artifacts.append(str(failure_artifact_path))
 
     latest_pointer_path.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(
@@ -899,8 +913,6 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
             "finished_at": payload["run"]["finished_at"],
         },
     )
-
-    payload["run"]["run_persisted"] = True
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:

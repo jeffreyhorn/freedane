@@ -23,7 +23,7 @@ Common scheduler variables:
 - `ACCESSDANE_SALES_RATIO_BASE` (default `sales_ratio_v1`)
 - `ACCESSDANE_REFRESH_TOP` (default `100`)
 - `ACCESSDANE_ARTIFACT_BASE_DIR` (default `data/refresh_runs`)
-- `ACCESSDANE_REFRESH_LOG_DIR` (default `data/refresh_runs/scheduler_logs`)
+- `ACCESSDANE_REFRESH_LOG_DIR` (default `${ACCESSDANE_ARTIFACT_BASE_DIR}/scheduler_logs`)
 
 Optional source-file inputs for ingest-enabled runs:
 
@@ -73,6 +73,9 @@ scripts/run_scheduled_refresh.sh
 
 - Each run writes to `data/refresh_runs/<run_date>/<profile_name>/<run_id>/`.
 - A per-profile lock file guards overlap: `data/refresh_runs/locks/<profile_name>.lock`.
+- Lock files include JSON metadata (`profile_name`, `pid`, `started_at`) for debugging.
 - In-progress runs write `.in_progress` marker files and remove them on completion.
+- If a scheduler run crashes and leaves a stale lock, verify no active process matches the
+  lock metadata and remove `data/refresh_runs/locks/<profile_name>.lock` before rerunning.
 - `latest` pointer metadata is published only after run completion:
   - `data/refresh_runs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_run.json`

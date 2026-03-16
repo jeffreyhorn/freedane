@@ -81,8 +81,13 @@ def test_run_scheduled_refresh_daily_profile_executes_deterministic_command_orde
     )
     assert payload["run"]["run_persisted"] is True
     root_path = Path(payload["artifacts"]["root_path"])
-    assert (root_path / "health_summary" / "refresh_run_payload.json").exists()
+    refresh_payload_path = root_path / "health_summary" / "refresh_run_payload.json"
+    assert refresh_payload_path.exists()
     assert (root_path / "run_manifest.json").exists()
+    persisted_payload = json.loads(refresh_payload_path.read_text(encoding="utf-8"))
+    assert persisted_payload["run"]["run_persisted"] is True
+    health_stage_artifacts = payload["artifacts"]["stage_artifacts"]["health_summary"]
+    assert str(refresh_payload_path) in health_stage_artifacts
     latest_run = (
         artifact_base_dir
         / "latest"
@@ -141,10 +146,16 @@ def test_run_scheduled_refresh_blocks_downstream_stages_after_failure(
     assert [command[1] for command in executed_commands] == ["build-parcel-year-facts"]
     assert payload["run"]["run_persisted"] is True
     root_path = Path(payload["artifacts"]["root_path"])
+    refresh_payload_path = root_path / "health_summary" / "refresh_run_payload.json"
+    persisted_payload = json.loads(refresh_payload_path.read_text(encoding="utf-8"))
+    assert persisted_payload["run"]["run_persisted"] is True
     failure_artifact = root_path / "health_summary" / "failure_artifact.json"
     assert failure_artifact.exists()
     failure_payload = json.loads(failure_artifact.read_text(encoding="utf-8"))
     assert failure_payload["code"] == "stage_failure"
+    health_stage_artifacts = payload["artifacts"]["stage_artifacts"]["health_summary"]
+    assert str(refresh_payload_path) in health_stage_artifacts
+    assert str(failure_artifact) in health_stage_artifacts
 
 
 def test_run_scheduled_refresh_analysis_only_profile_skips_upstream_stages(
