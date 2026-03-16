@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from typing import Callable, Optional, TypedDict
 
 RUN_TYPE_REFRESH_AUTOMATION = "refresh_automation"
 REFRESH_AUTOMATION_VERSION_TAG = "refresh_automation_v1"
+_SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 CANONICAL_STAGES: tuple[str, ...] = (
     "ingest_context",
@@ -152,6 +154,12 @@ def run_scheduled_refresh(
     command_executor: Optional[CommandExecutor] = None,
 ) -> RefreshPayload:
     started_dt = _now_utc()
+    context_error = _validate_run_context(
+        run_date=run_date,
+        profile_name=profile_name,
+        run_id=run_id,
+        artifact_base_dir=artifact_base_dir,
+    )
     root_path = artifact_base_dir / run_date / profile_name / run_id
     stage_artifacts: dict[str, list[str]] = {
         stage_id: [] for stage_id in CANONICAL_STAGES
@@ -178,6 +186,31 @@ def run_scheduled_refresh(
             "appeals": str(appeals_file) if appeals_file is not None else None,
         },
     }
+    if context_error is not None:
+        stages = [
+            _blocked_stage(stage_id=stage_id, attempt=1)
+            for stage_id in CANONICAL_STAGES
+        ]
+        finished_dt = _now_utc()
+        return _build_payload(
+            run_id=run_id,
+            profile_name=profile_name,
+            request=request,
+            started_dt=started_dt,
+            finished_dt=finished_dt,
+            stages=stages,
+            stage_artifacts=stage_artifacts,
+            diagnostics=diagnostics,
+            root_path=root_path,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            run_status="failed",
+            error={
+                "code": "invalid_run_context",
+                "message": context_error,
+                "failed_stage_id": None,
+            },
+        )
 
     selected_stages = SUPPORTED_PROFILES.get(profile_name)
     if selected_stages is None:
@@ -235,13 +268,31 @@ def run_scheduled_refresh(
     for stage_id in CANONICAL_STAGES:
         if stage_id not in selected_stages:
             stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
+            diagnostics["skip_reasons"].append(
+                {
+                    "stage_id": stage_id,
+                    "command_id": "_stage_profile_selection",
+                    "reason": f"profile_skip:{profile_name}",
+                }
+            )
+            continue
+
+        if attempt_count > 1 and stage_id not in latest_pass_stages:
+            stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
+            diagnostics["skip_reasons"].append(
+                {
+                    "stage_id": stage_id,
+                    "command_id": "_stage_retry_boundary",
+                    "reason": f"retry_boundary_before:{retried_from_stage_id}",
+                }
+            )
             continue
 
         if encountered_failure and stage_id != "health_summary":
             stages.append(_blocked_stage(stage_id=stage_id, attempt=1))
             continue
 
-        stage_attempt = attempt_count if stage_id in latest_pass_stages else 1
+        stage_attempt = attempt_count
         stage_dir = root_path / stage_id
         stage_dir.mkdir(parents=True, exist_ok=True)
         stage_started = _now_utc()
@@ -634,6 +685,34 @@ def _latest_pass_stages(
         for stage_id in CANONICAL_STAGES[start_index:]
         if stage_id in selected_stages
     }
+
+
+def _validate_run_context(
+    *,
+    run_date: str,
+    profile_name: str,
+    run_id: str,
+    artifact_base_dir: Path,
+) -> Optional[str]:
+    if not re.fullmatch(r"\d{8}", run_date):
+        return "run_date must match YYYYMMDD."
+    if not _SAFE_PATH_SEGMENT_RE.fullmatch(profile_name):
+        return (
+            "profile_name contains unsupported path characters; only letters, "
+            "digits, '.', '_' and '-' are allowed."
+        )
+    if not _SAFE_PATH_SEGMENT_RE.fullmatch(run_id):
+        return (
+            "run_id contains unsupported path characters; only letters, digits, "
+            "'.', '_' and '-' are allowed."
+        )
+    base_resolved = artifact_base_dir.resolve()
+    target_resolved = (artifact_base_dir / run_date / profile_name / run_id).resolve()
+    try:
+        target_resolved.relative_to(base_resolved)
+    except ValueError:
+        return "artifact root escapes artifact_base_dir."
+    return None
 
 
 def _now_utc() -> datetime:
