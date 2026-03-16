@@ -310,34 +310,36 @@ def run_scheduled_refresh(
         )
 
     executor = command_executor or _default_command_executor
-    root_path.mkdir(parents=True, exist_ok=True)
-    in_progress_marker = root_path / ".in_progress"
-    in_progress_marker.write_text(_iso_utc(started_dt), encoding="utf-8")
+    in_progress_marker: Optional[Path] = None
     encountered_failure = False
     failed_stage_id: Optional[str] = None
     failure_message = "Refresh automation stage execution failed."
 
-    command_specs = _build_command_specs(
-        accessdane_bin=accessdane_bin,
-        root_path=root_path,
-        run_date=run_date,
-        profile_name=profile_name,
-        sales_ratio_base=sales_ratio_base,
-        feature_version=feature_version,
-        ruleset_version=ruleset_version,
-        top=top,
-        retr_file=retr_file,
-        permits_file=permits_file,
-        appeals_file=appeals_file,
-    )
-
-    latest_pass_stages = _latest_pass_stages(
-        attempt_count=attempt_count,
-        retried_from_stage_id=retried_from_stage_id,
-        selected_stages=selected_stages,
-    )
-
     try:
+        root_path.mkdir(parents=True, exist_ok=True)
+        in_progress_marker = root_path / ".in_progress"
+        in_progress_marker.write_text(_iso_utc(started_dt), encoding="utf-8")
+
+        command_specs = _build_command_specs(
+            accessdane_bin=accessdane_bin,
+            root_path=root_path,
+            run_date=run_date,
+            profile_name=profile_name,
+            sales_ratio_base=sales_ratio_base,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            top=top,
+            retr_file=retr_file,
+            permits_file=permits_file,
+            appeals_file=appeals_file,
+        )
+
+        latest_pass_stages = _latest_pass_stages(
+            attempt_count=attempt_count,
+            retried_from_stage_id=retried_from_stage_id,
+            selected_stages=selected_stages,
+        )
+
         for stage_id in CANONICAL_STAGES:
             if stage_id not in selected_stages:
                 stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
@@ -471,7 +473,8 @@ def run_scheduled_refresh(
         _persist_run_artifacts(payload)
         return payload
     finally:
-        _safe_unlink(in_progress_marker)
+        if in_progress_marker is not None:
+            _safe_unlink(in_progress_marker)
         _release_profile_lock(lock_path)
 
 

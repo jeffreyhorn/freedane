@@ -38,10 +38,12 @@ Optional retry controls:
 
 ## Cron Templates
 
+Replace `/path/to/repo` below with your local repository path.
+
 Daily refresh every night at 01:30 UTC:
 
 ```cron
-30 1 * * * cd /Users/jeff/experiments/freedane && \
+30 1 * * * cd /path/to/repo && \
   ACCESSDANE_REFRESH_PROFILE=daily_refresh \
   ACCESSDANE_FEATURE_VERSION=feature_v1 \
   ACCESSDANE_RULESET_VERSION=scoring_rules_v1 \
@@ -51,7 +53,7 @@ Daily refresh every night at 01:30 UTC:
 Analysis-only refresh every weekday at 06:15 UTC:
 
 ```cron
-15 6 * * 1-5 cd /Users/jeff/experiments/freedane && \
+15 6 * * 1-5 cd /path/to/repo && \
   ACCESSDANE_REFRESH_PROFILE=analysis_only \
   ACCESSDANE_FEATURE_VERSION=feature_v1 \
   ACCESSDANE_RULESET_VERSION=scoring_rules_v1 \
@@ -74,4 +76,3 @@ scripts/run_scheduled_refresh.sh
 - In-progress runs write `.in_progress` marker files and remove them on completion.
 - `latest` pointer metadata is published only after run completion:
   - `data/refresh_runs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_run.json`
-
