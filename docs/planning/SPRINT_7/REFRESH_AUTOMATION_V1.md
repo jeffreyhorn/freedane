@@ -337,7 +337,7 @@ Non-executed semantics:
 
 - `root_path` (run-scoped artifact root)
 - `latest_pointer_path` (latest alias root for `profile_name` + `feature_version` + `ruleset_version`, matching `data/refresh_runs/latest/<profile_name>/<feature_version>/<ruleset_version>/...`)
-- `stage_artifacts` (object keyed by all six canonical `stage_id` values in canonical order; each value is an array of artifact paths, using empty arrays for stages with no artifacts including `skipped`/`blocked` stages)
+- `stage_artifacts` (object keyed by all six canonical `stage_id` values; each value is an array of artifact paths, using empty arrays for stages with no artifacts including `skipped`/`blocked` stages; object key order is presentation-only)
 
 `diagnostics` fields:
 
