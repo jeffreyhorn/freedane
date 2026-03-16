@@ -109,7 +109,7 @@ Behavior:
 
 Required commands:
 
-- `.venv/bin/accessdane review-queue --top <n> --feature-version <feature_version> --ruleset-version <ruleset_version> --out <path> --csv-out <path>`
+- `.venv/bin/accessdane review-queue --top <top> --feature-version <feature_version> --ruleset-version <ruleset_version> --out <path> --csv-out <path>`
 - `.venv/bin/accessdane review-feedback --feature-version <feature_version> --ruleset-version <ruleset_version> --out <path> --sql-out <path>`
 
 Behavior:
@@ -121,7 +121,7 @@ Behavior:
 
 Required command:
 
-- `.venv/bin/accessdane investigation-report --top <n> --feature-version <feature_version> --ruleset-version <ruleset_version> --html-out <path> --out <path>`
+- `.venv/bin/accessdane investigation-report --top <top> --feature-version <feature_version> --ruleset-version <ruleset_version> --html-out <path> --out <path>`
 
 Behavior:
 
@@ -263,7 +263,7 @@ Presence rules:
 Run status derivation rules:
 
 - If any stage has `status = failed`, then `run.status = failed`.
-- When `run.status = failed` due stage failure, `error.failed_stage_id` must be the first failed stage in canonical stage order.
+- When `run.status = failed` due to stage failure, `error.failed_stage_id` must be the first failed stage in canonical stage order.
 - If failure occurs before stage execution (for example `unsupported_profile`), all stages are `blocked`, `run.status = failed`, and `error.failed_stage_id = null`.
 - `health_summary` participates in terminal status like any other stage; if it fails, `run.status = failed` with `error.failed_stage_id = health_summary`.
 
@@ -315,6 +315,12 @@ Datetime format rules:
   - `exit_code` (nullable integer; `null` for non-executed `skipped|blocked` commands)
   - `artifact_paths` (array of artifact path strings; empty array when no artifacts are produced)
   - `error_code` (nullable)
+
+`stages[].attempt` semantics:
+
+- Integer starting at `1` for first execution attempt of a stage within a run.
+- Increments by `1` each time that stage is retried in the same run.
+- Must align with `diagnostics.retry.attempt_count` for the latest attempt represented in the payload.
 
 Non-executed semantics:
 
