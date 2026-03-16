@@ -927,7 +927,7 @@ def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
     tmp_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
+        json.dumps(payload, indent=2),
         encoding="utf-8",
     )
     tmp_path.replace(path)

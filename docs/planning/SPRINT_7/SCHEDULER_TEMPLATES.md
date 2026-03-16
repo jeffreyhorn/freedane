@@ -44,20 +44,24 @@ Daily refresh every night at 01:30 UTC:
 
 ```cron
 30 1 * * * cd /path/to/repo && \
+  LOG_DIR="${ACCESSDANE_REFRESH_LOG_DIR:-${ACCESSDANE_ARTIFACT_BASE_DIR:-data/refresh_runs}/scheduler_logs}" && \
+  mkdir -p "${LOG_DIR}" && \
   ACCESSDANE_REFRESH_PROFILE=daily_refresh \
   ACCESSDANE_FEATURE_VERSION=feature_v1 \
   ACCESSDANE_RULESET_VERSION=scoring_rules_v1 \
-  scripts/run_scheduled_refresh.sh >> data/refresh_runs/scheduler_logs/cron_daily.log 2>&1
+  scripts/run_scheduled_refresh.sh >> "${LOG_DIR}/cron_daily.log" 2>&1
 ```
 
 Analysis-only refresh every weekday at 06:15 UTC:
 
 ```cron
 15 6 * * 1-5 cd /path/to/repo && \
+  LOG_DIR="${ACCESSDANE_REFRESH_LOG_DIR:-${ACCESSDANE_ARTIFACT_BASE_DIR:-data/refresh_runs}/scheduler_logs}" && \
+  mkdir -p "${LOG_DIR}" && \
   ACCESSDANE_REFRESH_PROFILE=analysis_only \
   ACCESSDANE_FEATURE_VERSION=feature_v1 \
   ACCESSDANE_RULESET_VERSION=scoring_rules_v1 \
-  scripts/run_scheduled_refresh.sh >> data/refresh_runs/scheduler_logs/cron_analysis.log 2>&1
+  scripts/run_scheduled_refresh.sh >> "${LOG_DIR}/cron_analysis.log" 2>&1
 ```
 
 Manual retry from `score_pipeline` stage:
