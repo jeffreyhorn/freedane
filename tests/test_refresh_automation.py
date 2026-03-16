@@ -1,0 +1,200 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+from accessdane_audit import cli
+from accessdane_audit.refresh_automation import run_scheduled_refresh
+
+
+def test_run_scheduled_refresh_daily_profile_executes_deterministic_command_order(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    retr_file = tmp_path / "retr.csv"
+    permits_file = tmp_path / "permits.csv"
+    appeals_file = tmp_path / "appeals.csv"
+    retr_file.write_text("header\n", encoding="utf-8")
+    permits_file.write_text("header\n", encoding="utf-8")
+    appeals_file.write_text("header\n", encoding="utf-8")
+
+    executed_commands: list[list[str]] = []
+
+    def _executor(command: list[str]) -> int:
+        executed_commands.append(command)
+        return 0
+
+    payload = run_scheduled_refresh(
+        profile_name="daily_refresh",
+        run_date="20260316",
+        run_id="20260316_daily_refresh_feature_v1_scoring_rules_v1_010101",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=25,
+        retr_file=retr_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+        command_executor=_executor,
+    )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert [stage["stage_id"] for stage in payload["stages"]] == [
+        "ingest_context",
+        "build_context",
+        "score_pipeline",
+        "analysis_artifacts",
+        "investigation_artifacts",
+        "health_summary",
+    ]
+    assert [stage["status"] for stage in payload["stages"]] == [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+    assert [command[1] for command in executed_commands] == [
+        "ingest-retr",
+        "match-sales",
+        "ingest-permits",
+        "ingest-appeals",
+        "build-parcel-year-facts",
+        "sales-ratio-study",
+        "build-features",
+        "score-fraud",
+        "review-queue",
+        "review-feedback",
+        "investigation-report",
+    ]
+
+
+def test_run_scheduled_refresh_blocks_downstream_stages_after_failure(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    executed_commands: list[list[str]] = []
+
+    def _executor(command: list[str]) -> int:
+        executed_commands.append(command)
+        if command[1] == "build-parcel-year-facts":
+            return 9
+        return 0
+
+    payload = run_scheduled_refresh(
+        profile_name="daily_refresh",
+        run_date="20260316",
+        run_id="20260316_daily_refresh_feature_v1_scoring_rules_v1_020202",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+        command_executor=_executor,
+    )
+
+    stage_status = {stage["stage_id"]: stage["status"] for stage in payload["stages"]}
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"] is not None
+    assert payload["error"]["failed_stage_id"] == "build_context"
+    assert stage_status == {
+        "ingest_context": "succeeded",
+        "build_context": "failed",
+        "score_pipeline": "blocked",
+        "analysis_artifacts": "blocked",
+        "investigation_artifacts": "blocked",
+        "health_summary": "succeeded",
+    }
+    assert [command[1] for command in executed_commands] == ["build-parcel-year-facts"]
+
+
+def test_run_scheduled_refresh_analysis_only_profile_skips_upstream_stages(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    executed_commands: list[list[str]] = []
+
+    def _executor(command: list[str]) -> int:
+        executed_commands.append(command)
+        return 0
+
+    payload = run_scheduled_refresh(
+        profile_name="analysis_only",
+        run_date="20260316",
+        run_id="20260316_analysis_only_feature_v1_scoring_rules_v1_030303",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=15,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+        command_executor=_executor,
+    )
+
+    stage_status = {stage["stage_id"]: stage["status"] for stage in payload["stages"]}
+    assert payload["run"]["status"] == "succeeded"
+    assert stage_status == {
+        "ingest_context": "skipped",
+        "build_context": "skipped",
+        "score_pipeline": "skipped",
+        "analysis_artifacts": "succeeded",
+        "investigation_artifacts": "succeeded",
+        "health_summary": "succeeded",
+    }
+    assert [command[1] for command in executed_commands] == [
+        "review-queue",
+        "review-feedback",
+        "investigation-report",
+    ]
+
+
+def test_refresh_runner_cli_writes_json_output(tmp_path: Path, monkeypatch) -> None:
+    output_path = tmp_path / "refresh_payload.json"
+    payload = {
+        "run": {
+            "run_type": "refresh_automation",
+            "version_tag": "refresh_automation_v1",
+            "run_id": "run-1",
+            "profile_name": "daily_refresh",
+            "status": "succeeded",
+            "run_persisted": False,
+            "started_at": "2026-03-16T01:00:00Z",
+            "finished_at": "2026-03-16T01:00:01Z",
+        },
+        "request": {},
+        "summary": {},
+        "stages": [],
+        "artifacts": {},
+        "diagnostics": {},
+        "error": None,
+    }
+
+    monkeypatch.setattr(cli, "run_scheduled_refresh", lambda **_: payload)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "refresh-runner",
+            "--run-date",
+            "20260316",
+            "--run-id",
+            "run-1",
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert output_path.exists()
+    assert '"run_id": "run-1"' in output_path.read_text(encoding="utf-8")
