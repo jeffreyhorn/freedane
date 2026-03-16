@@ -14,7 +14,7 @@ Source references:
 
 - [x] Day 1: re-establish Sprint 7 baseline and execution scope (`DAY_1_BASELINE.md`)
   - Acceptance gate: baseline quality checks and Sprint 6 smoke workflow pass on current schema head.
-- [ ] Day 2: finalize scheduled refresh workflow contract (`REFRESH_AUTOMATION_V1.md`)
+- [x] Day 2: finalize scheduled refresh workflow contract (`REFRESH_AUTOMATION_V1.md`)
   - Acceptance gate: schedule matrix, retries, idempotency, and observability payload contract are explicit.
 - [ ] Day 3: implement scheduled refresh runner core
   - Acceptance gate: deterministic orchestration and failure-stop behavior are test-covered.
