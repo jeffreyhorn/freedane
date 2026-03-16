@@ -320,7 +320,8 @@ Datetime format rules:
 
 - Integer starting at `1` for first execution attempt of a stage within a run.
 - Increments by `1` each time that stage is retried in the same run.
-- Must align with `diagnostics.retry.attempt_count` for the latest attempt represented in the payload.
+- `diagnostics.retry.attempt_count` is the run-level attempt number for the latest run execution pass.
+- Stages executed in the latest pass must set `stages[].attempt = diagnostics.retry.attempt_count`; stages not re-executed in that pass may retain a lower `attempt` value.
 
 Non-executed semantics:
 
@@ -343,7 +344,7 @@ Non-executed semantics:
 
 - `warnings` (array of warning strings; empty when none)
 - `skip_reasons` (array of objects with `stage_id`, `command_id`, `reason`; empty array when no skips, and `reason` must distinguish profile-driven stage skips vs missing-input ingest skips)
-- `retry` (always-present object with `attempt_count`, `retried_from_stage_id` nullable; when no retry occurred, emit `attempt_count = 1` and `retried_from_stage_id = null`)
+- `retry` (always-present object with run-level `attempt_count` and nullable `retried_from_stage_id`; when no retry occurred, emit `attempt_count = 1` and `retried_from_stage_id = null`)
 
 ## Validation Fixtures (Day 3+ Test Targets)
 
