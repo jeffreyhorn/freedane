@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from accessdane_audit import cli
+from accessdane_audit import cli, refresh_automation
 from accessdane_audit.refresh_automation import run_scheduled_refresh
 
 
@@ -407,6 +408,31 @@ def test_run_scheduled_refresh_rejects_overlapping_profile_lock(
         "blocked",
         "blocked",
     ]
+
+
+def test_acquire_profile_lock_cleans_up_on_metadata_write_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    lock_path = artifact_base_dir / "locks" / "daily_refresh.lock"
+
+    def _failing_fdopen(*args, **kwargs):
+        raise OSError("disk full while writing lock metadata")
+
+    monkeypatch.setattr(refresh_automation.os, "fdopen", _failing_fdopen)
+
+    try:
+        refresh_automation._acquire_profile_lock(
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            started_dt=datetime(2026, 3, 16, tzinfo=timezone.utc),
+        )
+    except OSError:
+        pass
+    else:
+        raise AssertionError("Expected OSError from lock metadata write failure")
+
+    assert not lock_path.exists()
 
 
 def test_run_scheduled_refresh_rejects_unsafe_run_context_without_executing_commands(

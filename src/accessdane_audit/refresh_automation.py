@@ -849,17 +849,25 @@ def _acquire_profile_lock(
         fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     except FileExistsError:
         return None
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(
-            json.dumps(
-                {
-                    "profile_name": profile_name,
-                    "pid": os.getpid(),
-                    "started_at": _iso_utc(started_dt),
-                },
-                indent=2,
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "profile_name": profile_name,
+                        "pid": os.getpid(),
+                        "started_at": _iso_utc(started_dt),
+                    },
+                    indent=2,
+                )
             )
-        )
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        _safe_unlink(lock_path)
+        raise
     return lock_path
 
 
