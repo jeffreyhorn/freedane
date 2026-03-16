@@ -18,7 +18,7 @@ Source references:
   - Acceptance gate: schedule matrix, retries, idempotency, and observability payload contract are explicit.
 - [x] Day 3: implement scheduled refresh runner core
   - Acceptance gate: deterministic orchestration and failure-stop behavior are test-covered.
-- [ ] Day 4: implement scheduler integration and artifact retention
+- [x] Day 4: implement scheduler integration and artifact retention
   - Acceptance gate: recurring run entrypoint, run-locking, and retention conventions are implemented and validated.
 
 ### Drift And Load Monitoring (Days 5-8)

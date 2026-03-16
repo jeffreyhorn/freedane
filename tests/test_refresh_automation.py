@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -78,6 +79,23 @@ def test_run_scheduled_refresh_daily_profile_executes_deterministic_command_orde
         / "feature_v1"
         / "scoring_rules_v1"
     )
+    assert payload["run"]["run_persisted"] is True
+    root_path = Path(payload["artifacts"]["root_path"])
+    assert (root_path / "health_summary" / "refresh_run_payload.json").exists()
+    assert (root_path / "run_manifest.json").exists()
+    latest_run = (
+        artifact_base_dir
+        / "latest"
+        / "daily_refresh"
+        / "feature_v1"
+        / "scoring_rules_v1"
+        / "latest_run.json"
+    )
+    assert latest_run.exists()
+    latest_payload = json.loads(latest_run.read_text(encoding="utf-8"))
+    assert latest_payload["run_id"] == payload["run"]["run_id"]
+    assert latest_payload["root_path"] == payload["artifacts"]["root_path"]
+    assert not (artifact_base_dir / "locks" / "daily_refresh.lock").exists()
 
 
 def test_run_scheduled_refresh_blocks_downstream_stages_after_failure(
@@ -121,6 +139,12 @@ def test_run_scheduled_refresh_blocks_downstream_stages_after_failure(
         "health_summary": "succeeded",
     }
     assert [command[1] for command in executed_commands] == ["build-parcel-year-facts"]
+    assert payload["run"]["run_persisted"] is True
+    root_path = Path(payload["artifacts"]["root_path"])
+    failure_artifact = root_path / "health_summary" / "failure_artifact.json"
+    assert failure_artifact.exists()
+    failure_payload = json.loads(failure_artifact.read_text(encoding="utf-8"))
+    assert failure_payload["code"] == "stage_failure"
 
 
 def test_run_scheduled_refresh_analysis_only_profile_skips_upstream_stages(
@@ -326,6 +350,44 @@ def test_run_scheduled_refresh_rejects_invalid_retry_boundary_without_execution(
     assert payload["error"]["code"] == "invalid_retry_boundary"
     assert payload["error"]["failed_stage_id"] is None
     assert executed_commands == []
+    assert [stage["status"] for stage in payload["stages"]] == [
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+    ]
+
+
+def test_run_scheduled_refresh_rejects_overlapping_profile_lock(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    lock_path = artifact_base_dir / "locks" / "daily_refresh.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("existing lock\n", encoding="utf-8")
+
+    payload = run_scheduled_refresh(
+        profile_name="daily_refresh",
+        run_date="20260316",
+        run_id="20260316_daily_refresh_feature_v1_scoring_rules_v1_070707",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+    )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["run_persisted"] is False
+    assert payload["error"] is not None
+    assert payload["error"]["code"] == "overlapping_run"
+    assert payload["error"]["failed_stage_id"] is None
     assert [stage["status"] for stage in payload["stages"]] == [
         "blocked",
         "blocked",
