@@ -80,6 +80,8 @@ Each emitted signal must include:
 - `reason_code` format must be
   `<family>.<reason_token>.<metric_key>`, where `<metric_key>` is the exact
   signal `metric_key` value.
+- Parsing rule: only the first two `.` separators are structural; the remaining
+  suffix is the literal `metric_key` (which may contain `.` characters).
 - Allowed `reason_token` values in v1:
   - `no_drift` (non-ignored signals with `severity = ok`)
   - `warn_threshold` (non-ignored signals with `severity = warn`)
@@ -422,6 +424,7 @@ Default threshold policy (absolute delta unless stated otherwise):
   - `warn` when increase `>= 0.01`
   - `error` when increase `>= 0.03`
 - Selector miss rate increases:
+  - metric key pattern: `selector_miss.*`
   - `warn` when increase `>= 0.02`
   - `error` when increase `>= 0.05`
 - Tax-detail field presence rates decrease:
@@ -430,6 +433,7 @@ Default threshold policy (absolute delta unless stated otherwise):
   - `warn` when drop `>= 0.02`
   - `error` when drop `>= 0.05`
 - Extraction null-rate increases:
+  - metric key pattern: `extraction_null_rate.*`
   - `warn` when increase `>= 0.03`
   - `error` when increase `>= 0.08`
 
