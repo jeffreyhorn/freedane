@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -272,162 +274,209 @@ def run_scheduled_refresh(
             },
         )
 
+    lock_path = _acquire_profile_lock(
+        artifact_base_dir=artifact_base_dir,
+        profile_name=profile_name,
+        started_dt=started_dt,
+    )
+    if lock_path is None:
+        stages = [
+            _blocked_stage(stage_id=stage_id, attempt=1)
+            for stage_id in CANONICAL_STAGES
+        ]
+        finished_dt = _now_utc()
+        return _build_payload(
+            run_id=run_id,
+            profile_name=profile_name,
+            request=request,
+            started_dt=started_dt,
+            finished_dt=finished_dt,
+            stages=stages,
+            stage_artifacts=stage_artifacts,
+            diagnostics=diagnostics,
+            root_path=root_path,
+            artifact_base_dir=artifact_base_dir,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            run_status="failed",
+            error={
+                "code": "overlapping_run",
+                "message": (
+                    "Another refresh run is already active for this profile "
+                    f"(lock: {artifact_base_dir / 'locks' / f'{profile_name}.lock'})."
+                ),
+                "failed_stage_id": None,
+            },
+        )
+
     executor = command_executor or _default_command_executor
-    root_path.mkdir(parents=True, exist_ok=True)
+    in_progress_marker: Optional[Path] = None
     encountered_failure = False
     failed_stage_id: Optional[str] = None
     failure_message = "Refresh automation stage execution failed."
 
-    command_specs = _build_command_specs(
-        accessdane_bin=accessdane_bin,
-        root_path=root_path,
-        run_date=run_date,
-        profile_name=profile_name,
-        sales_ratio_base=sales_ratio_base,
-        feature_version=feature_version,
-        ruleset_version=ruleset_version,
-        top=top,
-        retr_file=retr_file,
-        permits_file=permits_file,
-        appeals_file=appeals_file,
-    )
+    try:
+        root_path.mkdir(parents=True, exist_ok=True)
+        in_progress_marker = root_path / ".in_progress"
+        in_progress_marker.write_text(_iso_utc(started_dt), encoding="utf-8")
 
-    latest_pass_stages = _latest_pass_stages(
-        attempt_count=attempt_count,
-        retried_from_stage_id=retried_from_stage_id,
-        selected_stages=selected_stages,
-    )
+        command_specs = _build_command_specs(
+            accessdane_bin=accessdane_bin,
+            root_path=root_path,
+            run_date=run_date,
+            profile_name=profile_name,
+            sales_ratio_base=sales_ratio_base,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            top=top,
+            retr_file=retr_file,
+            permits_file=permits_file,
+            appeals_file=appeals_file,
+        )
 
-    for stage_id in CANONICAL_STAGES:
-        if stage_id not in selected_stages:
-            stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
-            diagnostics["skip_reasons"].append(
-                {
-                    "stage_id": stage_id,
-                    "command_id": "_stage_profile_selection",
-                    "reason": f"profile_skip:{profile_name}",
-                }
-            )
-            continue
+        latest_pass_stages = _latest_pass_stages(
+            attempt_count=attempt_count,
+            retried_from_stage_id=retried_from_stage_id,
+            selected_stages=selected_stages,
+        )
 
-        if attempt_count > 1 and stage_id not in latest_pass_stages:
-            stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
-            diagnostics["skip_reasons"].append(
-                {
-                    "stage_id": stage_id,
-                    "command_id": "_stage_retry_boundary",
-                    "reason": f"retry_boundary_before:{retried_from_stage_id}",
-                }
-            )
-            continue
-
-        if encountered_failure and stage_id != "health_summary":
-            stages.append(_blocked_stage(stage_id=stage_id, attempt=1))
-            continue
-
-        stage_attempt = attempt_count
-        stage_dir = root_path / stage_id
-        stage_dir.mkdir(parents=True, exist_ok=True)
-        stage_started = _now_utc()
-        command_results: list[RefreshCommandResult] = []
-        stage_failed = False
-
-        for spec in command_specs.get(stage_id, []):
-            if spec.skip_reason is not None:
-                command_results.append(
-                    {
-                        "command_id": spec.command_id,
-                        "status": "skipped",
-                        "exit_code": None,
-                        "artifact_paths": [],
-                        "error_code": None,
-                    }
-                )
+        for stage_id in CANONICAL_STAGES:
+            if stage_id not in selected_stages:
+                stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
                 diagnostics["skip_reasons"].append(
                     {
-                        "stage_id": spec.stage_id,
-                        "command_id": spec.command_id,
-                        "reason": spec.skip_reason,
+                        "stage_id": stage_id,
+                        "command_id": "_stage_profile_selection",
+                        "reason": f"profile_skip:{profile_name}",
                     }
                 )
                 continue
 
-            exit_code = executor(spec.command)
-            if exit_code == 0:
-                command_results.append(
+            if attempt_count > 1 and stage_id not in latest_pass_stages:
+                stages.append(_skipped_stage(stage_id=stage_id, attempt=1))
+                diagnostics["skip_reasons"].append(
                     {
-                        "command_id": spec.command_id,
-                        "status": "succeeded",
-                        "exit_code": 0,
-                        "artifact_paths": list(spec.artifact_paths),
-                        "error_code": None,
+                        "stage_id": stage_id,
+                        "command_id": "_stage_retry_boundary",
+                        "reason": f"retry_boundary_before:{retried_from_stage_id}",
                     }
                 )
-                stage_artifacts[stage_id].extend(spec.artifact_paths)
-            else:
-                command_results.append(
-                    {
-                        "command_id": spec.command_id,
-                        "status": "failed",
-                        "exit_code": exit_code,
-                        "artifact_paths": [],
-                        "error_code": "command_failed",
-                    }
-                )
-                stage_failed = True
-                if failed_stage_id is None:
-                    failed_stage_id = stage_id
-                    failure_message = (
-                        f"Command '{spec.command_id}' failed in stage '{stage_id}'."
+                continue
+
+            if encountered_failure and stage_id != "health_summary":
+                stages.append(_blocked_stage(stage_id=stage_id, attempt=1))
+                continue
+
+            stage_attempt = attempt_count
+            stage_dir = root_path / stage_id
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            stage_started = _now_utc()
+            command_results: list[RefreshCommandResult] = []
+            stage_failed = False
+
+            for spec in command_specs.get(stage_id, []):
+                if spec.skip_reason is not None:
+                    command_results.append(
+                        {
+                            "command_id": spec.command_id,
+                            "status": "skipped",
+                            "exit_code": None,
+                            "artifact_paths": [],
+                            "error_code": None,
+                        }
                     )
-                break
+                    diagnostics["skip_reasons"].append(
+                        {
+                            "stage_id": spec.stage_id,
+                            "command_id": spec.command_id,
+                            "reason": spec.skip_reason,
+                        }
+                    )
+                    continue
 
-        stage_finished = _now_utc()
-        duration_seconds = _duration_seconds(stage_started, stage_finished)
-        stage_status: StageStatus = "failed" if stage_failed else "succeeded"
-        stages.append(
-            {
-                "stage_id": stage_id,
-                "status": stage_status,
-                "started_at": _iso_utc(stage_started),
-                "finished_at": _iso_utc(stage_finished),
-                "duration_seconds": duration_seconds,
-                "attempt": stage_attempt,
-                "command_results": command_results,
+                exit_code = executor(spec.command)
+                if exit_code == 0:
+                    command_results.append(
+                        {
+                            "command_id": spec.command_id,
+                            "status": "succeeded",
+                            "exit_code": 0,
+                            "artifact_paths": list(spec.artifact_paths),
+                            "error_code": None,
+                        }
+                    )
+                    stage_artifacts[stage_id].extend(spec.artifact_paths)
+                else:
+                    command_results.append(
+                        {
+                            "command_id": spec.command_id,
+                            "status": "failed",
+                            "exit_code": exit_code,
+                            "artifact_paths": [],
+                            "error_code": "command_failed",
+                        }
+                    )
+                    stage_failed = True
+                    if failed_stage_id is None:
+                        failed_stage_id = stage_id
+                        failure_message = (
+                            f"Command '{spec.command_id}' failed in stage '{stage_id}'."
+                        )
+                    break
+
+            stage_finished = _now_utc()
+            duration_seconds = _duration_seconds(stage_started, stage_finished)
+            stage_status: StageStatus = "failed" if stage_failed else "succeeded"
+            stages.append(
+                {
+                    "stage_id": stage_id,
+                    "status": stage_status,
+                    "started_at": _iso_utc(stage_started),
+                    "finished_at": _iso_utc(stage_finished),
+                    "duration_seconds": duration_seconds,
+                    "attempt": stage_attempt,
+                    "command_results": command_results,
+                }
+            )
+
+            if stage_failed:
+                encountered_failure = True
+
+        finished_dt = _now_utc()
+        run_status = "failed" if failed_stage_id is not None else "succeeded"
+        error: Optional[RefreshError]
+        if failed_stage_id is None:
+            error = None
+        else:
+            error = {
+                "code": "stage_failure",
+                "message": failure_message,
+                "failed_stage_id": failed_stage_id,
             }
+
+        payload = _build_payload(
+            run_id=run_id,
+            profile_name=profile_name,
+            request=request,
+            started_dt=started_dt,
+            finished_dt=finished_dt,
+            stages=stages,
+            stage_artifacts=stage_artifacts,
+            diagnostics=diagnostics,
+            root_path=root_path,
+            artifact_base_dir=artifact_base_dir,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            run_status=run_status,
+            error=error,
         )
-
-        if stage_failed:
-            encountered_failure = True
-
-    finished_dt = _now_utc()
-    run_status = "failed" if failed_stage_id is not None else "succeeded"
-    error: Optional[RefreshError]
-    if failed_stage_id is None:
-        error = None
-    else:
-        error = {
-            "code": "stage_failure",
-            "message": failure_message,
-            "failed_stage_id": failed_stage_id,
-        }
-
-    return _build_payload(
-        run_id=run_id,
-        profile_name=profile_name,
-        request=request,
-        started_dt=started_dt,
-        finished_dt=finished_dt,
-        stages=stages,
-        stage_artifacts=stage_artifacts,
-        diagnostics=diagnostics,
-        root_path=root_path,
-        artifact_base_dir=artifact_base_dir,
-        feature_version=feature_version,
-        ruleset_version=ruleset_version,
-        run_status=run_status,
-        error=error,
-    )
+        _persist_run_artifacts(payload)
+        return payload
+    finally:
+        if in_progress_marker is not None:
+            _safe_unlink(in_progress_marker)
+        if lock_path is not None:
+            _release_profile_lock(lock_path)
 
 
 def _default_command_executor(command: list[str]) -> int:
@@ -788,3 +837,104 @@ def _iso_utc(value: datetime) -> str:
 
 def _duration_seconds(started: datetime, finished: datetime) -> float:
     return round(max((finished - started).total_seconds(), 0.0), 3)
+
+
+def _acquire_profile_lock(
+    *, artifact_base_dir: Path, profile_name: str, started_dt: datetime
+) -> Optional[Path]:
+    lock_dir = artifact_base_dir / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{profile_name}.lock"
+    try:
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "profile_name": profile_name,
+                        "pid": os.getpid(),
+                        "started_at": _iso_utc(started_dt),
+                    },
+                    indent=2,
+                )
+            )
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        _safe_unlink(lock_path)
+        raise
+    return lock_path
+
+
+def _release_profile_lock(lock_path: Path) -> None:
+    _safe_unlink(lock_path)
+
+
+def _persist_run_artifacts(payload: RefreshPayload) -> None:
+    root_path = Path(payload["artifacts"]["root_path"])
+    latest_pointer_path = Path(payload["artifacts"]["latest_pointer_path"])
+    health_dir = root_path / "health_summary"
+    health_dir.mkdir(parents=True, exist_ok=True)
+
+    health_stage_artifacts = payload["artifacts"]["stage_artifacts"].setdefault(
+        "health_summary", []
+    )
+    refresh_payload_path = health_dir / "refresh_run_payload.json"
+    run_manifest_path = root_path / "run_manifest.json"
+    failure_artifact_path = health_dir / "failure_artifact.json"
+
+    _write_json_atomic(
+        run_manifest_path,
+        {
+            "run_id": payload["run"]["run_id"],
+            "profile_name": payload["run"]["profile_name"],
+            "status": payload["run"]["status"],
+            "started_at": payload["run"]["started_at"],
+            "finished_at": payload["run"]["finished_at"],
+            "root_path": str(root_path),
+        },
+    )
+
+    if payload["error"] is not None:
+        _write_json_atomic(failure_artifact_path, payload["error"])
+        if str(failure_artifact_path) not in health_stage_artifacts:
+            health_stage_artifacts.append(str(failure_artifact_path))
+
+    payload["run"]["run_persisted"] = True
+    _write_json_atomic(refresh_payload_path, payload)
+    if str(refresh_payload_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(refresh_payload_path))
+
+    latest_pointer_path.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(
+        latest_pointer_path / "latest_run.json",
+        {
+            "run_id": payload["run"]["run_id"],
+            "profile_name": payload["run"]["profile_name"],
+            "status": payload["run"]["status"],
+            "root_path": str(root_path),
+            "finished_at": payload["run"]["finished_at"],
+        },
+    )
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
