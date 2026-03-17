@@ -75,6 +75,27 @@ Each emitted signal must include:
 - `ignored` (bool)
 - `ignore_reason` (nullable string code)
 
+`sample_size_*` semantics:
+
+- `sample_size_baseline` and `sample_size_current` are the per-metric denominators
+  used to compute `baseline_value` and `current_value` for that signal.
+- For `coverage.parsed_successful_fetch_rate` and
+  `coverage.parse_error_successful_fetch_rate`, sample size must map to
+  `counts.successful_fetches`.
+- For `coverage.parcel_summary_parcel_rate`,
+  `coverage.parcel_year_fact_parcel_rate`,
+  `coverage.parcel_characteristic_parcel_rate`, and
+  `coverage.parcel_lineage_parcel_rate`, sample size must map to
+  `counts.parcels`.
+- For `coverage.parcel_year_fact_source_year_rate`, sample size must map to
+  `counts.source_parcel_years`.
+- For `selector_miss.*` metrics, sample size must map to
+  `counts.successful_fetches`.
+- For `tax_detail_field_presence.*` metrics, sample size must map to
+  `counts.detail_tax_records`.
+- For extraction null-rate signals, sample size must map to the corresponding
+  field-level `eligible_record_count`.
+
 `ignore_reason` allowed values in v1:
 
 - `"insufficient_denominator"`
@@ -163,7 +184,10 @@ Presence rules:
 
 - `run_type` (`parser_drift_snapshot`)
 - `version_tag` (`parser_drift_v1`)
+- `run_id` (must equal `snapshot_id` for v1 compatibility with common run payload validators)
 - `snapshot_id`
+- `status` (`succeeded|failed`)
+- `run_persisted` (boolean)
 - `generated_at` (UTC RFC3339 with trailing `Z`)
 
 `scope` fields:
@@ -184,7 +208,23 @@ Presence rules:
 - `counts` (object of supporting denominators used by drift metrics)
 - `field_coverage` (object keyed by required field coverage metric keys)
 - `selector_miss` (object keyed by required selector miss metric keys)
+- `tax_detail_field_presence` (object keyed by required tax-detail field
+  presence metric keys)
 - `extraction_null_rate` (object keyed by extraction field keys)
+
+`metrics.extraction_null_rate` value shape:
+
+- Each `metrics.extraction_null_rate.<field_key>` value must be an object with:
+  - `rate` (nullable float)
+  - `null_count` (int)
+  - `eligible_record_count` (int)
+
+`metrics.tax_detail_field_presence` value shape:
+
+- Each `metrics.tax_detail_field_presence.<field_key>` value must be an object
+  with:
+  - `rate` (nullable float)
+  - `count` (int)
 
 `diagnostics` fields:
 
@@ -219,9 +259,11 @@ Presence rules:
 
 - `run_type` (`parser_drift_diff`)
 - `version_tag` (`parser_drift_v1`)
+- `run_id` (must equal `diff_id` for v1 compatibility with common run payload validators)
 - `diff_id` (stable diff identifier)
 - `baseline_snapshot_id`
 - `current_snapshot_id`
+- `run_persisted` (boolean)
 - `generated_at` (UTC RFC3339 with trailing `Z`)
 - `status` (`succeeded|failed`)
 
@@ -239,6 +281,19 @@ Presence rules:
 - `snapshot_id`
 - `generated_at`
 - `artifact_path`
+
+`signals` field contract:
+
+- `signals` is always an array of signal objects conforming to the Parser Drift
+  Signal Schema defined in this contract.
+- `signals` must include all evaluated metrics for the run, including ignored
+  signals.
+- Ordering must be deterministic: sort by `metric_key` ascending, then
+  `family` ascending, then `signal_id` ascending.
+- For `family = extraction_null_rate_shift` signals, producers must derive
+  `baseline_value`, `current_value`, and `sample_size_*` from the snapshot
+  `metrics.extraction_null_rate.<field_key>` objects (`rate` and
+  `eligible_record_count`).
 
 `alerts` field contract:
 
@@ -308,9 +363,10 @@ Top-level keys (canonical order):
 `run` field contract:
 
 - `run` must use the same field shape and values as the associated diff artifact
-  `run` object (`run_type`, `version_tag`, `diff_id`, `baseline_snapshot_id`,
-  `current_snapshot_id`, `generated_at`, `status`), so alert consumers can join
-  alerts directly back to the evaluated diff.
+  `run` object (`run_type`, `version_tag`, `run_id`, `diff_id`,
+  `baseline_snapshot_id`, `current_snapshot_id`, `run_persisted`,
+  `generated_at`, `status`), so alert consumers can join alerts directly back to
+  the evaluated diff.
 
 `alert` fields:
 
