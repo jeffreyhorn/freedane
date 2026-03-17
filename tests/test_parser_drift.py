@@ -185,6 +185,45 @@ def test_parser_drift_diff_selector_regression_produces_error_alert_payload() ->
     assert alert_payload["impacted_signals"]
 
 
+def test_parser_drift_diff_threshold_boundary_uses_rounded_delta() -> None:
+    baseline = _make_snapshot(
+        snapshot_id="baseline",
+        coverage_override={"parcel_lineage_parcel_rate": 0.95},
+    )
+    current = _make_snapshot(
+        snapshot_id="current",
+        coverage_override={"parcel_lineage_parcel_rate": 0.90},
+    )
+
+    payload = build_parser_drift_diff(
+        baseline_snapshot=baseline,
+        current_snapshot=current,
+        baseline_artifact_path="baseline.json",
+        current_artifact_path="current.json",
+        diff_id="diff_threshold_boundary",
+    )
+
+    target_signal = next(
+        signal
+        for signal in payload["signals"]
+        if signal["metric_key"] == "coverage.parcel_lineage_parcel_rate"
+    )
+    assert target_signal["delta_absolute"] == -0.05
+    assert target_signal["severity"] == "error"
+
+
+def test_build_alert_payload_from_diff_returns_none_for_invalid_overall_severity() -> (
+    None
+):
+    payload = {
+        "summary": {"overall_severity": None},
+        "run": {"status": "succeeded"},
+        "alerts": [{"alert_id": "x"}],
+        "signals": [],
+    }
+    assert build_alert_payload_from_diff(payload) is None
+
+
 def test_build_parser_drift_snapshot_includes_required_metric_shapes(
     tmp_path: Path,
 ) -> None:

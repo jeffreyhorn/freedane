@@ -237,6 +237,12 @@ def build_parser_drift_diff(
         ignored = False
         ignore_reason: Optional[str] = None
         severity = "ok"
+        delta_absolute: Optional[float]
+        if baseline_value is None or current_value is None:
+            delta_absolute = None
+        else:
+            delta_absolute = round(current_value - baseline_value, 4)
+
         if baseline_size == 0 or current_size == 0:
             ignored = True
             ignore_reason = "insufficient_denominator"
@@ -244,14 +250,11 @@ def build_parser_drift_diff(
             ignored = True
             ignore_reason = "missing_metric_value"
         else:
-            severity = _threshold_severity(metric_key, current_value - baseline_value)
+            severity = _threshold_severity(
+                metric_key, round(current_value - baseline_value, 4)
+            )
             if current_size < 25 and severity == "error":
                 severity = "warn"
-
-        if baseline_value is None or current_value is None:
-            delta_absolute = None
-        else:
-            delta_absolute = round(current_value - baseline_value, 4)
 
         if baseline_value is None or baseline_value == 0 or current_value is None:
             delta_relative = None
@@ -441,7 +444,7 @@ def build_alert_payload_from_diff(
 ) -> Optional[dict[str, Any]]:
     summary = _as_dict(diff_payload.get("summary"))
     overall_severity = _as_str(summary.get("overall_severity"))
-    if overall_severity == "ok":
+    if overall_severity not in {"warn", "error"}:
         return None
 
     run_payload = _as_dict(diff_payload.get("run"))
