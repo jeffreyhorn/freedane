@@ -86,6 +86,16 @@ Each emitted signal must include:
   - `error_threshold` (non-ignored signals with `severity = error`)
   - `insufficient_denominator` (ignored signals due to zero denominator)
   - `missing_metric_value` (ignored signals due to null metric values)
+- `reason_token` must be derived from the final emitted signal state after all
+  policy adjustments (including ignore rules and severity capping).
+- Selection order for `reason_token` in v1:
+  - if `ignored = true` and `ignore_reason = "insufficient_denominator"`, use
+    `insufficient_denominator`
+  - else if `ignored = true` and `ignore_reason = "missing_metric_value"`, use
+    `missing_metric_value`
+  - else if `severity = error`, use `error_threshold`
+  - else if `severity = warn`, use `warn_threshold`
+  - else use `no_drift`
 
 `sample_size_*` semantics:
 
@@ -109,6 +119,10 @@ Each emitted signal must include:
   field-level `eligible_record_count`.
 - Non-`.rate` `tax_detail_field_presence` metric keys are not valid signal
   `metric_key` values in v1.
+- In snapshot/diff artifacts, `counts.*` references in this section mean
+  `metrics.counts.*`.
+- For source-profile inputs used to build snapshots, the corresponding source
+  path is `counts.*` before translation into snapshot `metrics.counts.*`.
 
 `ignore_reason` allowed values in v1:
 
@@ -260,6 +274,17 @@ Presence rules:
 - `tax_detail_field_presence` (object keyed by `<name>` leaf keys that
   correspond to `tax_detail_field_presence.<name>.rate` metric keys)
 - `extraction_null_rate` (object keyed by extraction field keys)
+
+`metrics.counts` required members in v1:
+
+- `successful_fetches` (denominator for `selector_miss.*` and successful-fetch
+  coverage rates)
+- `parcels` (denominator for parcel-level coverage rates)
+- `source_parcel_years` (denominator for
+  `coverage.parcel_year_fact_source_year_rate`)
+- `detail_tax_records` (denominator for `tax_detail_field_presence.*.rate`)
+- Additional keys may be present, but the keys above are required for v1
+  validation.
 
 Concrete key examples:
 
