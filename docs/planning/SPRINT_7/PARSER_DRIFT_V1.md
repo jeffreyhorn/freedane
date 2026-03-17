@@ -394,6 +394,11 @@ Default threshold policy (absolute delta unless stated otherwise):
 - Selector miss rate increases:
   - `warn` when increase `>= 0.02`
   - `error` when increase `>= 0.05`
+- Tax-detail field presence rates decrease:
+  - metric key pattern: `tax_detail_field_presence.*.rate`
+  - directionality: lower values are always worse
+  - `warn` when drop `>= 0.02`
+  - `error` when drop `>= 0.05`
 - Extraction null-rate increases:
   - `warn` when increase `>= 0.03`
   - `error` when increase `>= 0.08`
