@@ -23,7 +23,7 @@ Source references:
 
 ### Drift And Load Monitoring (Days 5-8)
 
-- [ ] Day 5: finalize parser drift detection contract (`PARSER_DRIFT_V1.md`)
+- [x] Day 5: finalize parser drift detection contract (`PARSER_DRIFT_V1.md`)
   - Acceptance gate: drift signals, severity policy, and alert payload shape are explicit.
 - [ ] Day 6: implement parser drift snapshot/diff diagnostics
   - Acceptance gate: baseline-vs-current drift diagnostics produce deterministic severity output.
