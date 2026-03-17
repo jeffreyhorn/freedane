@@ -142,6 +142,7 @@ def test_parser_drift_diff_caps_error_to_warn_for_small_current_sample() -> None
         current_artifact_path="current.json",
         diff_id="diff_small_sample",
     )
+    alert_payload = build_alert_payload_from_diff(payload)
 
     target_signal = next(
         signal
@@ -150,6 +151,10 @@ def test_parser_drift_diff_caps_error_to_warn_for_small_current_sample() -> None
     )
     assert target_signal["severity"] == "warn"
     assert payload["summary"]["overall_severity"] == "warn"
+    assert payload["alerts"][0]["routing_key"] == "ops.parser_drift.warn"
+    assert alert_payload is not None
+    assert alert_payload["alert"]["severity"] == "warn"
+    assert alert_payload["impacted_signals"]
 
 
 def test_parser_drift_diff_selector_regression_produces_error_alert_payload() -> None:

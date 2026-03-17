@@ -2520,6 +2520,11 @@ def parser_drift_snapshot_cmd(
     ),
 ) -> None:
     resolved_run_date = run_date or datetime.now(timezone.utc).strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
+            param_hint="--run-date",
+        )
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
     parcel_ids = _collect_ids([], ids_file) if ids_file else None
@@ -2612,10 +2617,16 @@ def parser_drift_diff_cmd(
     diff_id: Optional[str] = typer.Option(None, "--diff-id", help="Override diff ID"),
 ) -> None:
     resolved_run_date = run_date or datetime.now(timezone.utc).strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
+            param_hint="--run-date",
+        )
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
     baseline_snapshot_id: Optional[str] = None
     current_snapshot_id: Optional[str] = None
+    current_artifact_path: Optional[str] = str(current) if current else None
 
     try:
         baseline_payload = read_snapshot_file(baseline)
@@ -2640,8 +2651,29 @@ def parser_drift_diff_cmd(
                     artifact_root=artifact_root,
                     source_artifacts=source_artifacts,
                     parcel_ids=parcel_ids,
-                    run_persisted=False,
+                    run_persisted=True,
                 )
+            runtime_snapshot_id: str
+            if isinstance(current_payload, dict) and isinstance(
+                current_payload.get("run"), dict
+            ):
+                runtime_snapshot_id = str(
+                    current_payload["run"].get("snapshot_id") or "runtime_snapshot"
+                )
+            else:
+                runtime_snapshot_id = "runtime_snapshot"
+            runtime_snapshot_path = (
+                Path(artifact_root)
+                / resolved_run_date
+                / profile_name
+                / "parser_drift_runtime"
+                / f"{runtime_snapshot_id}.json"
+            )
+            runtime_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_snapshot_path.write_text(
+                json.dumps(current_payload, indent=2), encoding="utf-8"
+            )
+            current_artifact_path = str(runtime_snapshot_path)
 
         if isinstance(current_payload, dict) and isinstance(
             current_payload.get("run"), dict
@@ -2654,14 +2686,14 @@ def parser_drift_diff_cmd(
             baseline_snapshot=baseline_payload,
             current_snapshot=current_payload,
             baseline_artifact_path=str(baseline),
-            current_artifact_path=str(current) if current else "(runtime snapshot)",
+            current_artifact_path=current_artifact_path or str(current) or "",
             diff_id=diff_id,
             run_persisted=out is not None,
         )
     except Exception as exc:
         payload = build_failed_diff_payload(
             baseline_artifact_path=str(baseline),
-            current_artifact_path=str(current) if current else None,
+            current_artifact_path=current_artifact_path,
             baseline_snapshot_id=baseline_snapshot_id,
             current_snapshot_id=current_snapshot_id,
             run_date=resolved_run_date,
