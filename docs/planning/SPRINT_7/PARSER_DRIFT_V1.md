@@ -314,7 +314,7 @@ Concrete key examples:
 
 `metrics.tax_detail_field_presence` value shape:
 
-- Each `metrics.tax_detail_field_presence.<field_key>` value must be an object
+- Each `metrics.tax_detail_field_presence.<name>` value must be an object
   with:
   - `rate` (nullable float)
   - `count` (int)
@@ -347,6 +347,15 @@ Presence rules:
 - `run.status` must be `succeeded|failed`.
 - When `run.status = succeeded`, `error` must be `null`.
 - When `run.status = failed`, `error` must be an object with `code` and `message`.
+- When `run.status = failed`, producers must emit deterministic placeholders:
+  - `summary.signal_count = 0`
+  - `summary.signal_ok_count = 0`
+  - `summary.signal_warn_count = 0`
+  - `summary.signal_error_count = 0`
+  - `summary.ignored_signal_count = 0`
+  - `summary.overall_severity = ok`
+  - `signals = []`
+  - `alerts = []`
 
 `run` fields:
 
@@ -377,6 +386,8 @@ Presence rules:
   non-ignored signals by severity.
 - Required invariant:
   `signal_count = ignored_signal_count + signal_ok_count + signal_warn_count + signal_error_count`.
+- For `run.status = failed`, `summary` must use the zero-value placeholder set
+  defined in Presence rules.
 
 `baseline` and `current` must include:
 
@@ -393,6 +404,7 @@ Presence rules:
   Signal Schema defined in this contract.
 - `signals` must include all evaluated metrics for the run, including ignored
   signals.
+- For `run.status = failed`, `signals` must be `[]`.
 - Ordering must be deterministic: sort by `metric_key` ascending, then
   `family` ascending, then `signal_id` ascending.
 - For `family = extraction_null_rate_shift` signals, producers must derive
@@ -416,6 +428,7 @@ Presence rules:
     non-ignored `signals` where `severity` equals embedded alert `severity`)
 - Any standalone alert payload emitted under the Alert Routing Payload contract must
   correspond 1:1 to an entry in `diff.alerts` by matching `alert_id`.
+- For `run.status = failed`, `alerts` must be `[]`.
 
 `error` must be `null` on successful diff generation.
 
