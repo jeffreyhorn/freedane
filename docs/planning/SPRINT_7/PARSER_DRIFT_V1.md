@@ -364,10 +364,13 @@ Presence rules:
 - When `summary.overall_severity = warn|error`, `alerts` must contain exactly one
   embedded alert summary object with:
   - `alert_id` (stable join key for this diff-level alert summary)
-  - `alert_type`
-  - `severity`
-  - `routing_key`
-  - `reason_codes`
+  - `alert_type` (must be `parser_drift`)
+  - `severity` (must equal `summary.overall_severity`)
+  - `routing_key`:
+    - `warn`: `ops.parser_drift.warn`
+    - `error`: `ops.parser_drift.error`
+  - `reason_codes` (deduplicated, ascending-sorted `reason_code` values from
+    non-ignored `signals` where `severity` equals embedded alert `severity`)
 - Any standalone alert payload emitted under the Alert Routing Payload contract must
   correspond 1:1 to an entry in `diff.alerts` by matching `alert_id`.
 
@@ -427,6 +430,15 @@ Top-level keys (canonical order):
 2. `alert`
 3. `impacted_signals`
 4. `operator_actions`
+5. `error`
+
+Presence rules:
+
+- `run`, `alert`, `impacted_signals`, `operator_actions`, and `error` are always
+  present.
+- Alert payloads are emitted only for succeeded diffs with
+  `overall_severity = warn|error`, so `run.status` must be `succeeded`.
+- `error` must be `null` for all v1 emitted alert payloads.
 
 `run` field contract:
 
