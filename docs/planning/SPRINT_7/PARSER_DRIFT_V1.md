@@ -75,6 +75,17 @@ Each emitted signal must include:
 - `ignored` (bool)
 - `ignore_reason` (nullable string)
 
+`delta_relative` computation contract:
+
+- Formula: `(current_value - baseline_value) / baseline_value`
+- `delta_relative` must be `null` when:
+  - `baseline_value` is `null`
+  - `current_value` is `null`
+  - `baseline_value == 0`
+- When `delta_relative` is `null` because `baseline_value == 0`, signal must set:
+  - `ignored = true`
+  - `ignore_reason = zero_baseline`
+
 ## Required Metrics (v1)
 
 ### Field coverage shift metrics
@@ -125,6 +136,17 @@ Snapshot top-level keys (canonical order):
 2. `scope`
 3. `metrics`
 4. `diagnostics`
+5. `error`
+
+Key-order note:
+
+- Canonical key order is for presentation/readability only; JSON consumers must validate by field presence rules, not object member order.
+
+Presence rules:
+
+- `run`, `scope`, `metrics`, `diagnostics`, and `error` are always present.
+- On successful snapshot generation, `error` must be `null`.
+- On failed snapshot generation, `error` must be an object with `code` and `message`.
 
 `run` fields:
 
@@ -141,6 +163,10 @@ Snapshot top-level keys (canonical order):
 - `ruleset_version`
 - `artifact_root`
 - `parcel_filter_count` (nullable int)
+
+`scope.run_date` format rule:
+
+- Must be `YYYYMMDD` for compatibility with refresh artifact paths and lookup keys.
 
 `metrics` fields:
 
@@ -167,6 +193,17 @@ Diff top-level keys (canonical order):
 7. `diagnostics`
 8. `error`
 
+Key-order note:
+
+- Canonical key order is for presentation/readability only; JSON consumers must validate by field presence rules, not object member order.
+
+Presence rules:
+
+- `run`, `baseline`, `current`, `summary`, `signals`, `alerts`, `diagnostics`, and `error` are always present.
+- `run.status` must be `succeeded|failed`.
+- When `run.status = succeeded`, `error` must be `null`.
+- When `run.status = failed`, `error` must be an object with `code` and `message`.
+
 `summary` fields:
 
 - `signal_count`
@@ -192,6 +229,8 @@ Default threshold policy (absolute delta unless stated otherwise):
   - `warn` when drop `>= 0.02`
   - `error` when drop `>= 0.05`
 - Parse error rate increases:
+  - metric key: `coverage.parse_error_successful_fetch_rate`
+  - directionality: higher values are always worse
   - `warn` when increase `>= 0.01`
   - `error` when increase `>= 0.03`
 - Selector miss rate increases:
