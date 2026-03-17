@@ -407,7 +407,11 @@ Presence rules:
 
 ## Severity Threshold Contract (v1)
 
-Default threshold policy (absolute delta unless stated otherwise):
+Default threshold policy (signed `delta_absolute` unless stated otherwise):
+
+- `delta_absolute` is the signed value `current_value - baseline_value`.
+- "drop" means `delta_absolute <= -threshold`.
+- "increase" means `delta_absolute >= threshold`.
 
 - Field coverage decreases (metric keys only):
   - `coverage.parsed_successful_fetch_rate`
