@@ -242,6 +242,17 @@ Presence rules:
 - `run`, `scope`, `metrics`, `diagnostics`, and `error` are always present.
 - On successful snapshot generation, `error` must be `null`.
 - On failed snapshot generation, `error` must be an object with `code` and `message`.
+- When `run.status = succeeded`, `metrics` and `diagnostics` must satisfy the
+  full field contracts below (including required `metrics.counts` members).
+- When `run.status = failed`, producers must still emit `metrics` and
+  `diagnostics` with deterministic placeholder content:
+  - `metrics.counts = {}`
+  - `metrics.field_coverage = {}`
+  - `metrics.selector_miss = {}`
+  - `metrics.tax_detail_field_presence = {}`
+  - `metrics.extraction_null_rate = {}`
+  - `diagnostics.warnings` must be present (may be empty)
+  - `diagnostics.source_artifacts` must be present (may be empty)
 
 `run` fields:
 
@@ -286,7 +297,7 @@ Presence rules:
   `coverage.parcel_year_fact_source_year_rate`)
 - `detail_tax_records` (denominator for `tax_detail_field_presence.*.rate`)
 - Additional keys may be present, but the keys above are required for v1
-  validation.
+  validation when `run.status = succeeded`.
 
 Concrete key examples:
 
@@ -372,6 +383,9 @@ Presence rules:
 - `snapshot_id`
 - `generated_at`
 - `artifact_path`
+- For `run.status = succeeded`, all three fields above must be non-null.
+- For `run.status = failed`, all three fields above must still be present but
+  may be `null` when snapshot resolution/loading did not complete.
 
 `signals` field contract:
 
