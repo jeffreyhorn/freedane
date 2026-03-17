@@ -2555,7 +2555,7 @@ def parser_drift_snapshot_cmd(
             out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         else:
             typer.echo(json.dumps(payload, indent=2))
-        raise typer.Exit(code=1) from exc
+        raise typer.Exit(code=1)
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -2674,7 +2674,7 @@ def parser_drift_diff_cmd(
             out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         else:
             typer.echo(json.dumps(payload, indent=2))
-        raise typer.Exit(code=1) from exc
+        raise typer.Exit(code=1)
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)

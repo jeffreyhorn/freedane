@@ -458,6 +458,14 @@ def build_alert_payload_from_diff(
             and not _as_bool(_as_dict(signal).get("ignored"))
         )
     ]
+    derived_reason_codes = sorted(
+        {
+            reason_code
+            for signal in impacted_signals
+            for reason_code in [_as_str(_as_dict(signal).get("reason_code"))]
+            if reason_code is not None
+        }
+    )
 
     baseline_artifact_path = _as_str(
         _as_dict(diff_payload.get("baseline")).get("artifact_path")
@@ -472,7 +480,7 @@ def build_alert_payload_from_diff(
             "alert_id": _as_str(alert.get("alert_id")),
             "alert_type": "parser_drift",
             "severity": overall_severity,
-            "reason_codes": _as_list(alert.get("reason_codes")),
+            "reason_codes": derived_reason_codes,
             "routing_key": _as_str(alert.get("routing_key")),
             "generated_at": _utc_now(),
         },
