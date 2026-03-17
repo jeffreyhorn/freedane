@@ -48,6 +48,14 @@ from .models import (
 from .parcel_dossier import build_parcel_dossier
 from .parcel_year_facts import rebuild_parcel_year_facts
 from .parse import ParsedPage, parse_page
+from .parser_drift import (
+    build_alert_payload_from_diff,
+    build_failed_diff_payload,
+    build_failed_snapshot_payload,
+    build_parser_drift_diff,
+    build_parser_drift_snapshot,
+    read_snapshot_file,
+)
 from .permits import PermitImportFileError, ingest_permits_csv
 from .profiling import build_data_profile
 from .quality import quality_report_to_dict, run_data_quality_checks
@@ -2479,6 +2487,238 @@ def profile_data_cmd(
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("parser-drift-snapshot")
+def parser_drift_snapshot_cmd(
+    out: Optional[Path] = typer.Option(None, "--out", help="Output JSON path"),
+    ids_file: Optional[Path] = typer.Option(
+        None, "--ids", help="Optional parcel ID filter file"
+    ),
+    profile_name: str = typer.Option(
+        "daily_refresh", "--profile-name", help="Refresh profile name"
+    ),
+    run_date: Optional[str] = typer.Option(
+        None, "--run-date", help="Run date in YYYYMMDD format"
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1", "--feature-version", help="Feature version label"
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1", "--ruleset-version", help="Ruleset version label"
+    ),
+    artifact_root: str = typer.Option(
+        "data/refresh_runs", "--artifact-root", help="Artifact root path"
+    ),
+    source_artifact: list[Path] = typer.Option(
+        [],
+        "--source-artifact",
+        help="Optional source artifact path (repeatable)",
+    ),
+    snapshot_id: Optional[str] = typer.Option(
+        None, "--snapshot-id", help="Override snapshot ID"
+    ),
+) -> None:
+    resolved_run_date = run_date or datetime.now(timezone.utc).strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
+            param_hint="--run-date",
+        )
+    source_artifacts = [str(path) for path in source_artifact]
+    settings = load_settings()
+    parcel_ids = _collect_ids([], ids_file) if ids_file else None
+
+    try:
+        with session_scope(settings.database_url) as session:
+            payload = build_parser_drift_snapshot(
+                session,
+                profile_name=profile_name,
+                run_date=resolved_run_date,
+                feature_version=feature_version,
+                ruleset_version=ruleset_version,
+                artifact_root=artifact_root,
+                source_artifacts=source_artifacts,
+                parcel_ids=parcel_ids,
+                snapshot_id=snapshot_id,
+                run_persisted=out is not None,
+            )
+    except Exception as exc:
+        payload = build_failed_snapshot_payload(
+            profile_name=profile_name,
+            run_date=resolved_run_date,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            artifact_root=artifact_root,
+            source_artifacts=source_artifacts,
+            message=str(exc),
+            snapshot_id=snapshot_id,
+            run_persisted=out is not None,
+        )
+        if out:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        else:
+            typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=1)
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("parser-drift-diff")
+def parser_drift_diff_cmd(
+    baseline: Path = typer.Option(
+        ...,
+        "--baseline",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Baseline snapshot JSON path",
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Diff JSON output path"),
+    alert_out: Optional[Path] = typer.Option(
+        None, "--alert-out", help="Alert JSON output path"
+    ),
+    current: Optional[Path] = typer.Option(
+        None,
+        "--current",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Current snapshot JSON path (omit to build from database)",
+    ),
+    ids_file: Optional[Path] = typer.Option(
+        None, "--ids", help="Optional parcel ID filter file for current snapshot build"
+    ),
+    profile_name: str = typer.Option(
+        "daily_refresh", "--profile-name", help="Refresh profile name"
+    ),
+    run_date: Optional[str] = typer.Option(
+        None, "--run-date", help="Run date in YYYYMMDD format"
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1", "--feature-version", help="Feature version label"
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1", "--ruleset-version", help="Ruleset version label"
+    ),
+    artifact_root: str = typer.Option(
+        "data/refresh_runs", "--artifact-root", help="Artifact root path"
+    ),
+    source_artifact: list[Path] = typer.Option(
+        [],
+        "--source-artifact",
+        help="Optional source artifact path (repeatable) for current snapshot build",
+    ),
+    diff_id: Optional[str] = typer.Option(None, "--diff-id", help="Override diff ID"),
+) -> None:
+    resolved_run_date = run_date or datetime.now(timezone.utc).strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
+            param_hint="--run-date",
+        )
+    source_artifacts = [str(path) for path in source_artifact]
+    settings = load_settings()
+    baseline_snapshot_id: Optional[str] = None
+    current_snapshot_id: Optional[str] = None
+    current_artifact_path: Optional[str] = str(current) if current else None
+
+    try:
+        baseline_payload = read_snapshot_file(baseline)
+        if isinstance(baseline_payload, dict) and isinstance(
+            baseline_payload.get("run"), dict
+        ):
+            baseline_snapshot_id = baseline_payload["run"].get("snapshot_id")
+        else:
+            baseline_snapshot_id = None
+
+        if current:
+            current_payload = read_snapshot_file(current)
+        else:
+            parcel_ids = _collect_ids([], ids_file) if ids_file else None
+            with session_scope(settings.database_url) as session:
+                current_payload = build_parser_drift_snapshot(
+                    session,
+                    profile_name=profile_name,
+                    run_date=resolved_run_date,
+                    feature_version=feature_version,
+                    ruleset_version=ruleset_version,
+                    artifact_root=artifact_root,
+                    source_artifacts=source_artifacts,
+                    parcel_ids=parcel_ids,
+                    run_persisted=True,
+                )
+            runtime_snapshot_id: str
+            if isinstance(current_payload, dict) and isinstance(
+                current_payload.get("run"), dict
+            ):
+                runtime_snapshot_id = str(
+                    current_payload["run"].get("snapshot_id") or "runtime_snapshot"
+                )
+            else:
+                runtime_snapshot_id = "runtime_snapshot"
+            runtime_snapshot_path = (
+                Path(artifact_root)
+                / resolved_run_date
+                / profile_name
+                / "parser_drift_runtime"
+                / f"{runtime_snapshot_id}.json"
+            )
+            runtime_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_snapshot_path.write_text(
+                json.dumps(current_payload, indent=2), encoding="utf-8"
+            )
+            current_artifact_path = str(runtime_snapshot_path)
+
+        if isinstance(current_payload, dict) and isinstance(
+            current_payload.get("run"), dict
+        ):
+            current_snapshot_id = current_payload["run"].get("snapshot_id")
+        else:
+            current_snapshot_id = None
+
+        payload = build_parser_drift_diff(
+            baseline_snapshot=baseline_payload,
+            current_snapshot=current_payload,
+            baseline_artifact_path=str(baseline),
+            current_artifact_path=current_artifact_path or str(current) or "",
+            diff_id=diff_id,
+            run_persisted=out is not None,
+        )
+    except Exception as exc:
+        payload = build_failed_diff_payload(
+            baseline_artifact_path=str(baseline),
+            current_artifact_path=current_artifact_path,
+            baseline_snapshot_id=baseline_snapshot_id,
+            current_snapshot_id=current_snapshot_id,
+            run_date=resolved_run_date,
+            message=str(exc),
+            diff_id=diff_id,
+            run_persisted=out is not None,
+        )
+        if out:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        else:
+            typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=1)
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    if alert_out:
+        alert_payload = build_alert_payload_from_diff(payload)
+        if alert_payload is not None:
+            alert_out.parent.mkdir(parents=True, exist_ok=True)
+            alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
 
 
 def _collect_ids(ids: Iterable[str], ids_file: Optional[Path]) -> list[str]:
