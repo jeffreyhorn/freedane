@@ -79,6 +79,13 @@ Each emitted signal must include:
 
 - `"insufficient_denominator"`
 
+`delta_absolute` computation contract:
+
+- Formula: `current_value - baseline_value`
+- `delta_absolute` must be `null` when:
+  - `baseline_value` is `null`
+  - `current_value` is `null`
+
 `delta_relative` computation contract:
 
 - Formula: `(current_value - baseline_value) / baseline_value`
@@ -208,6 +215,16 @@ Presence rules:
 - When `run.status = succeeded`, `error` must be `null`.
 - When `run.status = failed`, `error` must be an object with `code` and `message`.
 
+`run` fields:
+
+- `run_type` (`parser_drift_diff`)
+- `version_tag` (`parser_drift_v1`)
+- `diff_id` (stable diff identifier)
+- `baseline_snapshot_id`
+- `current_snapshot_id`
+- `generated_at` (UTC RFC3339 with trailing `Z`)
+- `status` (`succeeded|failed`)
+
 `summary` fields:
 
 - `signal_count`
@@ -222,6 +239,19 @@ Presence rules:
 - `snapshot_id`
 - `generated_at`
 - `artifact_path`
+
+`alerts` field contract:
+
+- `alerts` is always an array.
+- When `summary.overall_severity = ok`, `alerts` must be `[]`.
+- When `summary.overall_severity = warn|error`, `alerts` must contain at least one
+  embedded alert summary object with:
+  - `alert_type`
+  - `severity`
+  - `routing_key`
+  - `reason_codes`
+- Any standalone alert payload emitted under the Alert Routing Payload contract must
+  correspond 1:1 to an entry in `diff.alerts`.
 
 `error` must be `null` on successful diff generation.
 
@@ -274,6 +304,13 @@ Top-level keys (canonical order):
 2. `alert`
 3. `impacted_signals`
 4. `operator_actions`
+
+`run` field contract:
+
+- `run` must use the same field shape and values as the associated diff artifact
+  `run` object (`run_type`, `version_tag`, `diff_id`, `baseline_snapshot_id`,
+  `current_snapshot_id`, `generated_at`, `status`), so alert consumers can join
+  alerts directly back to the evaluated diff.
 
 `alert` fields:
 
