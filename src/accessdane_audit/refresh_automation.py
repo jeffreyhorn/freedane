@@ -905,6 +905,11 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
         if str(failure_artifact_path) not in health_stage_artifacts:
             health_stage_artifacts.append(str(failure_artifact_path))
 
+    payload["run"]["run_persisted"] = True
+    _write_json_atomic(refresh_payload_path, payload)
+    if str(refresh_payload_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(refresh_payload_path))
+
     latest_pointer_path.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(
         latest_pointer_path / "latest_run.json",
@@ -916,11 +921,6 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
             "finished_at": payload["run"]["finished_at"],
         },
     )
-
-    payload["run"]["run_persisted"] = True
-    _write_json_atomic(refresh_payload_path, payload)
-    if str(refresh_payload_path) not in health_stage_artifacts:
-        health_stage_artifacts.append(str(refresh_payload_path))
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:
