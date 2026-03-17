@@ -103,10 +103,12 @@ Each emitted signal must include:
   `counts.source_parcel_years`.
 - For `selector_miss.*` metrics, sample size must map to
   `counts.successful_fetches`.
-- For `tax_detail_field_presence.*` metrics, sample size must map to
+- For `tax_detail_field_presence.*.rate` metrics, sample size must map to
   `counts.detail_tax_records`.
 - For extraction null-rate signals, sample size must map to the corresponding
   field-level `eligible_record_count`.
+- Non-`.rate` `tax_detail_field_presence` metric keys are not valid signal
+  `metric_key` values in v1.
 
 `ignore_reason` allowed values in v1:
 
@@ -471,8 +473,15 @@ Presence rules:
 
 `operator_actions`:
 
-- ordered array of actionable steps
-- first action must reference source artifacts and baseline snapshot paths
+- ordered array of action objects
+- each action object must include:
+  - `action_id` (stable snake_case identifier)
+  - `message` (human-readable operator instruction)
+  - `artifact_paths` (array of one or more relevant artifact paths)
+- ordering rules:
+  - first action must reference source artifacts and baseline snapshot paths
+  - subsequent actions should be sorted by operational sequence (triage,
+    verify, remediate)
 
 ## Validation Fixtures (Day 6+ Test Targets)
 
