@@ -99,6 +99,19 @@ Each emitted signal must include:
 `ignore_reason` allowed values in v1:
 
 - `"insufficient_denominator"`
+- `"missing_metric_value"`
+
+Null-value severity/ignore contract:
+
+- If either `baseline_value` or `current_value` is `null`, the signal must be
+  emitted with:
+  - `severity = ok`
+  - `ignored = true`
+  - `ignore_reason = "missing_metric_value"`
+- Threshold comparisons must not be applied when either value is `null`.
+- If the zero-denominator guardrail also applies (`sample_size_baseline == 0`
+  or `sample_size_current == 0`), `ignore_reason` must be
+  `"insufficient_denominator"`.
 
 `delta_absolute` computation contract:
 
@@ -159,6 +172,17 @@ Contract rules:
 - field keys are implementation-defined in Day 6 but must be stable across runs
 - rates are `null_count / eligible_record_count`
 - each key must include denominator counts in snapshot and diff artifacts
+
+Metric-key lookup mapping rules:
+
+- `metric_key` values are path-style identifiers, not literal keys stored with
+  dots in JSON objects.
+- `coverage.<name>` maps to `metrics.field_coverage.<name>`.
+- `selector_miss.<name>` maps to `metrics.selector_miss.<name>`.
+- `tax_detail_field_presence.<name>.rate` maps to
+  `metrics.tax_detail_field_presence.<name>.rate`.
+- `extraction_null_rate.<field_key>` maps to
+  `metrics.extraction_null_rate.<field_key>.rate`.
 
 ## Baseline Snapshot Format (v1)
 
@@ -275,6 +299,15 @@ Presence rules:
 - `signal_error_count`
 - `ignored_signal_count`
 - `overall_severity` (`ok|warn|error`)
+
+`summary` count semantics:
+
+- `signal_count` is the total emitted signal count (including ignored signals).
+- `ignored_signal_count` counts signals where `ignored = true`.
+- `signal_ok_count`, `signal_warn_count`, and `signal_error_count` count only
+  non-ignored signals by severity.
+- Required invariant:
+  `signal_count = ignored_signal_count + signal_ok_count + signal_warn_count + signal_error_count`.
 
 `baseline` and `current` must include:
 
