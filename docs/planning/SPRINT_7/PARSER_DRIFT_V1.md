@@ -75,6 +75,18 @@ Each emitted signal must include:
 - `ignored` (bool)
 - `ignore_reason` (nullable string code)
 
+`reason_code` contract:
+
+- `reason_code` format must be
+  `<family>.<reason_token>.<metric_key>`, where `<metric_key>` is the exact
+  signal `metric_key` value.
+- Allowed `reason_token` values in v1:
+  - `no_drift` (non-ignored signals with `severity = ok`)
+  - `warn_threshold` (non-ignored signals with `severity = warn`)
+  - `error_threshold` (non-ignored signals with `severity = error`)
+  - `insufficient_denominator` (ignored signals due to zero denominator)
+  - `missing_metric_value` (ignored signals due to null metric values)
+
 `sample_size_*` semantics:
 
 - `sample_size_baseline` and `sample_size_current` are the per-metric denominators
@@ -349,14 +361,15 @@ Presence rules:
 
 - `alerts` is always an array.
 - When `summary.overall_severity = ok`, `alerts` must be `[]`.
-- When `summary.overall_severity = warn|error`, `alerts` must contain at least one
+- When `summary.overall_severity = warn|error`, `alerts` must contain exactly one
   embedded alert summary object with:
+  - `alert_id` (stable join key for this diff-level alert summary)
   - `alert_type`
   - `severity`
   - `routing_key`
   - `reason_codes`
 - Any standalone alert payload emitted under the Alert Routing Payload contract must
-  correspond 1:1 to an entry in `diff.alerts`.
+  correspond 1:1 to an entry in `diff.alerts` by matching `alert_id`.
 
 `error` must be `null` on successful diff generation.
 
@@ -420,13 +433,20 @@ Top-level keys (canonical order):
 
 `alert` fields:
 
+- `alert_id` (must match the corresponding `diff.alerts[0].alert_id`)
 - `alert_type` (`parser_drift`)
 - `severity` (`warn|error`)
-- `reason_codes` (array of deduplicated signal reason codes)
+- `reason_codes` (array of deduplicated signal reason codes from
+  `impacted_signals` only)
 - `routing_key`:
   - `warn`: `ops.parser_drift.warn`
   - `error`: `ops.parser_drift.error`
 - `generated_at` (UTC RFC3339 with trailing `Z`)
+
+`alert.reason_codes` derivation rule:
+
+- Build from `impacted_signals[*].reason_code` only (not from all diff signals).
+- Deduplicate and sort ascending for deterministic payloads.
 
 `impacted_signals`:
 
