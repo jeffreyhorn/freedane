@@ -73,7 +73,11 @@ Each emitted signal must include:
 - `severity` (`ok|warn|error`)
 - `reason_code` (stable reason code)
 - `ignored` (bool)
-- `ignore_reason` (nullable string)
+- `ignore_reason` (nullable string code)
+
+`ignore_reason` allowed values in v1:
+
+- `"insufficient_denominator"`
 
 `delta_relative` computation contract:
 
@@ -82,9 +86,9 @@ Each emitted signal must include:
   - `baseline_value` is `null`
   - `current_value` is `null`
   - `baseline_value == 0`
-- When `delta_relative` is `null` because `baseline_value == 0`, signal must set:
-  - `ignored = true`
-  - `ignore_reason = zero_baseline`
+- When `delta_relative` is `null` because `baseline_value == 0`, signal must remain
+  eligible for severity evaluation using absolute-delta policy unless another
+  ignore rule applies.
 
 ## Required Metrics (v1)
 
@@ -225,7 +229,13 @@ Presence rules:
 
 Default threshold policy (absolute delta unless stated otherwise):
 
-- Field coverage decreases:
+- Field coverage decreases (metric keys only):
+  - `coverage.parsed_successful_fetch_rate`
+  - `coverage.parcel_summary_parcel_rate`
+  - `coverage.parcel_year_fact_parcel_rate`
+  - `coverage.parcel_year_fact_source_year_rate`
+  - `coverage.parcel_characteristic_parcel_rate`
+  - `coverage.parcel_lineage_parcel_rate`
   - `warn` when drop `>= 0.02`
   - `error` when drop `>= 0.05`
 - Parse error rate increases:
@@ -243,10 +253,10 @@ Default threshold policy (absolute delta unless stated otherwise):
 Sample-size guardrails:
 
 - If `sample_size_current < 25`, severity is capped at `warn`.
-- If either side has denominator `0`, signal must set:
+- If either `sample_size_baseline` or `sample_size_current` is `0`, signal must set:
   - `severity = ok`
   - `ignored = true`
-  - `ignore_reason = insufficient_denominator`
+  - `ignore_reason = "insufficient_denominator"`
 
 Overall severity rules:
 
