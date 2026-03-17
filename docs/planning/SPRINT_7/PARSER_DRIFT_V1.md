@@ -161,6 +161,11 @@ Also include detail tax selector coverage rates:
 - `tax_detail_field_presence.tax_amount_summary.rate`
 - `tax_detail_field_presence.installment_rows.rate`
 
+Signal-family assignment rule:
+
+- All `tax_detail_field_presence.*.rate` signals must use
+  `family = selector_miss_shift` in v1.
+
 ### Extraction null-rate shift metrics
 
 v1 must support null-rate metrics keyed by canonical extraction fields:
@@ -183,6 +188,10 @@ Metric-key lookup mapping rules:
   `metrics.tax_detail_field_presence.<name>.rate`.
 - `extraction_null_rate.<field_key>` maps to
   `metrics.extraction_null_rate.<field_key>.rate`.
+- JSON object members inside `metrics.field_coverage`, `metrics.selector_miss`,
+  and `metrics.tax_detail_field_presence` use only `<name>` leaf keys (no
+  `coverage.` / `selector_miss.` / `tax_detail_field_presence.` prefixes in the
+  stored key names).
 
 ## Baseline Snapshot Format (v1)
 
@@ -230,11 +239,19 @@ Presence rules:
 `metrics` fields:
 
 - `counts` (object of supporting denominators used by drift metrics)
-- `field_coverage` (object keyed by required field coverage metric keys)
-- `selector_miss` (object keyed by required selector miss metric keys)
-- `tax_detail_field_presence` (object keyed by required tax-detail field
-  presence metric keys)
+- `field_coverage` (object keyed by `<name>` leaf keys that correspond to
+  `coverage.<name>` metric keys)
+- `selector_miss` (object keyed by `<name>` leaf keys that correspond to
+  `selector_miss.<name>` metric keys)
+- `tax_detail_field_presence` (object keyed by `<name>` leaf keys that
+  correspond to `tax_detail_field_presence.<name>.rate` metric keys)
 - `extraction_null_rate` (object keyed by extraction field keys)
+
+Concrete key examples:
+
+- `metrics.field_coverage.parsed_successful_fetch_rate`
+- `metrics.selector_miss.assessment_fetch_rate`
+- `metrics.tax_detail_field_presence.tax_value_rows.rate`
 
 `metrics.extraction_null_rate` value shape:
 
