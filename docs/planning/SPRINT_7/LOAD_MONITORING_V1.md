@@ -80,6 +80,10 @@ Presence rules:
   - all summary counts (`signal_count`, per-severity counts, `evaluated_metric_count`, `ignored_metric_count`) = `0`
   - `alerts = []`
   - `diagnostics.warnings = []` and `diagnostics.source_artifacts = []`
+  - `diagnostics.history.profile_name = subject.profile_name`
+  - `diagnostics.history.sample_count_total = 0`
+  - `diagnostics.history.window_bounds` must include `window_1d`, `window_7d`, `window_14d`, and `window_30d` with `start_at = null` and `end_at = null`
+  - `diagnostics.threshold_overrides = {}`
 
 ### `run` fields
 
@@ -118,6 +122,7 @@ Summary count semantics:
 - `signal_ok_count`, `signal_warn_count`, and `signal_critical_count` count by `signals[].severity`, including ignored signals
 - `evaluated_metric_count` counts `signals` where `ignored = false`
 - `ignored_metric_count` counts `signals` where `ignored = true`
+- for deterministic count behavior, when `ignored = true`, producers must emit `severity = ok`
 
 Required arithmetic invariants:
 
@@ -150,7 +155,7 @@ Required arithmetic invariants:
 - `history` object:
   - `profile_name` (profile used for history lookup)
   - `sample_count_total` (candidate sample count before metric-specific filters)
-  - `window_bounds` object keyed by rollup window (`window_1d`, `window_7d`, `window_14d`, `window_30d`) with `start_at` and `end_at` timestamps
+  - `window_bounds` object keyed by rollup window (`window_1d`, `window_7d`, `window_14d`, `window_30d`) with `start_at` and `end_at` timestamps (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `threshold_overrides` (object; empty in v1 unless operator override flags are supplied)
 
 ### `rollups` field contract
@@ -196,7 +201,7 @@ Signal value computation rules:
   - `subject_value` is `null`
   - `baseline_value` is `null`
   - `baseline_value == 0`
-- when `baseline_value == 0`, severity must be evaluated using absolute threshold policy only unless an ignore rule applies
+- when `baseline_value == 0`, apply baseline-zero handling policy defined in `Threshold Policy Contract (v1)`
 - `sample_size` is the denominator count used to compute the signal metric for the subject run
 - for 7-day failure-rate metrics, `sample_size` is the denominator run count in that window
 - for freshness metrics, `sample_size` is the count of successful samples considered when resolving the latest-success timestamp
@@ -274,6 +279,7 @@ Computation:
 Computation:
 
 - `now_utc - latest_successful_timestamp` in hours
+- `now_utc` must be the monitor payload `run.finished_at` timestamp; if `run.finished_at` is unavailable, use monitor `run.started_at`
 - values are floats with 2 decimal precision in outputs
 
 ## Threshold Policy Contract (v1)
@@ -447,6 +453,13 @@ Required windows:
 - `window_7d`
 - `window_14d`
 - `window_30d`
+
+Canonical `window_hours` mapping:
+
+- `window_1d = 24`
+- `window_7d = 168`
+- `window_14d = 336`
+- `window_30d = 720`
 
 Each rollup object must include:
 
