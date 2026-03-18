@@ -102,8 +102,9 @@ Presence rules:
 - `run_date` (`YYYYMMDD`)
 - `feature_version`
 - `ruleset_version`
-- `refresh_payload_path`
-- `refresh_status` (`succeeded|failed`)
+- `refresh_payload_path` (nullable string path)
+- `refresh_status` (`succeeded|failed|unknown`)
+- placeholder rule: when refresh payload is unavailable/unreadable, emit `refresh_payload_path = null` and `refresh_status = unknown`
 - `refresh_finished_at` (nullable RFC3339/ISO-8601 UTC with trailing `Z`)
 - nullability rule: `refresh_finished_at` should mirror refresh payload `run.finished_at` when payload is available; it may be `null` only when refresh payload is unavailable or unreadable
 
@@ -203,6 +204,8 @@ Signal value computation rules:
   - `subject_value` is `null`
   - `baseline_value` is `null`
   - `baseline_value == 0`
+- when `subject_value` is `null`, signal must be emitted with `ignored = true`, `ignore_reason = missing_subject_value`, and `severity = ok`; threshold evaluation must be skipped
+- when metric is unavailable for the active profile, signal must be emitted with `ignored = true`, `ignore_reason = metric_unavailable_for_profile`, and `severity = ok`; threshold evaluation must be skipped
 - when `baseline_value == 0`, apply baseline-zero handling policy defined in `Threshold Policy Contract (v1)`
 - `sample_size` is the denominator count used to compute the signal metric for the subject run
 - for 7-day failure-rate metrics, `sample_size` is the denominator run count in that window
@@ -520,6 +523,10 @@ Rollup count invariants:
 Percentile derivation rules:
 
 - percentile inputs use only included samples (after `sample_event_at` filtering)
+- percentile method for all rollup `p50`/`p95` fields: nearest-rank on ascending sorted values (no interpolation)
+- nearest-rank definition:
+  - `rank = ceil((p / 100) * n)` with `p in {50, 95}` and `n = number of included values`
+  - rank is 1-indexed over ascending sorted input values
 - `duration_total_p50_seconds` / `duration_total_p95_seconds`:
   - source metric: refresh payload `summary.duration_seconds_total`
   - units: seconds
