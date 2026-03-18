@@ -124,6 +124,11 @@ Required arithmetic invariants:
 - `signal_count = signal_ok_count + signal_warn_count + signal_critical_count`
 - `signal_count = evaluated_metric_count + ignored_metric_count`
 
+`overall_severity` derivation on succeeded runs:
+
+- computed as max severity across non-ignored signals (`critical > warn > ok`)
+- when all signals are ignored, `overall_severity = ok`
+
 ### `alerts` field contract
 
 - `alerts` is always an array
@@ -183,6 +188,21 @@ Signal value computation rules:
 - `sample_size` is the denominator count used to compute the signal metric for the subject run
 - for 7-day failure-rate metrics, `sample_size` is the denominator run count in that window
 - for freshness metrics, `sample_size` is the count of successful samples considered when resolving the latest-success timestamp
+
+Baseline computation rules:
+
+- baseline source window for relative-comparison metrics is `window_30d`
+- baseline sample set includes prior runs only (subject run is excluded)
+- for duration, volume, and queue-size metrics, `baseline_value` is the `p50` of successful samples in the baseline window
+- for failure-rate and freshness metrics, `baseline_value` is `null` in v1 because severity is evaluated with absolute threshold rules only
+- if fewer than `3` successful baseline samples are available for a relative-comparison metric, signal must be ignored with `ignore_reason = insufficient_history`
+
+Deterministic `signals` ordering:
+
+- `signals` array must be sorted by:
+  1. `metric_key` ascending
+  2. `family` ascending
+  3. `signal_id` ascending
 
 ### Required duration metrics
 
@@ -258,6 +278,14 @@ Policy precedence:
 2. absolute freshness/failure guardrails
 3. relative-change threshold checks
 4. fallback to `ok`
+
+Baseline-zero handling policy:
+
+- for `duration`, `volume`, and `queue_size` families:
+  - if `baseline_value == 0`, signal must be ignored with `ignore_reason = invalid_baseline`
+  - `severity = ok`, `delta_relative = null`
+- for `failure_rate` and `freshness` families:
+  - `baseline_value` is `null`; severity is evaluated directly from absolute thresholds in this section
 
 ### Default threshold table
 
@@ -341,6 +369,8 @@ Top-level keys (canonical order):
 
 Presence rules:
 
+- `run`, `alert`, `impacted_signals`, `operator_actions`, and `error` are always present
+- emitted v1 alert payloads must have `run.status = succeeded`
 - `error` must be `null` for emitted v1 alerts
 - `impacted_signals` must include all non-ignored signals whose `severity` matches `alert.severity`
 
@@ -404,7 +434,11 @@ Each rollup object must include:
 
 Window inclusion rules:
 
-- include samples by `refresh_finished_at` within window bounds
+- include samples by `sample_event_at` within window bounds
+- `sample_event_at` resolution order:
+  1. `subject.refresh_finished_at` when non-null
+  2. refresh payload `run.finished_at` when available
+  3. refresh payload `run.started_at` as final fallback
 - use `daily_refresh` samples by default
 - allow profile override in monitor request; profile must be explicit in output diagnostics
 
