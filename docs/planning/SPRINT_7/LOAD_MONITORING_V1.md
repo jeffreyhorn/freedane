@@ -214,6 +214,7 @@ Baseline computation rules:
 
 - baseline source window for relative-comparison metrics is `window_30d`
 - baseline sample set includes prior runs only (subject run is excluded)
+- baseline window membership must use the same per-sample `sample_event_at` resolution and inclusion logic defined in `Historical Rollup Windows (v1)`
 - for duration, volume, and queue-size metrics, `baseline_value` is the `p50` of successful samples in the baseline window
 - for failure-rate and freshness metrics, `baseline_value` is `null` in v1 because severity is evaluated with absolute threshold rules only
 - if fewer than `3` successful baseline samples are available for a relative-comparison metric, signal must be ignored with `ignore_reason = insufficient_history`
@@ -277,6 +278,10 @@ Computation:
 - denominator = historical samples in window
 - metric emitted as fraction in `[0.0, 1.0]`
 - subject run must be included in numerator/denominator when it falls inside the 7-day window
+- numerator predicates by metric key:
+  - `failure_rate.stage.failed_fraction_7d`: count samples where any stage in refresh payload `stages[]` has `status = failed`
+  - `failure_rate.stage.blocked_fraction_7d`: count samples where any stage in refresh payload `stages[]` has `status = blocked`
+  - `failure_rate.run.failed_fraction_7d`: count samples where refresh payload `run.status = failed`
 - when denominator is `0`, emit `subject_value = null`, `sample_size = 0`, and ignore signal with `ignore_reason = insufficient_history`
 - when denominator is less than `3`, emit computed fraction but ignore signal with `ignore_reason = insufficient_history` for alerting stability
 
@@ -292,6 +297,16 @@ Computation:
 - `now_utc` must be the monitor payload `run.finished_at` timestamp
 - values must be rounded to 2 decimal places using round-half-up behavior (no truncation, no bankers rounding)
 - eligible successful sample set for `latest_successful_timestamp` must include the subject run when it has qualifying success status for the evaluated freshness metric
+- qualifying success predicate and timestamp source by metric key:
+  - `freshness.hours_since_last_successful_daily_refresh`:
+    - qualifying sample: refresh payload `run.status = succeeded`
+    - timestamp source: refresh payload `run.finished_at`
+  - `freshness.hours_since_last_successful_score_pipeline`:
+    - qualifying sample: refresh payload contains `score_pipeline` stage with `status = succeeded`
+    - timestamp source: matching `score_pipeline` stage `finished_at`
+  - `freshness.hours_since_last_successful_review_feedback`:
+    - qualifying sample: refresh payload contains `analysis_artifacts` stage with successful command result `command_id = review_feedback`
+    - timestamp source: `analysis_artifacts` stage `finished_at`
 - when `latest_successful_timestamp` is unavailable, emit `subject_value = null`, `sample_size = 0`, and ignore signal with `ignore_reason = insufficient_history`
 
 ## Threshold Policy Contract (v1)
@@ -406,6 +421,8 @@ Presence rules:
 - emitted v1 alert payloads must have `run.status = succeeded`
 - `error` must be `null` for emitted v1 alerts
 - `impacted_signals` must include all non-ignored signals whose `severity` matches `alert.severity`
+- `impacted_signals[]` entries must use the same signal object schema defined in `Load Metric Contract (v1)`
+- deterministic ordering: `impacted_signals` must be sorted by `metric_key`, then `family`, then `signal_id` (ascending)
 
 ### `run` fields
 
