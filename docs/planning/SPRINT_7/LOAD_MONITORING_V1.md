@@ -19,7 +19,7 @@ In scope for v1:
 
 - one machine-readable load diagnostics payload for each refresh run
 - deterministic threshold evaluation for each emitted metric
-- one alert payload when overall severity is `warn` or `critical`
+- one alert payload when overall severity is `warn` or `critical` on succeeded monitor runs
 - rollup windows for short-term and medium-term trend checks
 
 Out of scope for v1:
@@ -155,7 +155,8 @@ Required arithmetic invariants:
 - `history` object:
   - `profile_name` (profile used for history lookup)
   - `sample_count_total` (candidate sample count before metric-specific filters)
-  - `window_bounds` object keyed by rollup window (`window_1d`, `window_7d`, `window_14d`, `window_30d`) with `start_at` and `end_at` timestamps (RFC3339/ISO-8601 UTC with trailing `Z`)
+  - `window_bounds` object keyed by rollup window (`window_1d`, `window_7d`, `window_14d`, `window_30d`) with `start_at` and `end_at` nullable timestamps (RFC3339/ISO-8601 UTC with trailing `Z` when non-null)
+  - `window_bounds.*.start_at` / `end_at` may be `null` only for failed-run placeholders or when window bounds cannot be resolved from monitor context
 - `threshold_overrides` (object; empty in v1 unless operator override flags are supplied)
 
 ### `rollups` field contract
@@ -270,6 +271,8 @@ Computation:
 - numerator = historical samples in window with matching failure condition
 - denominator = historical samples in window
 - metric emitted as fraction in `[0.0, 1.0]`
+- when denominator is `0`, emit `subject_value = null`, `sample_size = 0`, and ignore signal with `ignore_reason = insufficient_history`
+- when denominator is less than `3`, emit computed fraction but ignore signal with `ignore_reason = insufficient_history` for alerting stability
 
 ### Required freshness metrics
 
@@ -282,6 +285,7 @@ Computation:
 - `now_utc - latest_successful_timestamp` in hours
 - `now_utc` must be the monitor payload `run.finished_at` timestamp
 - values must be rounded to 2 decimal places using round-half-up behavior (no truncation, no bankers rounding)
+- when `latest_successful_timestamp` is unavailable, emit `subject_value = null`, `sample_size = 0`, and ignore signal with `ignore_reason = insufficient_history`
 
 ## Threshold Policy Contract (v1)
 
@@ -469,10 +473,10 @@ Each rollup object must include:
 - `sample_count`
 - `successful_run_count`
 - `failed_run_count`
-- `duration_total_p50_seconds`
-- `duration_total_p95_seconds`
-- `review_queue_returned_p50`
-- `review_queue_returned_p95`
+- `duration_total_p50_seconds` (nullable)
+- `duration_total_p95_seconds` (nullable)
+- `review_queue_returned_p50` (nullable)
+- `review_queue_returned_p95` (nullable)
 
 Window inclusion rules:
 
