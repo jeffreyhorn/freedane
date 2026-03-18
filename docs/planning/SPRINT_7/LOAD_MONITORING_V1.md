@@ -382,7 +382,7 @@ Reason-token derivation order:
 
 ## Alert Payload Contract (v1)
 
-Emit alert payload only when `summary.overall_severity != ok`.
+Emit alert payload only when the associated diagnostics payload has `summary.overall_severity != ok`.
 
 Top-level keys (canonical order):
 
@@ -483,10 +483,10 @@ Each rollup object must include:
 Window inclusion rules:
 
 - include samples by `sample_event_at` within window bounds
-- `sample_event_at` resolution order:
-  1. `subject.refresh_finished_at` when non-null
-  2. refresh payload `run.finished_at` when available
-  3. refresh payload `run.started_at` as final fallback
+- `sample_event_at` resolution order is applied per historical sample:
+  1. sample metadata `subject.refresh_finished_at` when non-null
+  2. sample refresh payload `run.finished_at` when available
+  3. sample refresh payload `run.started_at` as final fallback
 - use `daily_refresh` samples by default
 - allow profile override in monitor request; profile must be explicit in output diagnostics
 
@@ -521,7 +521,7 @@ Fixture D: repeated failed refreshes
 Fixture E: insufficient history
 
 - less than three historical samples
-- expected relative-delta metrics ignored with `ignored_insufficient_history`
+- expected relative-delta metrics ignored with `ignore_reason = insufficient_history` (and reason token `ignored_insufficient_history`)
 
 ## Non-Goals (v1)
 
