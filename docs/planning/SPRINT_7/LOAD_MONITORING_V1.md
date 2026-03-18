@@ -133,10 +133,12 @@ Required arithmetic invariants:
 
 - `alerts` is always an array
 - when `summary.overall_severity = ok`, `alerts` must be `[]`
+- when `run.status = failed`, `alerts` must be `[]` regardless of `summary.overall_severity`
 - when `summary.overall_severity = warn|critical`, `alerts` must contain exactly one embedded alert summary object with:
   - `alert_id`
   - `alert_type` (`load_monitoring`)
   - `severity` (`warn|critical`)
+  - `severity` must equal `summary.overall_severity`
   - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
   - `reason_codes` (sorted unique reason codes from non-ignored signals matching alert severity)
   - `signal_count` (count of non-ignored signals matching alert severity)
@@ -150,6 +152,16 @@ Required arithmetic invariants:
   - `sample_count_total` (candidate sample count before metric-specific filters)
   - `window_bounds` object keyed by rollup window (`window_1d`, `window_7d`, `window_14d`, `window_30d`) with `start_at` and `end_at` timestamps
 - `threshold_overrides` (object; empty in v1 unless operator override flags are supplied)
+
+### `rollups` field contract
+
+- `rollups` is always an array of rollup objects
+- rollup object schema and required fields are defined in `Historical Rollup Windows (v1)`
+- deterministic ordering: `rollups` must be emitted in this order:
+  1. `window_1d`
+  2. `window_7d`
+  3. `window_14d`
+  4. `window_30d`
 
 ## Load Metric Contract (v1)
 
@@ -374,6 +386,17 @@ Presence rules:
 - `error` must be `null` for emitted v1 alerts
 - `impacted_signals` must include all non-ignored signals whose `severity` matches `alert.severity`
 
+### `run` fields
+
+- alert payload `run` object must use the same field contract as diagnostics payload `run`:
+  - `run_type`
+  - `version_tag`
+  - `run_id`
+  - `status`
+  - `run_persisted`
+  - `started_at`
+  - `finished_at`
+
 ### `alert` fields
 
 - `alert_id` (stable join key, unique per subject run + severity)
@@ -398,6 +421,11 @@ Presence rules:
   - `command` (nullable shell command string)
   - `required_artifact_paths` (array of artifact paths the action depends on)
   - `automatable` (bool; `false` in v1)
+- deterministic ordering and rank invariants:
+  - array must be sorted by `rank` ascending
+  - `rank` values must be unique
+  - first rank must be `1`
+  - ranks must be contiguous integers (`1..N`) without gaps
 
 Operator action mapping:
 
