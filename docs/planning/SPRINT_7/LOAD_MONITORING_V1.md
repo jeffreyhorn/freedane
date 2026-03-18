@@ -104,7 +104,8 @@ Presence rules:
 - `ruleset_version`
 - `refresh_payload_path`
 - `refresh_status` (`succeeded|failed`)
-- `refresh_finished_at` (nullable RFC3339/ISO-8601 UTC with trailing `Z` for failed pre-stage runs)
+- `refresh_finished_at` (nullable RFC3339/ISO-8601 UTC with trailing `Z`)
+- nullability rule: `refresh_finished_at` should mirror refresh payload `run.finished_at` when payload is available; it may be `null` only when refresh payload is unavailable or unreadable
 
 ### `summary` fields
 
@@ -206,6 +207,8 @@ Signal value computation rules:
 - `sample_size` is the denominator count used to compute the signal metric for the subject run
 - for 7-day failure-rate metrics, `sample_size` is the denominator run count in that window
 - for freshness metrics, `sample_size` is the count of successful samples considered when resolving the latest-success timestamp
+- for duration, volume, and queue-size metrics derived from one subject refresh run, `sample_size` must be `1`
+- when `subject_value` is unavailable and signal is ignored with `ignore_reason = missing_subject_value`, `sample_size` must be `0`
 
 Baseline computation rules:
 
@@ -421,6 +424,7 @@ Presence rules:
 - `reason_codes` (sorted unique reason codes from `impacted_signals`, ascending lexicographic sort on full reason code string)
 - `title`
 - `summary`
+- join invariant: for the same subject run + severity, standalone `alert.alert_id` must equal diagnostics payload `alerts[0].alert_id`
 
 ### `operator_actions` fields
 
@@ -431,8 +435,10 @@ Presence rules:
   - `severity` (`warn|critical`)
   - `title`
   - `description`
+  - `message` (compatibility alias of `description` for shared alert consumers)
   - `command` (nullable shell command string)
   - `required_artifact_paths` (array of artifact paths the action depends on)
+  - `artifact_paths` (compatibility alias of `required_artifact_paths` for shared alert consumers)
   - `automatable` (bool; `false` in v1)
 - deterministic ordering and rank invariants:
   - array must be sorted by `rank` ascending
@@ -484,9 +490,9 @@ Window inclusion rules:
 
 - include samples by `sample_event_at` within window bounds
 - `sample_event_at` resolution order is applied per historical sample:
-  1. sample metadata `subject.refresh_finished_at` when non-null
-  2. sample refresh payload `run.finished_at` when available
-  3. sample refresh payload `run.started_at` as final fallback
+  1. sample refresh payload `run.finished_at` when non-null
+  2. sample refresh payload `run.started_at` when non-null
+  3. otherwise sample has no `sample_event_at` and must be excluded from rollup window membership
 - use `daily_refresh` samples by default
 - allow profile override in monitor request; profile must be explicit in output diagnostics
 
