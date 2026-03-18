@@ -244,13 +244,15 @@ Source mapping:
 ### Required row-volume metrics
 
 - `volume.review_queue.returned_count`
-- `volume.review_feedback.reviewed_rows`
+- `volume.review_feedback.reviewed_case_count`
 - `volume.review_feedback.recommendation_count`
 
 Expected source mapping:
 
 - parse `analysis_artifacts/review_queue.json` summary returned count
-- parse `analysis_artifacts/review_feedback.json` summary reviewed row count and recommendation count
+- parse `analysis_artifacts/review_feedback.json` `summary.reviewed_case_count`
+- parse `analysis_artifacts/review_feedback.json` `recommendations` arrays and derive:
+  - `volume.review_feedback.recommendation_count = len(recommendations.threshold_tuning_candidates) + len(recommendations.exclusion_tuning_candidates)`
 
 ### Required queue-size metrics
 
@@ -385,7 +387,10 @@ Reason-token derivation order:
 
 ## Alert Payload Contract (v1)
 
-Emit alert payload only when the associated diagnostics payload has `summary.overall_severity != ok`.
+Emit alert payload only when the associated diagnostics payload has both:
+
+- `run.status = succeeded`
+- `summary.overall_severity != ok`
 
 Top-level keys (canonical order):
 
