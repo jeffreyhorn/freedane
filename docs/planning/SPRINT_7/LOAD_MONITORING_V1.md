@@ -213,6 +213,7 @@ Baseline computation rules:
 - for duration, volume, and queue-size metrics, `baseline_value` is the `p50` of successful samples in the baseline window
 - for failure-rate and freshness metrics, `baseline_value` is `null` in v1 because severity is evaluated with absolute threshold rules only
 - if fewer than `3` successful baseline samples are available for a relative-comparison metric, signal must be ignored with `ignore_reason = insufficient_history`
+- baseline `p50` for signal evaluation uses nearest-rank percentile semantics and is intentionally allowed with `>=3` samples (separate from rollup percentile publication thresholds)
 
 Deterministic `signals` ordering:
 
@@ -279,8 +280,8 @@ Computation:
 Computation:
 
 - `now_utc - latest_successful_timestamp` in hours
-- `now_utc` must be the monitor payload `run.finished_at` timestamp; if `run.finished_at` is unavailable, use monitor `run.started_at`
-- values are floats with 2 decimal precision in outputs
+- `now_utc` must be the monitor payload `run.finished_at` timestamp
+- values must be rounded to 2 decimal places using round-half-up behavior (no truncation, no bankers rounding)
 
 ## Threshold Policy Contract (v1)
 
@@ -487,6 +488,7 @@ Minimum sample rules:
 
 - relative-delta checks require at least `3` historical samples
 - percentile rollups require at least `5` samples; otherwise percentile fields are `null`
+- rollup percentile minimums apply only to rollup output fields and do not override the baseline `p50` rule used for signal evaluation
 
 ## Validation Fixtures (v1)
 
