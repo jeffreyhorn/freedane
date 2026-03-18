@@ -217,7 +217,7 @@ Baseline computation rules:
 
 - baseline source window for relative-comparison metrics is `window_30d`
 - baseline sample set includes prior runs only (subject run is excluded)
-- baseline window membership must use the same per-sample `sample_event_at` resolution and inclusion logic defined in `Historical Rollup Windows (v1)`
+- baseline window membership must use the same per-sample `sample_event_at` resolution, window-bound derivation algorithm, and inclusion semantics defined in `Historical Rollup Windows (v1)`
 - for duration, volume, and queue-size metrics, `baseline_value` is the `p50` of successful samples in the baseline window
 - for failure-rate and freshness metrics, `baseline_value` is `null` in v1 because severity is evaluated with absolute threshold rules only
 - if fewer than `3` successful baseline samples are available for a relative-comparison metric, signal must be ignored with `ignore_reason = insufficient_history`
@@ -543,6 +543,13 @@ Window inclusion rules:
   1. sample refresh payload `run.finished_at` when non-null
   2. sample refresh payload `run.started_at` when non-null
   3. otherwise sample has no `sample_event_at` and must be excluded from rollup window membership
+- per-window `start_at`/`end_at` derivation:
+  - `end_at` anchor is diagnostics payload `run.finished_at` (monitor run completion timestamp)
+  - for each `window_key`, `start_at = end_at - window_hours`
+  - if `run.finished_at` is unavailable (failed placeholder payload), both `start_at` and `end_at` must be `null`
+- boundary semantics for membership:
+  - use half-open interval `(start_at, end_at]`
+  - sample is included iff `sample_event_at > start_at` and `sample_event_at <= end_at`
 - use `daily_refresh` samples by default
 - allow profile override in monitor request; profile must be explicit in output diagnostics
 
