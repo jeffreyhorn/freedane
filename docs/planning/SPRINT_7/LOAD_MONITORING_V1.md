@@ -66,20 +66,30 @@ Top-level keys (canonical order):
 7. `diagnostics`
 8. `error`
 
+Key-order note:
+
+- canonical key order is presentation-only; producers/consumers must validate by presence and field rules, not object member order
+
 Presence rules:
 
 - all top-level keys above are always present
 - when `run.status = succeeded`, `error` must be `null`
 - when `run.status = failed`, `signals` and `rollups` must be emitted as empty arrays and `error` must include `code` and `message`
+- when `run.status = failed`, deterministic placeholders must be emitted:
+  - `summary.overall_severity = critical`
+  - all summary counts (`signal_count`, per-severity counts, `evaluated_metric_count`, `ignored_metric_count`) = `0`
+  - `alerts = []`
+  - `diagnostics.warnings = []` and `diagnostics.source_artifacts = []`
 
 ### `run` fields
 
 - `run_type` (`load_monitoring`)
 - `version_tag` (`load_monitoring_v1`)
-- `monitor_id` (unique monitor run identifier)
+- `run_id` (unique monitor run identifier; equal to monitor execution identifier for v1 compatibility with common run-envelope consumers)
 - `status` (`succeeded|failed`)
-- `started_at` (UTC ISO-8601)
-- `finished_at` (UTC ISO-8601)
+- `run_persisted` (bool; indicates whether monitor payload artifact write succeeded)
+- `started_at` (RFC3339/ISO-8601 UTC with trailing `Z`, for example `2026-03-15T22:10:29Z`)
+- `finished_at` (RFC3339/ISO-8601 UTC with trailing `Z`, for example `2026-03-15T22:10:31Z`)
 
 ### `subject` fields
 
@@ -90,7 +100,7 @@ Presence rules:
 - `ruleset_version`
 - `refresh_payload_path`
 - `refresh_status` (`succeeded|failed`)
-- `refresh_finished_at` (nullable ISO-8601 for failed pre-stage runs)
+- `refresh_finished_at` (nullable RFC3339/ISO-8601 UTC with trailing `Z` for failed pre-stage runs)
 
 ### `summary` fields
 
@@ -102,13 +112,47 @@ Presence rules:
 - `evaluated_metric_count`
 - `ignored_metric_count`
 
+Summary count semantics:
+
+- `signal_count` counts all emitted `signals`, including ignored signals
+- `signal_ok_count`, `signal_warn_count`, and `signal_critical_count` count by `signals[].severity`, including ignored signals
+- `evaluated_metric_count` counts `signals` where `ignored = false`
+- `ignored_metric_count` counts `signals` where `ignored = true`
+
+Required arithmetic invariants:
+
+- `signal_count = signal_ok_count + signal_warn_count + signal_critical_count`
+- `signal_count = evaluated_metric_count + ignored_metric_count`
+
+### `alerts` field contract
+
+- `alerts` is always an array
+- when `summary.overall_severity = ok`, `alerts` must be `[]`
+- when `summary.overall_severity = warn|critical`, `alerts` must contain exactly one embedded alert summary object with:
+  - `alert_id`
+  - `alert_type` (`load_monitoring`)
+  - `severity` (`warn|critical`)
+  - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+  - `reason_codes` (sorted unique reason codes from non-ignored signals matching alert severity)
+  - `signal_count` (count of non-ignored signals matching alert severity)
+
+### `diagnostics` fields
+
+- `warnings` (array of warning strings)
+- `source_artifacts` (array of artifact paths read by the monitor)
+- `history` object:
+  - `profile_name` (profile used for history lookup)
+  - `sample_count_total` (candidate sample count before metric-specific filters)
+  - `window_bounds` object keyed by rollup window (`window_1d`, `window_7d`, `window_14d`, `window_30d`) with `start_at` and `end_at` timestamps
+- `threshold_overrides` (object; empty in v1 unless operator override flags are supplied)
+
 ## Load Metric Contract (v1)
 
 Each emitted signal must include:
 
 - `signal_id` (stable identifier)
 - `metric_key` (stable metric key)
-- `metric_family` (`duration|volume|queue_size|failure_rate|freshness`)
+- `family` (`duration|volume|queue_size|failure_rate|freshness`)
 - `subject_value` (nullable float)
 - `baseline_value` (nullable float)
 - `delta_absolute` (nullable float)
@@ -125,6 +169,20 @@ Allowed `ignore_reason` values in v1:
 - `insufficient_history`
 - `missing_subject_value`
 - `invalid_baseline`
+
+Signal value computation rules:
+
+- `delta_absolute` formula: `subject_value - baseline_value`
+- `delta_absolute` is `null` when `subject_value` or `baseline_value` is `null`
+- `delta_relative` formula: `(subject_value - baseline_value) / baseline_value`
+- `delta_relative` is `null` when:
+  - `subject_value` is `null`
+  - `baseline_value` is `null`
+  - `baseline_value == 0`
+- when `baseline_value == 0`, severity must be evaluated using absolute threshold policy only unless an ignore rule applies
+- `sample_size` is the denominator count used to compute the signal metric for the subject run
+- for 7-day failure-rate metrics, `sample_size` is the denominator run count in that window
+- for freshness metrics, `sample_size` is the count of successful samples considered when resolving the latest-success timestamp
 
 ### Required duration metrics
 
@@ -234,7 +292,12 @@ Freshness windows:
 
 Format:
 
-- `<metric_family>.<reason_token>.<metric_key>`
+- `<family>.<reason_token>.<metric_key>`
+
+Parsing rule:
+
+- only the first two `.` separators are structural
+- the remaining suffix is the literal `metric_key` (which may include additional `.` characters)
 
 Allowed `reason_token` values:
 
@@ -249,6 +312,20 @@ Allowed `reason_token` values:
 - `ignored_insufficient_history`
 - `ignored_missing_subject_value`
 - `ignored_invalid_baseline`
+
+Reason-token derivation order:
+
+1. if `ignored = true` and `ignore_reason = metric_unavailable_for_profile` -> `ignored_unavailable_profile`
+2. else if `ignored = true` and `ignore_reason = insufficient_history` -> `ignored_insufficient_history`
+3. else if `ignored = true` and `ignore_reason = missing_subject_value` -> `ignored_missing_subject_value`
+4. else if `ignored = true` and `ignore_reason = invalid_baseline` -> `ignored_invalid_baseline`
+5. else if `severity = critical` and `family = freshness` -> `critical_freshness`
+6. else if `severity = warn` and `family = freshness` -> `warn_freshness`
+7. else if `severity = critical` and `family = failure_rate` -> `critical_failure_rate`
+8. else if `severity = warn` and `family = failure_rate` -> `warn_failure_rate`
+9. else if `severity = critical` -> `critical_relative_delta`
+10. else if `severity = warn` -> `warn_relative_delta`
+11. else -> `ok_within_threshold`
 
 ## Alert Payload Contract (v1)
 
@@ -272,27 +349,37 @@ Presence rules:
 - `alert_id` (stable join key, unique per subject run + severity)
 - `alert_type` (`load_monitoring`)
 - `severity` (`warn|critical`)
-- `generated_at` (UTC ISO-8601)
+- `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `subject_run_id`
 - `profile_name`
 - `reason_codes` (sorted unique reason codes from `impacted_signals`)
 - `title`
 - `summary`
 
-### Operator action mapping
+### `operator_actions` fields
 
-For `warn` alerts:
+- `operator_actions` is an ordered array of action objects
+- each action object must include:
+  - `action_id` (stable identifier)
+  - `rank` (1-based integer order)
+  - `severity` (`warn|critical`)
+  - `title`
+  - `description`
+  - `command` (nullable shell command string)
+  - `required_artifact_paths` (array of artifact paths the action depends on)
+  - `automatable` (bool; `false` in v1)
 
-1. review refresh payload and stage statuses for the subject run
-2. inspect latest parser drift diff output if available
-3. rerun `analysis_only` profile if data freshness is acceptable but report artifacts look stale
+Operator action mapping:
 
-For `critical` alerts:
-
-1. run immediate `daily_refresh` rerun from failure boundary
-2. inspect ingest source availability and parser drift outputs
-3. validate score/report artifacts regenerate successfully
-4. if critical freshness persists for two consecutive runs, open incident note in operations log
+- warn alert actions (in order):
+  1. review refresh payload and stage statuses for the subject run
+  2. inspect latest parser drift diff output if available
+  3. rerun `analysis_only` profile if data freshness is acceptable but report artifacts look stale
+- critical alert actions (in order):
+  1. run immediate `daily_refresh` rerun from failure boundary
+  2. inspect ingest source availability and parser drift outputs
+  3. validate score/report artifacts regenerate successfully
+  4. if critical freshness persists for two consecutive runs, open incident note in operations log
 
 ## Historical Rollup Windows (v1)
 
