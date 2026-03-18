@@ -433,6 +433,7 @@ Presence rules:
   - `action_id` (stable identifier)
   - `rank` (1-based integer order)
   - `severity` (`warn|critical`)
+  - `severity` must equal top-level `alert.severity` for the emitted alert payload
   - `title`
   - `description`
   - `message` (compatibility alias of `description` for shared alert consumers)
@@ -440,6 +441,9 @@ Presence rules:
   - `required_artifact_paths` (array of artifact paths the action depends on)
   - `artifact_paths` (compatibility alias of `required_artifact_paths` for shared alert consumers)
   - `automatable` (bool; `false` in v1)
+- alias equality invariants:
+  - `message` must exactly equal `description`
+  - `artifact_paths` must exactly equal `required_artifact_paths`
 - deterministic ordering and rank invariants:
   - array must be sorted by `rank` ascending
   - `rank` values must be unique
