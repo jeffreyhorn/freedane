@@ -512,6 +512,23 @@ Each rollup object must include:
 - `review_queue_returned_p50` (nullable)
 - `review_queue_returned_p95` (nullable)
 
+Rollup count invariants:
+
+- `sample_count = successful_run_count + failed_run_count`
+- samples excluded for missing `sample_event_at` (per window inclusion rules) must not contribute to `sample_count` or either status count
+
+Percentile derivation rules:
+
+- percentile inputs use only included samples (after `sample_event_at` filtering)
+- `duration_total_p50_seconds` / `duration_total_p95_seconds`:
+  - source metric: refresh payload `summary.duration_seconds_total`
+  - units: seconds
+  - include only samples where source metric is present
+- `review_queue_returned_p50` / `review_queue_returned_p95`:
+  - source metric: `analysis_artifacts/review_queue.json` `summary.returned_count`
+  - units: case-count
+  - include only samples where source metric is present
+
 Window inclusion rules:
 
 - include samples by `sample_event_at` within window bounds
