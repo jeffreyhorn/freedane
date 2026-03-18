@@ -299,6 +299,7 @@ Computation:
 - `now_utc - latest_successful_timestamp` in hours
 - `now_utc` must be the monitor payload `run.finished_at` timestamp
 - values must be rounded to 2 decimal places using round-half-up behavior (no truncation, no bankers rounding)
+- freshness lookback sample set is `window_30d` membership using the same `sample_event_at` derivation and boundary semantics defined in `Historical Rollup Windows (v1)`
 - eligible successful sample set for `latest_successful_timestamp` must include the subject run when it has qualifying success status for the evaluated freshness metric
 - qualifying success predicate and timestamp source by metric key:
   - `freshness.hours_since_last_successful_daily_refresh`:
@@ -557,6 +558,7 @@ Minimum sample rules:
 
 - relative-delta checks require at least `3` historical samples
 - percentile rollups require at least `5` samples; otherwise percentile fields are `null`
+- the 5-sample threshold applies to non-null percentile input values for that specific percentile field (not raw window `sample_count`)
 - rollup percentile minimums apply only to rollup output fields and do not override the baseline `p50` rule used for signal evaluation
 
 ## Validation Fixtures (v1)
