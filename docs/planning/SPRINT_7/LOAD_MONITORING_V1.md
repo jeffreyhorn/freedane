@@ -145,7 +145,7 @@ Required arithmetic invariants:
   - `severity` (`warn|critical`)
   - `severity` must equal `summary.overall_severity`
   - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
-  - `reason_codes` (sorted unique reason codes from non-ignored signals matching alert severity)
+  - `reason_codes` (sorted unique reason codes from non-ignored signals matching alert severity; ascending lexicographic sort on full reason code string)
   - `signal_count` (count of non-ignored signals matching alert severity)
 
 ### `diagnostics` fields
@@ -271,6 +271,7 @@ Computation:
 - numerator = historical samples in window with matching failure condition
 - denominator = historical samples in window
 - metric emitted as fraction in `[0.0, 1.0]`
+- subject run must be included in numerator/denominator when it falls inside the 7-day window
 - when denominator is `0`, emit `subject_value = null`, `sample_size = 0`, and ignore signal with `ignore_reason = insufficient_history`
 - when denominator is less than `3`, emit computed fraction but ignore signal with `ignore_reason = insufficient_history` for alerting stability
 
@@ -285,6 +286,7 @@ Computation:
 - `now_utc - latest_successful_timestamp` in hours
 - `now_utc` must be the monitor payload `run.finished_at` timestamp
 - values must be rounded to 2 decimal places using round-half-up behavior (no truncation, no bankers rounding)
+- eligible successful sample set for `latest_successful_timestamp` must include the subject run when it has qualifying success status for the evaluated freshness metric
 - when `latest_successful_timestamp` is unavailable, emit `subject_value = null`, `sample_size = 0`, and ignore signal with `ignore_reason = insufficient_history`
 
 ## Threshold Policy Contract (v1)
@@ -416,7 +418,7 @@ Presence rules:
 - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `subject_run_id`
 - `profile_name`
-- `reason_codes` (sorted unique reason codes from `impacted_signals`)
+- `reason_codes` (sorted unique reason codes from `impacted_signals`, ascending lexicographic sort on full reason code string)
 - `title`
 - `summary`
 
