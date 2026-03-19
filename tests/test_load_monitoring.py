@@ -244,7 +244,7 @@ def test_build_alert_payload_from_diagnostics_derives_alert_id_without_alerts_ar
     alert_payload = load_monitoring.build_alert_payload_from_diagnostics(payload)
     assert alert_payload is not None
     assert alert_payload["alert"]["severity"] == "warn"
-    assert alert_payload["alert"]["alert_id"] == f"{payload['run']['run_id']}.warn"
+    assert alert_payload["alert"]["alert_id"] == f"{payload['subject']['run_id']}.warn"
 
 
 def test_load_monitor_cli_writes_diagnostics_and_alert_payload(

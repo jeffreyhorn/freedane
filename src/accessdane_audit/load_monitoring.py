@@ -156,7 +156,7 @@ def build_load_diagnostics(
 
         alerts = _build_alert_summaries(
             run_status="succeeded",
-            run_id=monitor_run_id_value,
+            subject_run_id=subject_context.sample.run_id,
             overall_severity=signal_result["overall_severity"],
             signals=signal_result["signals"],
         )
@@ -332,9 +332,9 @@ def build_alert_payload_from_diagnostics(
         severity=severity,
         action_paths=action_paths,
     )
-    run_id = _as_str(run_payload.get("run_id"))
+    subject_run_id = _as_str(subject.get("run_id"))
     alert_id = _as_str(first_alert.get("alert_id")) or (
-        f"{run_id}.{severity}" if run_id is not None else None
+        f"{subject_run_id}.{severity}" if subject_run_id is not None else None
     )
 
     return {
@@ -344,7 +344,7 @@ def build_alert_payload_from_diagnostics(
             "alert_type": "load_monitoring",
             "severity": severity,
             "generated_at": _utc_now(),
-            "subject_run_id": _as_str(subject.get("run_id")),
+            "subject_run_id": subject_run_id,
             "profile_name": _as_str(subject.get("profile_name")),
             "reason_codes": reason_codes,
             "title": (
@@ -353,7 +353,7 @@ def build_alert_payload_from_diagnostics(
             ),
             "summary": (
                 f"{len(impacted_signals)} signal(s) at severity {severity} "
-                f"for subject run {_as_str(subject.get('run_id')) or 'unknown_run'}."
+                f"for subject run {subject_run_id or 'unknown_run'}."
             ),
         },
         "impacted_signals": impacted_signals,
@@ -655,7 +655,7 @@ def _build_signals(
 def _build_alert_summaries(
     *,
     run_status: str,
-    run_id: str,
+    subject_run_id: str,
     overall_severity: str,
     signals: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -678,7 +678,7 @@ def _build_alert_summaries(
     )
     return [
         {
-            "alert_id": f"{run_id}.{overall_severity}",
+            "alert_id": f"{subject_run_id}.{overall_severity}",
             "alert_type": "load_monitoring",
             "severity": overall_severity,
             "generated_at": _utc_now(),
