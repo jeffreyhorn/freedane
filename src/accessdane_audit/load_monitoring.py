@@ -336,6 +336,20 @@ def build_alert_payload_from_diagnostics(
     alert_id = _as_str(first_alert.get("alert_id")) or (
         f"{subject_run_id}.{severity}" if subject_run_id is not None else None
     )
+    if alert_id is None:
+        return {
+            "run": run_payload,
+            "alert": None,
+            "impacted_signals": impacted_signals,
+            "operator_actions": operator_actions,
+            "error": {
+                "code": "missing_alert_id",
+                "message": (
+                    "Missing subject.run_id and alerts[0].alert_id; cannot construct "
+                    "stable alert_id for load monitoring alert."
+                ),
+            },
+        }
 
     return {
         "run": run_payload,

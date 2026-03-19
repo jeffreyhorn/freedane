@@ -247,6 +247,58 @@ def test_build_alert_payload_from_diagnostics_derives_alert_id_without_alerts_ar
     assert alert_payload["alert"]["alert_id"] == f"{payload['subject']['run_id']}.warn"
 
 
+def test_build_alert_payload_from_diagnostics_returns_error_when_alert_id_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_alert_missing_id.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    for day_offset in (3, 2, 1):
+        _write_refresh_run(
+            artifact_base_dir=artifact_base_dir,
+            run_id=f"2026031{day_offset}_daily_refresh_feature_v1_scoring_rules_v1",
+            run_finished_at=fixed_now - timedelta(days=day_offset),
+            duration_seconds=100.0,
+            review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+            reviewed_case_count=2,
+            threshold_candidate_count=1,
+            exclusion_candidate_count=0,
+        )
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_warn_missing_id",
+        run_finished_at=fixed_now - timedelta(minutes=2),
+        duration_seconds=160.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    payload["alerts"] = []
+    payload["subject"]["run_id"] = None
+    alert_payload = load_monitoring.build_alert_payload_from_diagnostics(payload)
+    assert alert_payload is not None
+    assert alert_payload["alert"] is None
+    assert alert_payload["error"]["code"] == "missing_alert_id"
+    assert "cannot construct stable alert_id" in alert_payload["error"]["message"]
+
+
 def test_load_monitor_cli_writes_diagnostics_and_alert_payload(
     tmp_path: Path, monkeypatch
 ) -> None:
