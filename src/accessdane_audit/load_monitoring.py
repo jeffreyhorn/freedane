@@ -92,6 +92,7 @@ def build_load_diagnostics(
 ) -> dict[str, Any]:
     started_dt = _now_utc()
     source_artifacts: set[str] = set()
+    warnings: list[str] = []
 
     try:
         subject_context = _resolve_subject_context(
@@ -114,6 +115,7 @@ def build_load_diagnostics(
             artifact_base_dir=artifact_base_dir,
             profile_name=subject_context.sample.profile_name,
             source_artifacts=source_artifacts,
+            warnings=warnings,
         )
         version_filtered_samples = [
             sample
@@ -195,7 +197,7 @@ def build_load_diagnostics(
             "rollups": rollups,
             "alerts": alerts,
             "diagnostics": {
-                "warnings": [],
+                "warnings": sorted(warnings),
                 "source_artifacts": sorted(source_artifacts),
                 "history": {
                     "profile_name": subject_context.sample.profile_name,
@@ -298,9 +300,7 @@ def build_alert_payload_from_diagnostics(
         return None
 
     alerts = _as_list(diagnostics_payload.get("alerts"))
-    if not alerts:
-        return None
-    first_alert = _as_dict(alerts[0])
+    first_alert = _as_dict(alerts[0]) if alerts else {}
 
     subject = _as_dict(diagnostics_payload.get("subject"))
     signals = _as_list(diagnostics_payload.get("signals"))
@@ -332,11 +332,15 @@ def build_alert_payload_from_diagnostics(
         severity=severity,
         action_paths=action_paths,
     )
+    run_id = _as_str(run_payload.get("run_id"))
+    alert_id = _as_str(first_alert.get("alert_id")) or (
+        f"{run_id}.{severity}" if run_id is not None else None
+    )
 
     return {
         "run": run_payload,
         "alert": {
-            "alert_id": _as_str(first_alert.get("alert_id")),
+            "alert_id": alert_id,
             "alert_type": "load_monitoring",
             "severity": severity,
             "generated_at": _utc_now(),
@@ -1052,6 +1056,7 @@ def _load_history_samples(
     artifact_base_dir: Path,
     profile_name: str,
     source_artifacts: set[str],
+    warnings: list[str],
 ) -> list[_HistorySample]:
     samples: list[_HistorySample] = []
     for path in sorted(
@@ -1061,7 +1066,12 @@ def _load_history_samples(
     ):
         try:
             samples.append(_load_refresh_sample(path, source_artifacts))
-        except Exception:
+        except (json.JSONDecodeError, OSError, ValueError, TypeError) as exc:
+            warnings.append(
+                "history_sample_skipped:"
+                f"{path}:{type(exc).__name__}:"
+                f"{str(exc).replace(chr(10), ' ')}"
+            )
             continue
     return samples
 
