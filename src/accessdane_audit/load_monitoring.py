@@ -57,6 +57,7 @@ class _HistorySample:
     sample_event_at: Optional[datetime]
     duration_total_seconds: Optional[float]
     stage_status_by_id: dict[str, str]
+    stage_duration_seconds_by_id: dict[str, Optional[float]]
     stage_started_at_by_id: dict[str, Optional[datetime]]
     stage_finished_at_by_id: dict[str, Optional[datetime]]
     review_feedback_command_status_by_stage: dict[str, str]
@@ -90,7 +91,6 @@ def build_load_diagnostics(
     run_persisted: bool = False,
 ) -> dict[str, Any]:
     started_dt = _now_utc()
-    finished_dt = _now_utc()
     source_artifacts: set[str] = set()
 
     try:
@@ -119,6 +119,7 @@ def build_load_diagnostics(
             ),
         )
 
+        finished_dt = _now_utc()
         monitor_run_id_value = monitor_run_id or _default_run_id(
             prefix="load_monitor",
             run_date=subject_context.sample.run_date or _utc_today(),
@@ -191,6 +192,7 @@ def build_load_diagnostics(
             "error": None,
         }
     except Exception as exc:
+        finished_dt = _now_utc()
         run_date = _utc_today()
         run_id_value = monitor_run_id or _default_run_id(
             prefix="load_monitor",
@@ -532,6 +534,16 @@ def _build_signals(
                 sample_size = 0
             else:
                 severity = _severity_for_freshness(metric_key, subject_value)
+        elif metric_key == "queue_size.case_review.in_review_count":
+            baseline_value = None
+            delta_absolute = None
+            delta_relative = None
+            if subject_value is None:
+                ignored = True
+                ignore_reason = "missing_subject_value"
+                sample_size = 0
+            else:
+                severity = _severity_for_case_review_in_review_count(subject_value)
         else:
             baseline_series = baseline_values_by_metric.get(metric_key, [])
             baseline_value = _nearest_rank_percentile(baseline_series, percentile=50)
@@ -559,13 +571,12 @@ def _build_signals(
         if ignored:
             severity = "ok"
 
-        reason_code = f"{family}." f"{
-                _reason_token(
-                    severity=severity,
-                    family=family,
-                    ignore_reason=ignore_reason,
-                )
-            }." f"{metric_key}"
+        reason_token = _reason_token(
+            severity=severity,
+            family=family,
+            ignore_reason=ignore_reason,
+        )
+        reason_code = f"{family}.{reason_token}.{metric_key}"
         if not ignored and metric_key.startswith(("failure_rate.", "freshness.")):
             baseline_value = None
             delta_absolute = None
@@ -760,6 +771,8 @@ def _baseline_values_by_metric(
     for metric_key, _ in _METRIC_KEYS:
         if metric_key.startswith(("failure_rate.", "freshness.")):
             continue
+        if metric_key == "queue_size.case_review.in_review_count":
+            continue
         for sample in baseline_candidates:
             sample_metrics = _subject_metrics(
                 subject=sample, case_review_in_review_count=0.0
@@ -904,6 +917,14 @@ def _severity_for_freshness(metric_key: str, subject_value: float) -> str:
     return "ok"
 
 
+def _severity_for_case_review_in_review_count(subject_value: float) -> str:
+    if subject_value >= 50:
+        return "critical"
+    if subject_value >= 25:
+        return "warn"
+    return "ok"
+
+
 def _reason_token(
     *,
     severity: str,
@@ -949,7 +970,11 @@ def _metric_unavailable_for_profile(
 
 
 def _stage_duration_metric(subject: _HistorySample, stage_id: str) -> Optional[float]:
-    # Stage duration is derived from stage timestamps for deterministic replay.
+    stage_duration = subject.stage_duration_seconds_by_id.get(stage_id)
+    if stage_duration is not None:
+        return _as_float(stage_duration)
+
+    # Fallback to timestamp deltas when duration_seconds is unavailable.
     stage_started = subject.stage_started_at_by_id.get(stage_id)
     stage_finished = subject.stage_finished_at_by_id.get(stage_id)
     if stage_started is None or stage_finished is None:
@@ -1045,6 +1070,7 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
     sample_event_at = run_finished_at or run_started_at
 
     stage_status_by_id: dict[str, str] = {}
+    stage_duration_seconds_by_id: dict[str, Optional[float]] = {}
     stage_started_at_by_id: dict[str, Optional[datetime]] = {}
     stage_finished_at_by_id: dict[str, Optional[datetime]] = {}
     review_feedback_command_status_by_stage: dict[str, str] = {}
@@ -1054,6 +1080,9 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
         if stage_id is None:
             continue
         stage_status_by_id[stage_id] = _as_str(stage_payload.get("status")) or "unknown"
+        stage_duration_seconds_by_id[stage_id] = _as_float(
+            stage_payload.get("duration_seconds")
+        )
         stage_started_at_by_id[stage_id] = _as_datetime(stage_payload.get("started_at"))
         stage_finished_at_by_id[stage_id] = _as_datetime(
             stage_payload.get("finished_at")
@@ -1120,6 +1149,7 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
         sample_event_at=sample_event_at,
         duration_total_seconds=_as_float(summary.get("duration_seconds_total")),
         stage_status_by_id=stage_status_by_id,
+        stage_duration_seconds_by_id=stage_duration_seconds_by_id,
         stage_started_at_by_id=stage_started_at_by_id,
         stage_finished_at_by_id=stage_finished_at_by_id,
         review_feedback_command_status_by_stage=review_feedback_command_status_by_stage,

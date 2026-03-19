@@ -30,20 +30,17 @@ def test_load_monitoring_ok_warn_critical_and_deterministic_payload(
     fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
 
-    baseline_paths: list[Path] = []
     for day_offset, duration_seconds in ((3, 100.0), (2, 100.0), (1, 100.0)):
         run_finished = fixed_now - timedelta(days=day_offset)
-        baseline_paths.append(
-            _write_refresh_run(
-                artifact_base_dir=artifact_base_dir,
-                run_id=f"2026031{day_offset}_daily_refresh_feature_v1_scoring_rules_v1",
-                run_finished_at=run_finished,
-                duration_seconds=duration_seconds,
-                review_queue_rows=_queue_rows(high=3, medium=2, low=1, unreviewed=2),
-                reviewed_case_count=4,
-                threshold_candidate_count=1,
-                exclusion_candidate_count=0,
-            )
+        _write_refresh_run(
+            artifact_base_dir=artifact_base_dir,
+            run_id=f"2026031{day_offset}_daily_refresh_feature_v1_scoring_rules_v1",
+            run_finished_at=run_finished,
+            duration_seconds=duration_seconds,
+            review_queue_rows=_queue_rows(high=3, medium=2, low=1, unreviewed=2),
+            reviewed_case_count=4,
+            threshold_candidate_count=1,
+            exclusion_candidate_count=0,
         )
 
     subject_ok_path = _write_refresh_run(
