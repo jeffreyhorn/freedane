@@ -103,12 +103,27 @@ def build_load_diagnostics(
             subject_refresh_payload_path=subject_refresh_payload_path,
             source_artifacts=source_artifacts,
         )
+        subject_feature_version = (
+            subject_context.sample.feature_version or feature_version
+        )
+        subject_ruleset_version = (
+            subject_context.sample.ruleset_version or ruleset_version
+        )
+
         history_samples = _load_history_samples(
             artifact_base_dir=artifact_base_dir,
             profile_name=subject_context.sample.profile_name,
             source_artifacts=source_artifacts,
         )
-        history_by_run_id = {sample.run_id: sample for sample in history_samples}
+        version_filtered_samples = [
+            sample
+            for sample in history_samples
+            if sample.feature_version == subject_feature_version
+            and sample.ruleset_version == subject_ruleset_version
+        ]
+        history_by_run_id = {
+            sample.run_id: sample for sample in version_filtered_samples
+        }
         history_by_run_id[subject_context.sample.run_id] = subject_context.sample
         history = sorted(
             history_by_run_id.values(),
@@ -133,6 +148,8 @@ def build_load_diagnostics(
             subject=subject_context.sample,
             history=history,
             window_bounds=window_bounds,
+            fallback_feature_version=subject_feature_version,
+            fallback_ruleset_version=subject_ruleset_version,
         )
 
         alerts = _build_alert_summaries(
@@ -155,10 +172,8 @@ def build_load_diagnostics(
                 "run_id": subject_context.sample.run_id,
                 "profile_name": subject_context.sample.profile_name,
                 "run_date": subject_context.sample.run_date,
-                "feature_version": subject_context.sample.feature_version
-                or feature_version,
-                "ruleset_version": subject_context.sample.ruleset_version
-                or ruleset_version,
+                "feature_version": subject_feature_version,
+                "ruleset_version": subject_ruleset_version,
                 "refresh_payload_path": str(subject_context.refresh_payload_path),
                 "refresh_status": _normalized_run_status(
                     subject_context.sample.run_status
@@ -442,9 +457,11 @@ def _build_signals(
     subject: _HistorySample,
     history: list[_HistorySample],
     window_bounds: Mapping[str, Mapping[str, Optional[datetime]]],
+    fallback_feature_version: str,
+    fallback_ruleset_version: str,
 ) -> dict[str, Any]:
-    subject_feature_version = subject.feature_version or "feature_v1"
-    subject_ruleset_version = subject.ruleset_version or "scoring_rules_v1"
+    subject_feature_version = subject.feature_version or fallback_feature_version
+    subject_ruleset_version = subject.ruleset_version or fallback_ruleset_version
     in_review_count = session.execute(
         select(func.count(CaseReview.id)).where(
             CaseReview.feature_version == subject_feature_version,
@@ -523,10 +540,8 @@ def _build_signals(
                 severity = _severity_for_failure_rate(metric_key, subject_value)
         elif metric_key.startswith("freshness."):
             freshness_payload = freshness_values.get(metric_key)
-            subject_value = _as_float(
-                _as_dict(freshness_payload).get("subject_value"),
-                scale=2,
-            )
+            raw_freshness_value = _as_dict(freshness_payload).get("subject_value")
+            subject_value = _as_half_up_float(raw_freshness_value, scale=2)
             sample_size = _as_int(_as_dict(freshness_payload).get("sample_size"))
             if subject_value is None:
                 ignored = True
@@ -1337,6 +1352,24 @@ def _as_float(value: Any, *, scale: int = 4) -> Optional[float]:
             return None
         try:
             return round(float(stripped), scale)
+        except ValueError:
+            return None
+    return None
+
+
+def _as_half_up_float(value: Any, *, scale: int) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return _round_half_up(float(value), scale=scale)
+    if isinstance(value, (int, float)):
+        return _round_half_up(float(value), scale=scale)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return _round_half_up(float(stripped), scale=scale)
         except ValueError:
             return None
     return None

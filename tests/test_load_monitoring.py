@@ -261,6 +261,71 @@ def test_load_monitor_cli_writes_diagnostics_and_alert_payload(
     assert alert_payload["alert"]["severity"] == "warn"
 
 
+def test_load_monitoring_filters_history_by_feature_and_ruleset_version(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_history_filter.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    for day_offset in (3, 2):
+        _write_refresh_run(
+            artifact_base_dir=artifact_base_dir,
+            run_id=f"2026031{day_offset}_daily_refresh_feature_v1_scoring_rules_v1",
+            run_finished_at=fixed_now - timedelta(days=day_offset),
+            duration_seconds=100.0,
+            review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+            reviewed_case_count=2,
+            threshold_candidate_count=1,
+            exclusion_candidate_count=0,
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+        )
+
+    _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260315_daily_refresh_feature_v2_scoring_rules_v2",
+        run_finished_at=fixed_now - timedelta(days=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+        feature_version="feature_v2",
+        ruleset_version="scoring_rules_v2",
+    )
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_filter_subject",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=220.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+    )
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    duration_signal = _signal_by_metric(payload, "duration.total_seconds")
+    assert duration_signal["ignored"] is True
+    assert duration_signal["ignore_reason"] == "insufficient_history"
+
+
 def _queue_rows(
     *, high: int, medium: int, low: int, unreviewed: int
 ) -> list[dict[str, object]]:
@@ -296,11 +361,11 @@ def _write_refresh_run(
     reviewed_case_count: int,
     threshold_candidate_count: int,
     exclusion_candidate_count: int,
+    feature_version: str = "feature_v1",
+    ruleset_version: str = "scoring_rules_v1",
 ) -> Path:
     run_date = run_finished_at.strftime("%Y%m%d")
     profile_name = "daily_refresh"
-    feature_version = "feature_v1"
-    ruleset_version = "scoring_rules_v1"
     root_path = artifact_base_dir / run_date / profile_name / run_id
     health_dir = root_path / "health_summary"
     analysis_dir = root_path / "analysis_artifacts"
