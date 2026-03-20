@@ -79,7 +79,7 @@ Recommended path:
 Path token rule:
 
 - `run_date` uses `YYYYMMDD` format, consistent with
-  `REFRESH_AUTOMATION_V1.md`.
+  `docs/planning/SPRINT_7/REFRESH_AUTOMATION_V1.md`.
 
 Recommended keys:
 

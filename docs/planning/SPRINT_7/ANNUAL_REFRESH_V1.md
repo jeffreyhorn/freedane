@@ -149,7 +149,7 @@ Annual requirement:
 
 Required commands:
 
-- `.venv/bin/accessdane sales-ratio-study --version-tag <annual_sales_ratio_tag>`
+- `.venv/bin/accessdane sales-ratio-study --version-tag <sales_ratio_version_tag>`
 - `.venv/bin/accessdane build-features --feature-version <annual_feature_version>`
 - `.venv/bin/accessdane score-fraud --feature-version <annual_feature_version> --ruleset-version <ruleset_version>`
 
