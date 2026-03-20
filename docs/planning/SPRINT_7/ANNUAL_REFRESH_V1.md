@@ -100,9 +100,11 @@ Required checks before any ingest/build:
 
 Failure behavior:
 
-- if any preflight check fails, run status is `failed` and no downstream stage
-  may execute
+- if any preflight check fails, runner execution status is `failed` (per
+  `REFRESH_AUTOMATION_V1`) and no downstream stage may execute
 - failure must include explicit `error.code` and failing checkpoint identifier
+  in the runner execution result; any associated sign-off record `run.status`
+  remains within `pending_signoff|approved|rejected` and does not use `failed`
 
 #### 2) `ingest_context`
 
@@ -202,9 +204,9 @@ All checkpoints are required for annual completion.
 
 Each annual refresh run must produce a sign-off record JSON artifact.
 
-Required path:
+Required path (stage-scoped convention):
 
-- `data/refresh_runs/<run_date>/annual_refresh/<run_id>/governance/annual_signoff.json`
+- `data/refresh_runs/<run_date>/annual_refresh/<run_id>/annual_signoff/annual_signoff.json`
 
 Required top-level keys:
 
@@ -220,8 +222,13 @@ Required top-level keys:
 - `run_id`
 - `profile_name` (must be `annual_refresh`)
 - `status` (`pending_signoff|approved|rejected`)
-- `created_at`
-- `updated_at`
+- `created_at` (RFC3339/ISO-8601 UTC timestamp with trailing `Z`)
+- `updated_at` (RFC3339/ISO-8601 UTC timestamp with trailing `Z`)
+
+Timestamp format rule:
+
+- All `*_at` fields in this sign-off contract must use RFC3339/ISO-8601 UTC
+  timestamps with trailing `Z`.
 
 ### `annual_context` object
 
@@ -236,7 +243,7 @@ Required top-level keys:
 Each checkpoint object must include:
 
 - `checkpoint_id` (for example `CP-03_CONTEXT_REBUILD_VALIDATION`)
-- `status` (`pending|passed|failed|waived`)
+- `status` (`pending|passed|failed`)
 - `reviewer`
 - `reviewed_at` (nullable while `pending`)
 - `evidence_paths` (array)
@@ -244,7 +251,6 @@ Each checkpoint object must include:
 
 Rules:
 
-- `waived` is disallowed for `CP-06_CUTOVER_AUTHORIZATION`.
 - annual run cannot be `approved` if any checkpoint is `pending` or `failed`.
 
 ### `approvals` array
@@ -259,6 +265,14 @@ Required for approval:
   - `decided_at`
   - `comment` (nullable)
 
+Approval rollup rules:
+
+- `run.status = approved` requires at least two `approve` decisions and zero
+  `reject` decisions.
+- any `reject` decision forces `run.status = rejected`.
+- `run.status = pending_signoff` is allowed only when zero `reject` decisions
+  exist and approval threshold has not yet been met.
+
 ### `artifacts` object
 
 - `refresh_run_payload_path`
@@ -270,7 +284,7 @@ Required for approval:
 
 ### `error` object
 
-- `null` when status is `approved`
+- `null` when status is `approved` or `pending_signoff`
 - required when status is `rejected`, with:
   - `code`
   - `message`
@@ -299,7 +313,7 @@ v1 supports correction replay after annual cutover using explicit run context.
 - replay runs must produce a new `run_id`; they do not overwrite prior sign-off
   artifacts
 - replay run output must emit a correction summary artifact:
-  - `governance/correction_summary.json`
+  - `correction_summary/correction_summary.json`
 
 ### Correction summary contract
 
@@ -346,8 +360,8 @@ Per annual run root:
 - `analysis_artifacts/review_feedback.json`
 - `investigation_artifacts/investigation_report.json`
 - `investigation_artifacts/investigation_report.html`
-- `governance/annual_signoff.json`
-- `governance/correction_summary.json` (only for correction replay runs)
+- `annual_signoff/annual_signoff.json`
+- `correction_summary/correction_summary.json` (only for correction replay runs)
 
 ## Failure Semantics (v1)
 
@@ -362,4 +376,3 @@ Per annual run root:
 - operator checkpoints and sign-off schema are explicit
 - replay/backfill correction policy is explicit and versioned
 - threshold promotion linkage to annual review-feedback evidence is explicit
-

@@ -38,7 +38,7 @@ Promotion review may be initiated when at least one condition is true:
 Every promotion proposal must include:
 
 - approved annual sign-off record:
-  - `governance/annual_signoff.json`
+  - `annual_signoff/annual_signoff.json`
 - latest applicable review-feedback artifact:
   - `analysis_artifacts/review_feedback.json`
 - associated refresh run payload:
@@ -74,7 +74,7 @@ Each governance decision should emit one decision record artifact.
 
 Recommended path:
 
-- `data/refresh_runs/<run_date>/annual_refresh/<run_id>/governance/threshold_promotion_decision.json`
+- `data/refresh_runs/<run_date>/annual_refresh/<run_id>/threshold_promotion_decision/threshold_promotion_decision.json`
 
 Recommended keys:
 
@@ -84,7 +84,12 @@ Recommended keys:
 4. `approvers`
 5. `publication`
 6. `monitoring_plan`
-7. `error`
+7. `error` (nullable)
+
+Timestamp format rule:
+
+- All `*_at` fields in this decision record contract must use RFC3339/ISO-8601
+  UTC timestamps with trailing `Z`.
 
 ### `proposal`
 
@@ -92,6 +97,7 @@ Recommended keys:
 - `parent_run_id`
 - `current_feature_version`
 - `current_ruleset_version`
+- `current_threshold_set_version`
 - `proposed_feature_version` (nullable)
 - `proposed_ruleset_version` (nullable)
 - `proposed_threshold_set_version`
@@ -107,7 +113,7 @@ Recommended keys:
 
 ### `decision`
 
-- `status` (`approved|rejected|needs_revision`)
+- `status` (`approved|rejected|needs_revision|error`)
 - `decided_at`
 - `rationale`
 - `effective_date` (nullable unless approved)
@@ -119,12 +125,25 @@ Array of reviewer decisions:
 - `reviewer`
 - `role`
 - `decision` (`approve|reject`)
+- `decided_at`
 - `comment` (nullable)
+
+Decision consistency rules:
+
+- `decision.status = approved` requires at least two `approve` reviewer
+  decisions and zero `reject` reviewer decisions.
+- any reviewer `reject` decision forces `decision.status = rejected`.
+- `decision.status = needs_revision` is used when there are zero reviewer
+  rejects but required approval threshold is not met and reviewers request
+  proposal changes.
+- `decision.status = error` is reserved for non-decision system/process failures
+  where a valid governance outcome cannot be issued.
 
 ### `publication`
 
 - `published_threshold_set_version` (nullable)
 - `published_ruleset_version` (nullable)
+- `published_feature_version` (nullable)
 - `change_log_entry` (nullable)
 
 ### `monitoring_plan`
@@ -132,6 +151,17 @@ Array of reviewer decisions:
 - `owner`
 - `first_check_at`
 - `checks` (array; examples: `load_monitor`, `review_feedback_delta`)
+
+### `error`
+
+- top-level `error` key must always be present
+- `error` must be `null` when `decision.status` is `approved`, `rejected`, or
+  `needs_revision`
+- `error` must be a non-null object when `decision.status = error`
+- error object must include:
+  - `code` (stable machine-parseable identifier)
+  - `message` (human-readable explanation)
+  - `details` (optional structured context)
 
 ## Rollback Expectations
 
@@ -154,4 +184,3 @@ Approved promotions must define a rollback path before publication:
   simplifies evidence packet assembly.
 - Days 11-12: benchmark pack outputs should be added as required promotion
   evidence once contract and generator are in place.
-
