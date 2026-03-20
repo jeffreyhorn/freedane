@@ -698,6 +698,98 @@ def test_load_monitoring_ignores_unsafe_artifacts_root_path_in_subject_payload(
     assert all(str(external_root) not in artifact for artifact in source_artifacts)
 
 
+def test_load_monitoring_rejects_subject_refresh_payload_outside_artifact_base(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_subject_payload_outside_base.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    external_artifact_dir = tmp_path / "external_refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=external_artifact_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_external_subject",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert "subject_refresh_payload_path" in payload["error"]["message"]
+    assert "escapes artifact_base_dir" in payload["error"]["message"]
+
+
+def test_load_monitoring_failure_payload_carries_warnings_and_source_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_failure_context.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_failure_context",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    corrupt_history_path = (
+        artifact_base_dir
+        / "20260317"
+        / "daily_refresh"
+        / "corrupt_history"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    corrupt_history_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_history_path.write_text("{invalid json", encoding="utf-8")
+
+    def _raise_signal_error(**_: object) -> dict[str, object]:
+        raise RuntimeError("forced signal failure")
+
+    monkeypatch.setattr(load_monitoring, "_build_signals", _raise_signal_error)
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"]["message"] == "forced signal failure"
+    assert any(
+        warning.startswith("history_sample_skipped:")
+        for warning in payload["diagnostics"]["warnings"]
+    )
+    assert str(subject_path) in payload["diagnostics"]["source_artifacts"]
+
+
 def test_load_monitoring_baseline_uses_prior_runs_only_for_subject_run_id(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -239,6 +239,8 @@ def build_load_diagnostics(
             finished_at=finished_dt,
             message=str(exc),
             run_persisted=run_persisted,
+            warnings=warnings,
+            source_artifacts=source_artifacts,
         )
 
 
@@ -250,6 +252,8 @@ def build_failed_load_diagnostics(
     finished_at: datetime,
     message: str,
     run_persisted: bool = False,
+    warnings: Optional[list[str]] = None,
+    source_artifacts: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     window_bounds = {
         window_key: {"start_at": None, "end_at": None} for window_key, _ in WINDOW_ORDER
@@ -287,8 +291,8 @@ def build_failed_load_diagnostics(
         "rollups": [],
         "alerts": [],
         "diagnostics": {
-            "warnings": [],
-            "source_artifacts": [],
+            "warnings": sorted(warnings or []),
+            "source_artifacts": sorted(source_artifacts or set()),
             "history": {
                 "profile_name": profile_name,
                 "sample_count_total": 0,
@@ -1066,9 +1070,16 @@ def _resolve_subject_context(
     )
 
     if subject_refresh_payload_path is not None:
-        sample = _load_refresh_sample(subject_refresh_payload_path, source_artifacts)
+        resolved_subject_refresh_payload_path = _resolve_path_within_base_dir(
+            base_dir=artifact_base_dir,
+            candidate_path=subject_refresh_payload_path,
+            source="subject_refresh_payload_path",
+        )
+        sample = _load_refresh_sample(
+            resolved_subject_refresh_payload_path, source_artifacts
+        )
         return _SubjectContext(
-            sample=sample, refresh_payload_path=subject_refresh_payload_path
+            sample=sample, refresh_payload_path=resolved_subject_refresh_payload_path
         )
 
     if validated_subject_run_id:
@@ -1103,10 +1114,10 @@ def _resolve_subject_context(
     root_path = _as_str(_as_dict(latest_payload).get("root_path"))
     if root_path is None:
         raise ValueError("latest_run.json is missing root_path.")
-    resolved_root = _resolve_root_path_within_base_dir(
+    resolved_root = _resolve_path_within_base_dir(
         base_dir=artifact_base_dir,
-        root_path=root_path,
-        source="latest_run.json",
+        candidate_path=root_path,
+        source="latest_run.json root_path",
     )
     subject_path = resolved_root / "health_summary" / "refresh_run_payload.json"
     sample = _load_refresh_sample(subject_path, source_artifacts)
@@ -1155,11 +1166,12 @@ def _validate_artifact_component(value: str, *, name: str) -> str:
     return value
 
 
-def _resolve_root_path_within_base_dir(
-    *, base_dir: Path, root_path: str, source: str
+def _resolve_path_within_base_dir(
+    *, base_dir: Path, candidate_path: str | Path, source: str
 ) -> Path:
     base_dir_resolved = base_dir.resolve()
-    candidate_root = Path(root_path)
+    raw_candidate = str(candidate_path)
+    candidate_root = Path(candidate_path)
     if not candidate_root.is_absolute():
         candidate_root = base_dir_resolved / candidate_root
     resolved_root = candidate_root.resolve()
@@ -1167,7 +1179,7 @@ def _resolve_root_path_within_base_dir(
         resolved_root.relative_to(base_dir_resolved)
     except ValueError as exc:
         raise ValueError(
-            f"{source} root_path '{root_path}' escapes artifact_base_dir "
+            f"{source} '{raw_candidate}' escapes artifact_base_dir "
             f"'{base_dir_resolved}'."
         ) from exc
     return resolved_root
@@ -1240,10 +1252,10 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
     root_path = _as_str(_as_dict(payload.get("artifacts")).get("root_path"))
     if root_path is not None:
         try:
-            resolved_root = _resolve_root_path_within_base_dir(
+            resolved_root = _resolve_path_within_base_dir(
                 base_dir=expected_root,
-                root_path=root_path,
-                source=str(path),
+                candidate_path=root_path,
+                source=f"{path} artifacts.root_path",
             )
         except ValueError:
             resolved_root = expected_root
