@@ -967,7 +967,7 @@ def _validate_annual_preflight(
     if replay_mode not in ANNUAL_REPLAY_MODES:
         return {
             "code": "invalid_replay_mode",
-            "checkpoint_id": "PREFLIGHT_REPLAY_CONTEXT",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
             "message": (
                 "replay_mode must be one of: " + ", ".join(ANNUAL_REPLAY_MODES) + "."
             ),
@@ -976,13 +976,13 @@ def _validate_annual_preflight(
         if not parent_run_id:
             return {
                 "code": "missing_parent_run_id",
-                "checkpoint_id": "PREFLIGHT_REPLAY_CONTEXT",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
                 "message": "parent_run_id is required for correction_replay mode.",
             }
         if not _SAFE_PATH_SEGMENT_RE.fullmatch(parent_run_id):
             return {
                 "code": "invalid_parent_run_id",
-                "checkpoint_id": "PREFLIGHT_REPLAY_CONTEXT",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
                 "message": (
                     "parent_run_id contains unsupported path characters; only "
                     "letters, digits, '.', '_' and '-' are allowed."
@@ -991,7 +991,7 @@ def _validate_annual_preflight(
         if not correction_reason_code:
             return {
                 "code": "missing_correction_reason_code",
-                "checkpoint_id": "PREFLIGHT_REPLAY_CONTEXT",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
                 "message": (
                     "correction_reason_code is required for correction_replay mode."
                 ),
@@ -999,7 +999,7 @@ def _validate_annual_preflight(
         if correction_reason_code not in ANNUAL_CORRECTION_REASON_CODES:
             return {
                 "code": "invalid_correction_reason_code",
-                "checkpoint_id": "PREFLIGHT_REPLAY_CONTEXT",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
                 "message": (
                     "correction_reason_code must be one of: "
                     + ", ".join(sorted(ANNUAL_CORRECTION_REASON_CODES))
@@ -1009,7 +1009,7 @@ def _validate_annual_preflight(
     elif parent_run_id is not None or correction_reason_code is not None:
         return {
             "code": "invalid_replay_context",
-            "checkpoint_id": "PREFLIGHT_REPLAY_CONTEXT",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
             "message": (
                 "parent_run_id and correction_reason_code are only allowed when "
                 "replay_mode is correction_replay."
@@ -1023,7 +1023,7 @@ def _validate_annual_preflight(
     except OSError as exc:
         return {
             "code": "artifact_root_not_writable",
-            "checkpoint_id": "PREFLIGHT_DESTINATION_WRITABLE",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
             "message": (
                 "artifact destination is not writable: "
                 f"{write_probe_path.parent} ({exc})."
@@ -1031,15 +1031,6 @@ def _validate_annual_preflight(
         }
     finally:
         _safe_unlink(write_probe_path)
-    lock_path = artifact_base_dir / "locks" / "annual_refresh.lock"
-    if lock_path.exists():
-        return {
-            "code": "overlapping_run",
-            "checkpoint_id": "PREFLIGHT_LOCK_AVAILABILITY",
-            "message": (
-                f"Another annual_refresh run is already active (lock: {lock_path})."
-            ),
-        }
     return None
 
 
