@@ -584,6 +584,120 @@ def test_load_monitoring_rejects_unsafe_profile_name_from_subject_payload(
     assert "Invalid profile_name '../unsafe_profile'" in payload["error"]["message"]
 
 
+def test_load_monitoring_rejects_latest_pointer_root_path_outside_artifact_base(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_latest_pointer_escape.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    latest_pointer = (
+        artifact_base_dir
+        / "latest"
+        / "daily_refresh"
+        / "feature_v1"
+        / "scoring_rules_v1"
+        / "latest_run.json"
+    )
+    latest_pointer.parent.mkdir(parents=True, exist_ok=True)
+    latest_pointer.write_text(
+        json.dumps({"root_path": str(tmp_path / "outside_root")}, indent=2),
+        encoding="utf-8",
+    )
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert "latest_run.json root_path" in payload["error"]["message"]
+    assert "escapes artifact_base_dir" in payload["error"]["message"]
+
+
+def test_load_monitoring_ignores_unsafe_artifacts_root_path_in_subject_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_unsafe_artifacts_root.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260317_daily_refresh_feature_v1_scoring_rules_v1_history",
+        run_finished_at=fixed_now - timedelta(days=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=1, medium=1, low=1, unreviewed=1),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    subject_rows = _queue_rows(high=2, medium=1, low=1, unreviewed=2)
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_unsafe_artifacts",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=subject_rows,
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+
+    external_root = tmp_path / "external_run_root"
+    external_analysis_dir = external_root / "analysis_artifacts"
+    external_analysis_dir.mkdir(parents=True, exist_ok=True)
+    (external_analysis_dir / "review_queue.json").write_text(
+        json.dumps({"summary": {"returned_count": 999}, "rows": []}, indent=2),
+        encoding="utf-8",
+    )
+    (external_analysis_dir / "review_feedback.json").write_text(
+        json.dumps(
+            {
+                "summary": {"reviewed_case_count": 999},
+                "recommendations": {
+                    "threshold_tuning_candidates": [{"reason_code": "R"}] * 999,
+                    "exclusion_tuning_candidates": [],
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    subject_payload = json.loads(subject_path.read_text(encoding="utf-8"))
+    subject_payload["artifacts"]["root_path"] = str(external_root)
+    subject_path.write_text(json.dumps(subject_payload, indent=2), encoding="utf-8")
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    queue_volume_signal = _signal_by_metric(
+        payload, "volume.review_queue.returned_count"
+    )
+    assert queue_volume_signal["subject_value"] == float(len(subject_rows))
+    source_artifacts = payload["diagnostics"]["source_artifacts"]
+    assert all(str(external_root) not in artifact for artifact in source_artifacts)
+
+
 def test_load_monitoring_baseline_uses_prior_runs_only_for_subject_run_id(
     tmp_path: Path, monkeypatch
 ) -> None:

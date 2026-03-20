@@ -1103,7 +1103,12 @@ def _resolve_subject_context(
     root_path = _as_str(_as_dict(latest_payload).get("root_path"))
     if root_path is None:
         raise ValueError("latest_run.json is missing root_path.")
-    subject_path = Path(root_path) / "health_summary" / "refresh_run_payload.json"
+    resolved_root = _resolve_root_path_within_base_dir(
+        base_dir=artifact_base_dir,
+        root_path=root_path,
+        source="latest_run.json",
+    )
+    subject_path = resolved_root / "health_summary" / "refresh_run_payload.json"
     sample = _load_refresh_sample(subject_path, source_artifacts)
     return _SubjectContext(sample=sample, refresh_payload_path=subject_path)
 
@@ -1148,6 +1153,24 @@ def _validate_artifact_component(value: str, *, name: str) -> str:
     if not _SAFE_ARTIFACT_COMPONENT_RE.fullmatch(value):
         raise ValueError(f"Invalid {name} '{value}': expected [A-Za-z0-9_.-]+.")
     return value
+
+
+def _resolve_root_path_within_base_dir(
+    *, base_dir: Path, root_path: str, source: str
+) -> Path:
+    base_dir_resolved = base_dir.resolve()
+    candidate_root = Path(root_path)
+    if not candidate_root.is_absolute():
+        candidate_root = base_dir_resolved / candidate_root
+    resolved_root = candidate_root.resolve()
+    try:
+        resolved_root.relative_to(base_dir_resolved)
+    except ValueError as exc:
+        raise ValueError(
+            f"{source} root_path '{root_path}' escapes artifact_base_dir "
+            f"'{base_dir_resolved}'."
+        ) from exc
+    return resolved_root
 
 
 def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySample:
@@ -1212,10 +1235,19 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
             continue
         skip_reason_by_stage_id[stage_id] = reason
 
+    expected_root = path.parent.parent.resolve()
+    analysis_dir = expected_root / "analysis_artifacts"
     root_path = _as_str(_as_dict(payload.get("artifacts")).get("root_path"))
-    if root_path is None:
-        root_path = str(path.parent.parent)
-    analysis_dir = Path(root_path) / "analysis_artifacts"
+    if root_path is not None:
+        try:
+            resolved_root = _resolve_root_path_within_base_dir(
+                base_dir=expected_root,
+                root_path=root_path,
+                source=str(path),
+            )
+        except ValueError:
+            resolved_root = expected_root
+        analysis_dir = resolved_root / "analysis_artifacts"
     review_queue_path = analysis_dir / "review_queue.json"
     review_feedback_path = analysis_dir / "review_feedback.json"
     review_queue_payload: dict[str, Any] = {}
