@@ -115,7 +115,8 @@ Timestamp format rule:
 - `status` (`approved|rejected|needs_revision|error`)
 - `decided_at`
 - `rationale`
-- `effective_date` (nullable unless approved)
+- `effective_date` (`YYYY-MM-DD`; required when `decision.status = approved`,
+  otherwise must be `null`)
 
 ### `approvers`
 

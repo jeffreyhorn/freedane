@@ -281,6 +281,11 @@ Rules:
   non-null.
 - `CP-06_CUTOVER_AUTHORIZATION` checkpoint status is derived from the approvals
   array rollup rules below; no separate secondary approval source is used.
+- `CP-06_CUTOVER_AUTHORIZATION` status mapping:
+  - `passed` when approval threshold is met (at least two distinct approves,
+    zero rejects)
+  - `failed` when any reject decision exists
+  - `pending` otherwise
 
 ### `approvals` array
 
@@ -351,6 +356,8 @@ v1 supports correction replay after annual cutover using explicit run context.
   artifacts
 - replay run output must emit a correction summary artifact:
   - `correction_summary/correction_summary.json`
+- `correction_summary` is a replay-mode governance artifact, not a canonical
+  refresh stage; it is required only when `request.replay_mode = correction_replay`
 
 ### Correction summary contract
 
