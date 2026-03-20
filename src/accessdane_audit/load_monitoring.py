@@ -493,11 +493,15 @@ def _build_signals(
     )
 
     bounds_30d = window_bounds.get("window_30d", {})
+    subject_event_at = subject.sample_event_at
     baseline_candidates = [
         sample
         for sample in history
         if sample.run_status == "succeeded"
         and sample.run_id != subject.run_id
+        and sample.sample_event_at is not None
+        and subject_event_at is not None
+        and sample.sample_event_at <= subject_event_at
         and _in_window(
             sample.sample_event_at,
             start_at=_as_datetime(bounds_30d.get("start_at")),

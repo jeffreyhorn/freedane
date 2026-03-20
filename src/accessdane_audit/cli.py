@@ -2779,16 +2779,12 @@ def load_monitor_cmd(
             subject_run_id=subject_run_id,
             subject_refresh_payload_path=subject_refresh_payload,
             monitor_run_id=run_id,
-            run_persisted=False,
+            run_persisted=out is not None,
         )
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        run_payload = payload.get("run")
-        if isinstance(run_payload, dict):
-            run_payload["run_persisted"] = True
-            out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     else:
         typer.echo(json.dumps(payload, indent=2))
 
