@@ -79,7 +79,7 @@ Presence rules:
   - `summary.overall_severity = critical`
   - all summary counts (`signal_count`, per-severity counts, `evaluated_metric_count`, `ignored_metric_count`) = `0`
   - `alerts = []`
-  - `diagnostics.warnings = []` and `diagnostics.source_artifacts = []`
+  - `diagnostics.warnings` and `diagnostics.source_artifacts` must be present arrays; they may include pre-failure context collected before the error (or be empty when no context was collected)
   - `diagnostics.history.profile_name = subject.profile_name`
   - `diagnostics.history.sample_count_total = 0`
   - `diagnostics.history.window_bounds` must include `window_1d`, `window_7d`, `window_14d`, and `window_30d` with `start_at = null` and `end_at = null`

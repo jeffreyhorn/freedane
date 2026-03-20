@@ -35,6 +35,10 @@ from .investigation_report import (
     DEFAULT_REPORT_HTML_PATH,
     build_investigation_report,
 )
+from .load_monitoring import (
+    build_alert_payload_from_diagnostics,
+    build_load_diagnostics,
+)
 from .models import (
     AssessmentRecord,
     Fetch,
@@ -2719,6 +2723,85 @@ def parser_drift_diff_cmd(
         if alert_payload is not None:
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+
+
+@app.command("load-monitor")
+def load_monitor_cmd(
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Diagnostics JSON output path"
+    ),
+    alert_out: Optional[Path] = typer.Option(
+        None, "--alert-out", help="Alert JSON output path"
+    ),
+    artifact_base_dir: Path = typer.Option(
+        Path("data/refresh_runs"),
+        "--artifact-base-dir",
+        help="Base directory for refresh artifacts",
+    ),
+    profile_name: str = typer.Option(
+        "daily_refresh", "--profile-name", help="Refresh profile to evaluate"
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1", "--feature-version", help="Feature version selector"
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1", "--ruleset-version", help="Ruleset version selector"
+    ),
+    subject_run_id: Optional[str] = typer.Option(
+        None, "--subject-run-id", help="Optional subject run id override"
+    ),
+    subject_refresh_payload: Optional[Path] = typer.Option(
+        None,
+        "--subject-refresh-payload",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional subject refresh payload path override",
+    ),
+    run_id: Optional[str] = typer.Option(
+        None, "--run-id", help="Optional monitor run id override"
+    ),
+) -> None:
+    if subject_run_id and subject_refresh_payload:
+        raise typer.BadParameter(
+            "Specify at most one of --subject-run-id or --subject-refresh-payload."
+        )
+
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name=profile_name,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            subject_run_id=subject_run_id,
+            subject_refresh_payload_path=subject_refresh_payload,
+            monitor_run_id=run_id,
+            run_persisted=out is not None,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    if alert_out:
+        alert_payload = build_alert_payload_from_diagnostics(payload)
+        if (
+            alert_payload is not None
+            and isinstance(alert_payload, dict)
+            and alert_payload.get("error") is None
+            and alert_payload.get("alert") is not None
+        ):
+            alert_out.parent.mkdir(parents=True, exist_ok=True)
+            alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+
+    run_payload = payload.get("run", {})
+    if isinstance(run_payload, dict) and run_payload.get("status") == "failed":
+        raise typer.Exit(code=1)
 
 
 def _collect_ids(ids: Iterable[str], ids_file: Optional[Path]) -> list[str]:
