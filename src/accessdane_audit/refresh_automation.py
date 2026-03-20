@@ -216,6 +216,10 @@ def run_scheduled_refresh(
         source_manifest_paths.append(str(assessment_manifest_file))
     if retr_file is not None:
         source_manifest_paths.append(str(retr_file))
+    if permits_file is not None:
+        source_manifest_paths.append(str(permits_file))
+    if appeals_file is not None:
+        source_manifest_paths.append(str(appeals_file))
     request: RefreshRequest = {
         "profile_name": profile_name,
         "run_date": run_date,
@@ -1122,13 +1126,15 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
         if str(failure_artifact_path) not in health_stage_artifacts:
             health_stage_artifacts.append(str(failure_artifact_path))
 
-    if payload["run"]["profile_name"] == "annual_refresh":
-        _persist_annual_artifacts(payload=payload, root_path=root_path)
-
     payload["run"]["run_persisted"] = True
     _write_json_atomic(refresh_payload_path, payload)
     if str(refresh_payload_path) not in health_stage_artifacts:
         health_stage_artifacts.append(str(refresh_payload_path))
+    if payload["run"]["profile_name"] == "annual_refresh":
+        # Publish the base refresh payload before annual signoff/checklist files so
+        # annual_signoff references never point at a not-yet-written payload path.
+        _persist_annual_artifacts(payload=payload, root_path=root_path)
+        _write_json_atomic(refresh_payload_path, payload)
 
     latest_pointer_path.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(

@@ -1267,12 +1267,17 @@ def refresh_runner_cmd(
         )
     resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
     if resolved_retry_stage and attempt_count <= 1:
+        retry_param_hint = (
+            "--retried-from-stage-id"
+            if retried_from_stage_id is not None
+            else "--resume-from-stage-id"
+        )
         raise typer.BadParameter(
             (
                 "--retried-from-stage-id/--resume-from-stage-id requires "
                 "--attempt-count >= 2."
             ),
-            param_hint="--resume-from-stage-id",
+            param_hint=retry_param_hint,
         )
     resolved_run_id = run_id or (
         f"{resolved_run_date}_{profile_name}_{feature_version}_{ruleset_version}"
@@ -1450,12 +1455,17 @@ def annual_refresh_runner_cmd(
         )
     resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
     if resolved_retry_stage and attempt_count <= 1:
+        retry_param_hint = (
+            "--retried-from-stage-id"
+            if retried_from_stage_id is not None
+            else "--resume-from-stage-id"
+        )
         raise typer.BadParameter(
             (
                 "--retried-from-stage-id/--resume-from-stage-id requires "
                 "--attempt-count >= 2."
             ),
-            param_hint="--resume-from-stage-id",
+            param_hint=retry_param_hint,
         )
     resolved_run_id = run_id or (
         f"{resolved_run_date}_annual_refresh_{feature_version}_{ruleset_version}"

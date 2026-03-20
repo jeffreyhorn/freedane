@@ -507,6 +507,56 @@ def test_run_scheduled_refresh_annual_retry_reexecutes_from_stage_boundary_only(
     }
 
 
+def test_run_scheduled_refresh_correction_summary_includes_optional_sources(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    retr_file = tmp_path / "retr.csv"
+    permits_file = tmp_path / "permits.csv"
+    appeals_file = tmp_path / "appeals.csv"
+    assessment_manifest_file = tmp_path / "assessment_manifest.json"
+    retr_file.write_text("header\n", encoding="utf-8")
+    permits_file.write_text("header\n", encoding="utf-8")
+    appeals_file.write_text("header\n", encoding="utf-8")
+    assessment_manifest_file.write_text(
+        '{"files": ["roll_2026.csv"]}\n', encoding="utf-8"
+    )
+
+    payload = run_scheduled_refresh(
+        profile_name="annual_refresh",
+        run_date="20260316",
+        run_id="20260316_annual_refresh_feature_v1_scoring_rules_v1_131313",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=retr_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+        assessment_manifest_file=assessment_manifest_file,
+        annual_target_year=2026,
+        replay_mode="correction_replay",
+        parent_run_id="20260315_annual_refresh_feature_v1_scoring_rules_v1_010101",
+        correction_reason_code="correction_replay_permits",
+        command_executor=lambda _: 0,
+    )
+
+    correction_summary_path = (
+        Path(payload["artifacts"]["root_path"])
+        / "correction_summary"
+        / "correction_summary.json"
+    )
+    correction_summary = json.loads(correction_summary_path.read_text(encoding="utf-8"))
+    assert correction_summary["corrected_sources"] == [
+        str(assessment_manifest_file),
+        str(retr_file),
+        str(permits_file),
+        str(appeals_file),
+    ]
+
+
 def test_run_scheduled_refresh_rejects_invalid_retry_boundary_without_execution(
     tmp_path: Path,
 ) -> None:
@@ -752,3 +802,55 @@ def test_annual_refresh_runner_cli_writes_json_output(
     assert result.exit_code == 0, result.stdout
     assert output_path.exists()
     assert '"run_id": "annual-run-1"' in output_path.read_text(encoding="utf-8")
+
+
+def test_refresh_runner_cli_retry_hint_uses_retried_flag(tmp_path: Path) -> None:
+    runner = CliRunner()
+    retr_file = tmp_path / "retr.csv"
+    retr_file.write_text("header\n", encoding="utf-8")
+    result = runner.invoke(
+        cli.app,
+        [
+            "refresh-runner",
+            "--run-date",
+            "20260316",
+            "--retried-from-stage-id",
+            "score_pipeline",
+            "--retr-file",
+            str(retr_file),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--retried-from-stage-id" in result.output
+
+
+def test_annual_refresh_runner_cli_retry_hint_uses_retried_flag(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    retr_file = tmp_path / "retr.csv"
+    assessment_manifest_file = tmp_path / "assessment_manifest.json"
+    retr_file.write_text("header\n", encoding="utf-8")
+    assessment_manifest_file.write_text(
+        '{"files": ["roll_2026.csv"]}\n', encoding="utf-8"
+    )
+    result = runner.invoke(
+        cli.app,
+        [
+            "annual-refresh-runner",
+            "--run-date",
+            "20260316",
+            "--annual-target-year",
+            "2026",
+            "--assessment-manifest-file",
+            str(assessment_manifest_file),
+            "--retr-file",
+            str(retr_file),
+            "--retried-from-stage-id",
+            "score_pipeline",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--retried-from-stage-id" in result.output
