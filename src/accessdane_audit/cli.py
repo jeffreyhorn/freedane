@@ -1170,7 +1170,7 @@ def refresh_runner_cmd(
         dir_okay=False,
         readable=True,
         resolve_path=True,
-        help="Optional RETR CSV source file",
+        help="RETR CSV source file (required for annual_refresh; optional otherwise)",
     ),
     assessment_manifest_file: Optional[Path] = typer.Option(
         None,
@@ -1179,7 +1179,10 @@ def refresh_runner_cmd(
         dir_okay=False,
         readable=True,
         resolve_path=True,
-        help="Optional annual assessment-roll manifest file",
+        help=(
+            "Annual assessment-roll manifest file "
+            "(required for annual_refresh; optional otherwise)"
+        ),
     ),
     permits_file: Optional[Path] = typer.Option(
         None,

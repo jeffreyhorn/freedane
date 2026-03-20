@@ -365,6 +365,11 @@ def test_run_scheduled_refresh_annual_profile_emits_signoff_and_checklist_artifa
     )
 
     assert payload["run"]["status"] == "succeeded"
+    assert sorted(payload["request"]["source_files"].keys()) == [
+        "appeals",
+        "permits",
+        "retr",
+    ]
     assert [command[1] for command in executed_commands] == [
         "ingest-retr",
         "match-sales",
@@ -636,6 +641,7 @@ def test_run_scheduled_refresh_annual_profile_reuses_standard_overlapping_lock_e
     assert payload["run"]["status"] == "failed"
     assert payload["error"] is not None
     assert payload["error"]["code"] == "overlapping_run"
+    assert not Path(payload["artifacts"]["root_path"]).exists()
 
 
 def test_run_scheduled_refresh_rejects_invalid_retry_boundary_without_execution(

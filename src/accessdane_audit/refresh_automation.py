@@ -63,7 +63,6 @@ class RefreshRun(TypedDict):
 
 
 class RefreshRequestSourceFiles(TypedDict):
-    assessment_roll: Optional[str]
     retr: Optional[str]
     permits: Optional[str]
     appeals: Optional[str]
@@ -228,11 +227,6 @@ def run_scheduled_refresh(
         "sales_ratio_base": sales_ratio_base,
         "top": top,
         "source_files": {
-            "assessment_roll": (
-                str(assessment_manifest_file)
-                if assessment_manifest_file is not None
-                else None
-            ),
             "retr": str(retr_file) if retr_file is not None else None,
             "permits": str(permits_file) if permits_file is not None else None,
             "appeals": str(appeals_file) if appeals_file is not None else None,
@@ -1015,18 +1009,18 @@ def _validate_annual_preflight(
                 "replay_mode is correction_replay."
             ),
         }
-    root_path = artifact_base_dir / run_date / profile_name / run_id
-    write_probe_path = root_path / "preflight_validation" / ".write_probe"
+    write_probe_path = (
+        artifact_base_dir / f".annual_preflight_probe_{os.getpid()}_{run_date}_{run_id}"
+    )
     try:
-        write_probe_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_base_dir.mkdir(parents=True, exist_ok=True)
         write_probe_path.write_text("ok\n", encoding="utf-8")
     except OSError as exc:
         return {
             "code": "artifact_root_not_writable",
             "checkpoint_id": "CP-01_SOURCE_MANIFEST",
             "message": (
-                "artifact destination is not writable: "
-                f"{write_probe_path.parent} ({exc})."
+                f"artifact destination is not writable: {artifact_base_dir} ({exc})."
             ),
         }
     finally:
@@ -1218,18 +1212,6 @@ def _build_annual_stage_checklist(payload: RefreshPayload) -> dict[str, object]:
                     "reason": "blocked_by_upstream_failure",
                 }
             )
-    if (
-        payload["error"] is not None
-        and payload["error"]["code"] == "annual_preflight_failed"
-    ):
-        blocking_failures.append(
-            {
-                "stage_id": "preflight_validation",
-                "status": "failed",
-                "failed_command_id": None,
-                "reason": payload["error"]["message"],
-            }
-        )
     return {
         "run_id": payload["run"]["run_id"],
         "profile_name": payload["run"]["profile_name"],
