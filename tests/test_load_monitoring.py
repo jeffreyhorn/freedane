@@ -139,6 +139,65 @@ def test_load_monitoring_ok_warn_critical_and_deterministic_payload(
     )
 
 
+def test_load_monitoring_anchors_window_end_at_to_run_finished_at(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_window_anchor.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    subject_finished_at = datetime(2026, 3, 18, 11, 59, tzinfo=timezone.utc)
+
+    _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260317_daily_refresh_feature_v1_scoring_rules_v1_history",
+        run_finished_at=subject_finished_at - timedelta(days=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_window_anchor",
+        run_finished_at=subject_finished_at,
+        duration_seconds=120.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+
+    now_values = [
+        datetime(2026, 3, 18, 12, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 3, 18, 12, 0, 5, tzinfo=timezone.utc),
+    ]
+
+    def _next_now() -> datetime:
+        if not now_values:
+            raise AssertionError("Unexpected extra _now_utc call.")
+        return now_values.pop(0)
+
+    monkeypatch.setattr(load_monitoring, "_now_utc", _next_now)
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    assert payload["run"]["status"] == "succeeded"
+    assert (
+        payload["diagnostics"]["history"]["window_bounds"]["window_1d"]["end_at"]
+        == payload["run"]["finished_at"]
+    )
+
+
 def test_build_alert_payload_from_diagnostics_uses_matching_impacted_signals(
     tmp_path: Path, monkeypatch
 ) -> None:
