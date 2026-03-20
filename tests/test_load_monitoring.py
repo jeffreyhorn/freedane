@@ -488,6 +488,102 @@ def test_load_monitoring_resolves_latest_pointer_and_reports_missing_pointer(
     )
 
 
+def test_load_monitoring_rejects_unsafe_path_components(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_invalid_components.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    invalid_cases = (
+        (
+            "profile_name",
+            {
+                "profile_name": "daily_refresh/*",
+                "feature_version": "feature_v1",
+                "ruleset_version": "scoring_rules_v1",
+            },
+        ),
+        (
+            "feature_version",
+            {
+                "profile_name": "daily_refresh",
+                "feature_version": "../feature_v1",
+                "ruleset_version": "scoring_rules_v1",
+            },
+        ),
+        (
+            "ruleset_version",
+            {
+                "profile_name": "daily_refresh",
+                "feature_version": "feature_v1",
+                "ruleset_version": "scoring_rules_v1/../x",
+            },
+        ),
+        (
+            "subject_run_id",
+            {
+                "profile_name": "daily_refresh",
+                "feature_version": "feature_v1",
+                "ruleset_version": "scoring_rules_v1",
+                "subject_run_id": "../subject",
+            },
+        ),
+    )
+
+    with session_scope(database_url) as session:
+        for field_name, kwargs in invalid_cases:
+            payload = load_monitoring.build_load_diagnostics(
+                session,
+                artifact_base_dir=artifact_base_dir,
+                **kwargs,
+            )
+            assert payload["run"]["status"] == "failed"
+            assert f"Invalid {field_name}" in payload["error"]["message"]
+
+
+def test_load_monitoring_rejects_unsafe_profile_name_from_subject_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_invalid_subject_profile.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_bad_profile",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    subject_payload = json.loads(subject_path.read_text(encoding="utf-8"))
+    subject_payload["run"]["profile_name"] = "../unsafe_profile"
+    subject_payload["request"]["profile_name"] = "../unsafe_profile"
+    subject_path.write_text(json.dumps(subject_payload, indent=2), encoding="utf-8")
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    assert payload["run"]["status"] == "failed"
+    assert "Invalid profile_name '../unsafe_profile'" in payload["error"]["message"]
+
+
 def test_load_monitoring_baseline_uses_prior_runs_only_for_subject_run_id(
     tmp_path: Path, monkeypatch
 ) -> None:

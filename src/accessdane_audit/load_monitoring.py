@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -15,6 +16,7 @@ from .models import CaseReview
 
 RUN_TYPE_LOAD_MONITORING = "load_monitoring"
 LOAD_MONITORING_VERSION_TAG = "load_monitoring_v1"
+_SAFE_ARTIFACT_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 WINDOW_ORDER: tuple[tuple[str, int], ...] = (
     ("window_1d", 24),
@@ -95,12 +97,26 @@ def build_load_diagnostics(
     warnings: list[str] = []
 
     try:
+        validated_profile_name = _validate_artifact_component(
+            profile_name, name="profile_name"
+        )
+        validated_feature_version = _validate_artifact_component(
+            feature_version, name="feature_version"
+        )
+        validated_ruleset_version = _validate_artifact_component(
+            ruleset_version, name="ruleset_version"
+        )
+        validated_subject_run_id = (
+            _validate_artifact_component(subject_run_id, name="subject_run_id")
+            if subject_run_id is not None
+            else None
+        )
         subject_context = _resolve_subject_context(
             artifact_base_dir=artifact_base_dir,
-            profile_name=profile_name,
-            feature_version=feature_version,
-            ruleset_version=ruleset_version,
-            subject_run_id=subject_run_id,
+            profile_name=validated_profile_name,
+            feature_version=validated_feature_version,
+            ruleset_version=validated_ruleset_version,
+            subject_run_id=validated_subject_run_id,
             subject_refresh_payload_path=subject_refresh_payload_path,
             source_artifacts=source_artifacts,
         )
@@ -1034,34 +1050,52 @@ def _resolve_subject_context(
     subject_refresh_payload_path: Optional[Path],
     source_artifacts: set[str],
 ) -> _SubjectContext:
+    validated_profile_name = _validate_artifact_component(
+        profile_name, name="profile_name"
+    )
+    validated_feature_version = _validate_artifact_component(
+        feature_version, name="feature_version"
+    )
+    validated_ruleset_version = _validate_artifact_component(
+        ruleset_version, name="ruleset_version"
+    )
+    validated_subject_run_id = (
+        _validate_artifact_component(subject_run_id, name="subject_run_id")
+        if subject_run_id is not None
+        else None
+    )
+
     if subject_refresh_payload_path is not None:
         sample = _load_refresh_sample(subject_refresh_payload_path, source_artifacts)
         return _SubjectContext(
             sample=sample, refresh_payload_path=subject_refresh_payload_path
         )
 
-    if subject_run_id:
+    if validated_subject_run_id:
         for path in sorted(
             artifact_base_dir.glob(
-                f"*/{profile_name}/{subject_run_id}/health_summary/refresh_run_payload.json"
+                f"*/{validated_profile_name}/{validated_subject_run_id}/health_summary/refresh_run_payload.json"
             )
         ):
             sample = _load_refresh_sample(path, source_artifacts)
-            if sample.run_id == subject_run_id:
+            if sample.run_id == validated_subject_run_id:
                 return _SubjectContext(sample=sample, refresh_payload_path=path)
-        raise ValueError(f"Unable to resolve subject run_id '{subject_run_id}'.")
+        raise ValueError(
+            f"Unable to resolve subject run_id '{validated_subject_run_id}'."
+        )
 
     latest_pointer = (
         artifact_base_dir
         / "latest"
-        / profile_name
-        / feature_version
-        / ruleset_version
+        / validated_profile_name
+        / validated_feature_version
+        / validated_ruleset_version
         / "latest_run.json"
     )
     if not latest_pointer.exists():
+        latest_profile = validated_profile_name
         raise ValueError(
-            f"Unable to resolve latest pointer for profile '{profile_name}' at "
+            f"Unable to resolve latest pointer for profile '{latest_profile}' at "
             f"{latest_pointer}."
         )
     source_artifacts.add(str(latest_pointer))
@@ -1081,10 +1115,13 @@ def _load_history_samples(
     source_artifacts: set[str],
     warnings: list[str],
 ) -> list[_HistorySample]:
+    validated_profile_name = _validate_artifact_component(
+        profile_name, name="profile_name"
+    )
     samples: list[_HistorySample] = []
     for path in sorted(
         artifact_base_dir.glob(
-            "*/" + profile_name + "/*/health_summary/refresh_run_payload.json"
+            "*/" + validated_profile_name + "/*/health_summary/refresh_run_payload.json"
         )
     ):
         try:
@@ -1097,6 +1134,20 @@ def _load_history_samples(
             )
             continue
     return samples
+
+
+def _validate_artifact_component(value: str, *, name: str) -> str:
+    if not value:
+        raise ValueError(f"Invalid {name} '{value}': expected [A-Za-z0-9_.-]+.")
+    if ".." in value:
+        raise ValueError(
+            f"Invalid {name} '{value}': parent-directory segments are not allowed."
+        )
+    if "/" in value or "\\" in value:
+        raise ValueError(f"Invalid {name} '{value}': path separators are not allowed.")
+    if not _SAFE_ARTIFACT_COMPONENT_RE.fullmatch(value):
+        raise ValueError(f"Invalid {name} '{value}': expected [A-Za-z0-9_.-]+.")
+    return value
 
 
 def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySample:
