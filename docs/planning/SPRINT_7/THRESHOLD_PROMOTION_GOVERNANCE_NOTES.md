@@ -76,6 +76,11 @@ Recommended path:
 
 - `data/refresh_runs/<run_date>/annual_refresh/<run_id>/threshold_promotion_decision/threshold_promotion_decision.json`
 
+Path token rule:
+
+- `run_date` uses `YYYYMMDD` format, consistent with
+  `REFRESH_AUTOMATION_V1.md`.
+
 Recommended keys:
 
 1. `proposal`
@@ -132,6 +137,10 @@ Decision consistency rules:
 
 - `decision.status = approved` requires at least two `approve` reviewer
   decisions and zero `reject` reviewer decisions.
+- `decision.status = approved` requires those approves to come from at least two
+  distinct `reviewer` values.
+- duplicate decisions from the same reviewer do not count toward the distinct
+  approval minimum.
 - any reviewer `reject` decision forces `decision.status = rejected`.
 - `decision.status = needs_revision` is used when there are zero reviewer
   rejects but required approval threshold is not met and reviewers request

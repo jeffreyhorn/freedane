@@ -67,6 +67,17 @@ Out of scope for v1:
   corrected source data.
 - `promotion packet`: evidence package used for threshold/ruleset promotion review.
 
+## Compatibility With `REFRESH_AUTOMATION_V1`
+
+`REFRESH_AUTOMATION_V1.md` currently marks `annual_refresh` as reserved and
+unsupported by the current runner implementation.
+
+This Day 9 contract defines the target behavior for enabling `annual_refresh`
+in the follow-on runner implementation planned for Day 10.
+
+Until that implementation lands, operators should expect current v1 runner
+behavior (`unsupported_profile`) for `annual_refresh`.
+
 ## Annual Refresh Sequence (v1)
 
 Annual refresh uses this ordered sequence:
@@ -244,7 +255,7 @@ Each checkpoint object must include:
 
 - `checkpoint_id` (for example `CP-03_CONTEXT_REBUILD_VALIDATION`)
 - `status` (`pending|passed|failed`)
-- `reviewer`
+- `reviewer` (nullable while `status = pending`)
 - `reviewed_at` (nullable while `pending`)
 - `evidence_paths` (array)
 - `notes` (nullable)
@@ -252,6 +263,10 @@ Each checkpoint object must include:
 Rules:
 
 - annual run cannot be `approved` if any checkpoint is `pending` or `failed`.
+- when `status = pending`, `reviewed_at` must be `null` and `reviewer` may be
+  `null` (or may hold an assigned reviewer identifier if pre-assigned).
+- when `status = passed|failed`, both `reviewer` and `reviewed_at` must be
+  non-null.
 
 ### `approvals` array
 
@@ -269,6 +284,10 @@ Approval rollup rules:
 
 - `run.status = approved` requires at least two `approve` decisions and zero
   `reject` decisions.
+- approver identity is keyed by `approver`; `approved` requires at least two
+  distinct approver values.
+- duplicate decisions from the same `approver` do not count toward the distinct
+  approval minimum.
 - any `reject` decision forces `run.status = rejected`.
 - `run.status = pending_signoff` is allowed only when zero `reject` decisions
   exist and approval threshold has not yet been met.
