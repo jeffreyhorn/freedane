@@ -740,6 +740,115 @@ def test_load_monitoring_records_warning_for_invalid_history_run_status(
     )
 
 
+def test_load_monitoring_treats_missing_review_queue_artifact_as_missing_subject_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_missing_review_queue.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    for day_offset in (4, 3, 2):
+        _write_refresh_run(
+            artifact_base_dir=artifact_base_dir,
+            run_id=f"2026031{day_offset}_daily_refresh_feature_v1_scoring_rules_v1",
+            run_finished_at=fixed_now - timedelta(days=day_offset),
+            duration_seconds=100.0,
+            review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+            reviewed_case_count=2,
+            threshold_candidate_count=1,
+            exclusion_candidate_count=0,
+        )
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_missing_queue",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    (subject_path.parent.parent / "analysis_artifacts" / "review_queue.json").unlink()
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    for metric_key in (
+        "volume.review_queue.returned_count",
+        "queue_size.review_queue.high_risk_count",
+        "queue_size.review_queue.unreviewed_count",
+    ):
+        signal = _signal_by_metric(payload, metric_key)
+        assert signal["ignored"] is True
+        assert signal["ignore_reason"] == "missing_subject_value"
+
+
+def test_missing_review_feedback_artifact_sets_missing_subject_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_missing_review_feedback.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    for day_offset in (4, 3, 2):
+        _write_refresh_run(
+            artifact_base_dir=artifact_base_dir,
+            run_id=f"2026031{day_offset}_daily_refresh_feature_v1_scoring_rules_v1",
+            run_finished_at=fixed_now - timedelta(days=day_offset),
+            duration_seconds=100.0,
+            review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+            reviewed_case_count=2,
+            threshold_candidate_count=1,
+            exclusion_candidate_count=0,
+        )
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_missing_feedback",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    (
+        subject_path.parent.parent / "analysis_artifacts" / "review_feedback.json"
+    ).unlink()
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    for metric_key in (
+        "volume.review_feedback.reviewed_case_count",
+        "volume.review_feedback.recommendation_count",
+    ):
+        signal = _signal_by_metric(payload, metric_key)
+        assert signal["ignored"] is True
+        assert signal["ignore_reason"] == "missing_subject_value"
+
+
 def _queue_rows(
     *, high: int, medium: int, low: int, unreviewed: int
 ) -> list[dict[str, object]]:

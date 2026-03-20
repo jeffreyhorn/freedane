@@ -1176,23 +1176,43 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
         source_artifacts.add(str(review_feedback_path))
         review_feedback_payload = _read_json(review_feedback_path)
 
-    review_queue_summary = _as_dict(review_queue_payload.get("summary"))
-    review_feedback_summary = _as_dict(review_feedback_payload.get("summary"))
-    review_queue_rows = _as_list(review_queue_payload.get("rows"))
-    high_risk_count = sum(
-        1
-        for row in review_queue_rows
-        if _as_str(_as_dict(row).get("risk_band")) == "high"
-    )
-    unreviewed_count = sum(
-        1
-        for row in review_queue_rows
-        if _as_str(_as_dict(row).get("review_status")) == "unreviewed"
-    )
+    review_queue_returned_count: Optional[float] = None
+    high_risk_count: Optional[int] = None
+    unreviewed_count: Optional[int] = None
+    if review_queue_payload:
+        review_queue_summary = _as_dict(review_queue_payload.get("summary"))
+        review_queue_rows = _as_list(review_queue_payload.get("rows"))
+        review_queue_returned_count = _as_float(
+            review_queue_summary.get("returned_count")
+        )
+        high_risk_count = sum(
+            1
+            for row in review_queue_rows
+            if _as_str(_as_dict(row).get("risk_band")) == "high"
+        )
+        unreviewed_count = sum(
+            1
+            for row in review_queue_rows
+            if _as_str(_as_dict(row).get("review_status")) == "unreviewed"
+        )
 
-    recommendations = _as_dict(review_feedback_payload.get("recommendations"))
-    threshold_candidates = _as_list(recommendations.get("threshold_tuning_candidates"))
-    exclusion_candidates = _as_list(recommendations.get("exclusion_tuning_candidates"))
+    review_feedback_reviewed_case_count: Optional[float] = None
+    review_feedback_recommendation_count: Optional[float] = None
+    if review_feedback_payload:
+        review_feedback_summary = _as_dict(review_feedback_payload.get("summary"))
+        recommendations = _as_dict(review_feedback_payload.get("recommendations"))
+        threshold_candidates = _as_list(
+            recommendations.get("threshold_tuning_candidates")
+        )
+        exclusion_candidates = _as_list(
+            recommendations.get("exclusion_tuning_candidates")
+        )
+        review_feedback_reviewed_case_count = _as_float(
+            review_feedback_summary.get("reviewed_case_count")
+        )
+        review_feedback_recommendation_count = _as_float(
+            len(threshold_candidates) + len(exclusion_candidates)
+        )
 
     return _HistorySample(
         path=path,
@@ -1208,17 +1228,11 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
         stage_started_at_by_id=stage_started_at_by_id,
         stage_finished_at_by_id=stage_finished_at_by_id,
         review_feedback_command_status_by_stage=review_feedback_command_status_by_stage,
-        review_queue_returned_count=_as_float(
-            review_queue_summary.get("returned_count")
-        ),
+        review_queue_returned_count=review_queue_returned_count,
         review_queue_high_risk_count=_as_float(high_risk_count),
         review_queue_unreviewed_count=_as_float(unreviewed_count),
-        review_feedback_reviewed_case_count=_as_float(
-            review_feedback_summary.get("reviewed_case_count")
-        ),
-        review_feedback_recommendation_count=_as_float(
-            len(threshold_candidates) + len(exclusion_candidates)
-        ),
+        review_feedback_reviewed_case_count=review_feedback_reviewed_case_count,
+        review_feedback_recommendation_count=review_feedback_recommendation_count,
         feature_version=_as_str(request.get("feature_version")),
         ruleset_version=_as_str(request.get("ruleset_version")),
         run_date=_as_str(request.get("run_date")),
