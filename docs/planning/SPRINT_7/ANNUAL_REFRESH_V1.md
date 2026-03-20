@@ -224,6 +224,11 @@ Required path (stage-scoped convention):
 
 - `data/refresh_runs/<run_date>/annual_refresh/<run_id>/annual_signoff/annual_signoff.json`
 
+Path token rule:
+
+- `run_date` uses `YYYYMMDD` format, consistent with
+  `docs/planning/SPRINT_7/REFRESH_AUTOMATION_V1.md`.
+
 Required top-level keys:
 
 1. `run`
@@ -373,7 +378,10 @@ Required keys:
 
 - prior cutover remains historical record and must not be deleted
 - new correction run may become the current cutover candidate only after full
-  checkpoint re-approval (`CP-01` through `CP-06`)
+  checkpoint re-approval (`CP-01_SOURCE_MANIFEST`,
+  `CP-02_INGEST_RECONCILIATION`, `CP-03_CONTEXT_REBUILD_VALIDATION`,
+  `CP-04_SCORING_DISTRIBUTION_REVIEW`, `CP-05_INVESTIGATION_ARTIFACT_REVIEW`,
+  and `CP-06_CUTOVER_AUTHORIZATION`)
 - threshold/ruleset promotion decisions must reference latest approved cutover
   or approved correction run evidence
 
