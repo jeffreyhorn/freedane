@@ -435,7 +435,10 @@ def _build_operator_actions(
                 "inspect_parser_drift_diff",
                 "Inspect parser drift",
                 "Inspect latest parser drift diff artifact when available.",
-                "ls data/refresh_runs/*/daily_refresh/*/parser_drift*",
+                (
+                    "ls data/refresh_runs/*/daily_refresh/parser_drift_runtime/*.json "
+                    "data/refresh_runs/*/daily_refresh/parser_drift_diff/*.json"
+                ),
             ),
             (
                 "rerun_analysis_only",
@@ -1324,7 +1327,7 @@ def _iso_utc_or_none(value: Optional[datetime]) -> Optional[str]:
 
 
 def _default_run_id(*, prefix: str, run_date: str, generated_at: datetime) -> str:
-    return f"{run_date}_{prefix}_{generated_at.strftime('%Y%m%d_%H%M%S')}"
+    return f"{run_date}_{prefix}_{generated_at.strftime('%Y%m%d_%H%M%S_%f')}"
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

@@ -195,6 +195,10 @@ def test_build_alert_payload_from_diagnostics_uses_matching_impacted_signals(
         assert action["message"] == action["description"]
         assert action["artifact_paths"] == action["required_artifact_paths"]
         assert action["severity"] == alert_payload["alert"]["severity"]
+    assert alert_payload["operator_actions"][1]["command"] == (
+        "ls data/refresh_runs/*/daily_refresh/parser_drift_runtime/*.json "
+        "data/refresh_runs/*/daily_refresh/parser_drift_diff/*.json"
+    )
 
 
 def test_build_alert_payload_from_diagnostics_derives_alert_id_without_alerts_array(
@@ -920,3 +924,22 @@ def _iso(value: datetime) -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
+
+
+def test_default_run_id_includes_microseconds_for_uniqueness() -> None:
+    base = datetime(2026, 3, 18, 12, 0, 1, 123456, tzinfo=timezone.utc)
+    later = datetime(2026, 3, 18, 12, 0, 1, 654321, tzinfo=timezone.utc)
+    run_id_a = load_monitoring._default_run_id(  # noqa: SLF001
+        prefix="load_monitor",
+        run_date="20260318",
+        generated_at=base,
+    )
+    run_id_b = load_monitoring._default_run_id(  # noqa: SLF001
+        prefix="load_monitor",
+        run_date="20260318",
+        generated_at=later,
+    )
+
+    assert run_id_a.endswith("_123456")
+    assert run_id_b.endswith("_654321")
+    assert run_id_a != run_id_b
