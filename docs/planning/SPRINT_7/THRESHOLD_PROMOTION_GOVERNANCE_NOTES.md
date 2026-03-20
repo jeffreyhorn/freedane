@@ -20,18 +20,12 @@ Promotion review may be initiated when at least one condition is true:
 
 ## Promotion Workflow
 
-1. Proposal
-  - proposer submits promotion request packet
-2. Evidence assembly
-  - assemble required artifacts listed below
-3. Governance review
-  - designated reviewers evaluate proposal against acceptance policy
-4. Decision
-  - approve, reject, or request revisions
-5. Versioned publication
-  - approved promotion is recorded with new threshold/ruleset version tag
-6. Post-promotion monitoring
-  - monitor early-run diagnostics for regressions
+1. Proposal: proposer submits promotion request packet.
+2. Evidence assembly: assemble required artifacts listed below.
+3. Governance review: designated reviewers evaluate proposal against acceptance policy.
+4. Decision: approve, reject, or request revisions.
+5. Versioned publication: approved promotion is recorded with new threshold/ruleset version tag.
+6. Post-promotion monitoring: monitor early-run diagnostics for regressions.
 
 ## Required Evidence Packet (v1)
 

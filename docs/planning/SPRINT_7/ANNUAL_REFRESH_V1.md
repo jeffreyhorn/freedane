@@ -187,7 +187,8 @@ Required operator activity:
 
 - complete all annual checkpoint sign-offs
 - record sign-off packet location and approver identity
-- designate run as `cutover_candidate = true` only after all checkpoints pass
+- designate sign-off record `run.cutover_candidate = true` only after all
+  checkpoints pass and approval rollup requirements are met
 
 ## Annual Operator Checkpoints (v1)
 
@@ -237,6 +238,8 @@ Required top-level keys:
 - `run_id`
 - `profile_name` (must be `annual_refresh`)
 - `status` (`pending_signoff|approved|rejected`)
+- `cutover_candidate` (bool)
+- `cutover_designated_at` (nullable RFC3339/ISO-8601 UTC timestamp with trailing `Z`)
 - `created_at` (RFC3339/ISO-8601 UTC timestamp with trailing `Z`)
 - `updated_at` (RFC3339/ISO-8601 UTC timestamp with trailing `Z`)
 
@@ -244,6 +247,11 @@ Timestamp format rule:
 
 - All `*_at` fields in this sign-off contract must use RFC3339/ISO-8601 UTC
   timestamps with trailing `Z`.
+- `run.cutover_candidate = true` is allowed only when `run.status = approved`.
+- `run.cutover_candidate = false` is required when `run.status` is
+  `pending_signoff` or `rejected`.
+- when `run.cutover_candidate = true`, `cutover_designated_at` must be
+  non-null; otherwise `cutover_designated_at` must be `null`.
 
 ### `annual_context` object
 
@@ -331,6 +339,10 @@ v1 supports correction replay after annual cutover using explicit run context.
 
 ### Replay requirements
 
+- annual_refresh request-extension fields:
+  - `request.replay_mode` (`baseline_annual|correction_replay`)
+  - `request.parent_run_id` (nullable; required when `replay_mode = correction_replay`)
+  - `request.correction_reason_code` (nullable; required when `replay_mode = correction_replay`)
 - replay runs must use `profile_name = annual_refresh`
 - replay run must reference prior cutover run via:
   - `request.parent_run_id`
