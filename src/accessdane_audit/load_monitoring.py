@@ -347,11 +347,15 @@ def build_alert_payload_from_diagnostics(
         }
     )
 
+    profile_name = _as_str(subject.get("profile_name")) or "daily_refresh"
+    artifact_base_dir = _resolve_operator_action_artifact_base_dir(subject)
     refresh_payload_path = _as_str(subject.get("refresh_payload_path"))
     action_paths = [path for path in [refresh_payload_path] if path]
     operator_actions = _build_operator_actions(
         severity=severity,
         action_paths=action_paths,
+        profile_name=profile_name,
+        artifact_base_dir=artifact_base_dir,
     )
     subject_run_id = _as_str(subject.get("run_id"))
     alert_id = _as_str(first_alert.get("alert_id")) or (
@@ -401,7 +405,10 @@ def _build_operator_actions(
     *,
     severity: str,
     action_paths: list[str],
+    profile_name: str,
+    artifact_base_dir: Path,
 ) -> list[dict[str, Any]]:
+    artifact_base = str(artifact_base_dir)
     if severity == "critical":
         definitions = [
             (
@@ -411,7 +418,7 @@ def _build_operator_actions(
                     "Run a daily refresh retry from the failed boundary and verify "
                     "all stages complete."
                 ),
-                ".venv/bin/accessdane refresh-runner --profile-name daily_refresh",
+                f".venv/bin/accessdane refresh-runner --profile-name {profile_name}",
             ),
             (
                 "inspect_ingest_and_drift",
@@ -420,7 +427,7 @@ def _build_operator_actions(
                     "Inspect source-file availability and the latest parser drift "
                     "outputs for upstream breakage."
                 ),
-                "ls data/refresh_runs/latest",
+                f"ls {artifact_base}/latest/{profile_name}",
             ),
             (
                 "validate_regenerated_artifacts",
@@ -457,8 +464,8 @@ def _build_operator_actions(
                 "Inspect parser drift",
                 "Inspect latest parser drift diff artifact when available.",
                 (
-                    "ls data/refresh_runs/*/daily_refresh/parser_drift_runtime/*.json "
-                    "data/refresh_runs/*/daily_refresh/parser_drift_diff/*.json"
+                    f"ls {artifact_base}/*/{profile_name}/parser_drift_runtime/*.json "
+                    f"{artifact_base}/*/{profile_name}/parser_drift_diff/*.json"
                 ),
             ),
             (
@@ -491,6 +498,20 @@ def _build_operator_actions(
             }
         )
     return actions
+
+
+def _resolve_operator_action_artifact_base_dir(subject: Mapping[str, Any]) -> Path:
+    refresh_payload_path = _as_str(subject.get("refresh_payload_path"))
+    if refresh_payload_path is None:
+        return Path("data/refresh_runs")
+    refresh_payload = Path(refresh_payload_path)
+    if (
+        refresh_payload.name == "refresh_run_payload.json"
+        and refresh_payload.parent.name == "health_summary"
+        and len(refresh_payload.parents) >= 5
+    ):
+        return refresh_payload.parents[4]
+    return Path("data/refresh_runs")
 
 
 def _build_signals(

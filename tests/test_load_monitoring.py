@@ -196,8 +196,73 @@ def test_build_alert_payload_from_diagnostics_uses_matching_impacted_signals(
         assert action["artifact_paths"] == action["required_artifact_paths"]
         assert action["severity"] == alert_payload["alert"]["severity"]
     assert alert_payload["operator_actions"][1]["command"] == (
-        "ls data/refresh_runs/*/daily_refresh/parser_drift_runtime/*.json "
-        "data/refresh_runs/*/daily_refresh/parser_drift_diff/*.json"
+        f"ls {artifact_base_dir}/*/daily_refresh/parser_drift_runtime/*.json "
+        f"{artifact_base_dir}/*/daily_refresh/parser_drift_diff/*.json"
+    )
+
+
+def test_build_alert_payload_uses_profile_and_artifact_base_for_actions(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "custom_runs"
+    subject_path = (
+        artifact_base_dir
+        / "20260318"
+        / "county_refresh"
+        / "20260318_county_refresh_feature_v1_scoring_rules_v1"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    payload = {
+        "run": {
+            "run_type": "load_monitoring",
+            "version_tag": "load_monitoring_v1",
+            "run_id": "monitor_run",
+            "status": "succeeded",
+            "run_persisted": False,
+            "started_at": "2026-03-18T11:59:00Z",
+            "finished_at": "2026-03-18T12:00:00Z",
+        },
+        "subject": {
+            "run_id": "subject_run",
+            "profile_name": "county_refresh",
+            "run_date": "20260318",
+            "feature_version": "feature_v1",
+            "ruleset_version": "scoring_rules_v1",
+            "refresh_payload_path": str(subject_path),
+            "refresh_status": "succeeded",
+            "refresh_finished_at": "2026-03-18T11:58:00Z",
+        },
+        "summary": {"overall_severity": "critical"},
+        "signals": [
+            {
+                "signal_id": "duration.total_seconds",
+                "family": "duration",
+                "metric_key": "duration.total_seconds",
+                "severity": "critical",
+                "ignored": False,
+                "reason_code": (
+                    "duration.critical_relative_delta.duration.total_seconds"
+                ),
+            }
+        ],
+        "rollups": [],
+        "alerts": [{"alert_id": "subject_run.critical"}],
+        "diagnostics": {"warnings": [], "source_artifacts": []},
+        "error": None,
+    }
+
+    alert_payload = load_monitoring.build_alert_payload_from_diagnostics(payload)
+
+    assert alert_payload is not None
+    action_by_id = {
+        action["action_id"]: action for action in alert_payload["operator_actions"]
+    }
+    assert action_by_id["run_immediate_daily_refresh"]["command"] == (
+        ".venv/bin/accessdane refresh-runner --profile-name county_refresh"
+    )
+    assert action_by_id["inspect_ingest_and_drift"]["command"] == (
+        f"ls {artifact_base_dir}/latest/county_refresh"
     )
 
 
