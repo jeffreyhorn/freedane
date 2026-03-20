@@ -368,6 +368,80 @@ def test_load_monitor_cli_writes_diagnostics_and_alert_payload(
     assert alert_payload["alert"]["severity"] == "warn"
 
 
+def test_load_monitor_cli_skips_alert_out_for_error_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_cli_alert_error.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260317_daily_refresh_feature_v1_scoring_rules_v1_history",
+        run_finished_at=fixed_now - timedelta(days=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_cli_alert_error",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=160.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "build_alert_payload_from_diagnostics",
+        lambda _payload: {
+            "run": {"run_type": "load_monitoring"},
+            "alert": None,
+            "impacted_signals": [],
+            "operator_actions": [],
+            "error": {
+                "code": "missing_alert_id",
+                "message": "cannot construct stable alert_id",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    diagnostics_out = tmp_path / "load_monitor_diagnostics_error_alert.json"
+    alert_out = tmp_path / "load_monitor_alert_error.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "load-monitor",
+            "--artifact-base-dir",
+            str(artifact_base_dir),
+            "--subject-refresh-payload",
+            str(subject_path),
+            "--out",
+            str(diagnostics_out),
+            "--alert-out",
+            str(alert_out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert diagnostics_out.exists()
+    assert not alert_out.exists()
+
+
 def test_load_monitoring_resolves_subject_by_run_id_and_reports_not_found(
     tmp_path: Path, monkeypatch
 ) -> None:

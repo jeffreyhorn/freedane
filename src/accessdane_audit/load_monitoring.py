@@ -152,14 +152,14 @@ def build_load_diagnostics(
             ),
         )
 
-        finished_dt = _now_utc()
+        evaluation_end_dt = _now_utc()
         monitor_run_id_value = monitor_run_id or _default_run_id(
             prefix="load_monitor",
             run_date=subject_context.sample.run_date or _utc_today(),
-            generated_at=finished_dt,
+            generated_at=evaluation_end_dt,
         )
 
-        window_bounds = _build_window_bounds(finished_dt)
+        window_bounds = _build_window_bounds(evaluation_end_dt)
         rollups = _build_rollups(history=history, window_bounds=window_bounds)
         signal_result = _build_signals(
             session=session,
@@ -176,6 +176,7 @@ def build_load_diagnostics(
             overall_severity=signal_result["overall_severity"],
             signals=signal_result["signals"],
         )
+        finished_dt = _now_utc()
         return {
             "run": {
                 "run_type": RUN_TYPE_LOAD_MONITORING,

@@ -2790,7 +2790,12 @@ def load_monitor_cmd(
 
     if alert_out:
         alert_payload = build_alert_payload_from_diagnostics(payload)
-        if alert_payload is not None:
+        if (
+            alert_payload is not None
+            and isinstance(alert_payload, dict)
+            and alert_payload.get("error") is None
+            and alert_payload.get("alert") is not None
+        ):
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
 
