@@ -114,8 +114,11 @@ Failure behavior:
 - if any preflight check fails, runner execution status is `failed` (per
   `REFRESH_AUTOMATION_V1`) and no downstream stage may execute
 - failure must include explicit `error.code` and failing checkpoint identifier
-  in the runner execution result; any associated sign-off record `run.status`
-  remains within `pending_signoff|approved|rejected` and does not use `failed`
+  in the runner execution result; preflight failure details are recorded in the
+  runner execution result, not in sign-off record `error`
+- preflight failures may terminate before sign-off record generation; if a
+  sign-off record is emitted despite preflight failure, `run.status` must remain
+  within `pending_signoff|approved|rejected` and must not use `failed`
 
 #### 2) `ingest_context`
 
@@ -213,7 +216,8 @@ All checkpoints are required for annual completion.
 
 ## Sign-Off Record Contract (v1)
 
-Each annual refresh run must produce a sign-off record JSON artifact.
+Each annual refresh run that reaches the `annual_signoff` checkpoint must
+produce a sign-off record JSON artifact.
 
 Required path (stage-scoped convention):
 
@@ -267,6 +271,8 @@ Rules:
   `null` (or may hold an assigned reviewer identifier if pre-assigned).
 - when `status = passed|failed`, both `reviewer` and `reviewed_at` must be
   non-null.
+- `CP-06_CUTOVER_AUTHORIZATION` checkpoint status is derived from the approvals
+  array rollup rules below; no separate secondary approval source is used.
 
 ### `approvals` array
 
@@ -364,7 +370,8 @@ Required linkage:
 - promotion review must reference:
   - annual sign-off artifact path
   - review-feedback artifact path
-  - benchmark/fairness comparison summary (available in later Sprint 7 days)
+  - benchmark/fairness comparison summary when available (mandatory after
+    benchmark pack delivery in later Sprint 7 days; optional before that point)
 
 Detailed governance policy is documented in:
 
