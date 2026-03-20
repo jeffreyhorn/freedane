@@ -673,6 +673,69 @@ def test_load_monitoring_records_warning_for_skipped_corrupt_history_sample(
     assert any(str(corrupt_history_path) in warning for warning in warnings)
 
 
+def test_load_monitoring_records_warning_for_invalid_history_run_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_history_invalid_status.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260315_daily_refresh_feature_v1_scoring_rules_v1",
+        run_finished_at=fixed_now - timedelta(days=3),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_invalid_status_subject",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    invalid_history_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260316_daily_refresh_feature_v1_scoring_rules_v1_invalid_status",
+        run_finished_at=fixed_now - timedelta(days=2),
+        duration_seconds=100.0,
+        review_queue_rows=_queue_rows(high=2, medium=2, low=2, unreviewed=2),
+        reviewed_case_count=2,
+        threshold_candidate_count=1,
+        exclusion_candidate_count=0,
+    )
+    invalid_payload = json.loads(invalid_history_path.read_text(encoding="utf-8"))
+    invalid_payload["run"]["status"] = "partial_success"
+    invalid_history_path.write_text(
+        json.dumps(invalid_payload, indent=2), encoding="utf-8"
+    )
+
+    with session_scope(database_url) as session:
+        payload = load_monitoring.build_load_diagnostics(
+            session,
+            artifact_base_dir=artifact_base_dir,
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            subject_refresh_payload_path=subject_path,
+        )
+
+    warnings = payload["diagnostics"]["warnings"]
+    assert any("history_sample_skipped:" in warning for warning in warnings)
+    assert any(
+        "invalid run.status='partial_success'" in warning for warning in warnings
+    )
+
+
 def _queue_rows(
     *, high: int, medium: int, low: int, unreviewed: int
 ) -> list[dict[str, object]]:

@@ -804,16 +804,18 @@ def _subject_metrics(
 def _baseline_values_by_metric(
     baseline_candidates: list[_HistorySample],
 ) -> dict[str, list[float]]:
+    eligible_metric_keys = [
+        metric_key
+        for metric_key, _ in _METRIC_KEYS
+        if not metric_key.startswith(("failure_rate.", "freshness."))
+        and metric_key != "queue_size.case_review.in_review_count"
+    ]
     values: dict[str, list[float]] = {}
-    for metric_key, _ in _METRIC_KEYS:
-        if metric_key.startswith(("failure_rate.", "freshness.")):
-            continue
-        if metric_key == "queue_size.case_review.in_review_count":
-            continue
-        for sample in baseline_candidates:
-            sample_metrics = _subject_metrics(
-                subject=sample, case_review_in_review_count=0.0
-            )
+    for sample in baseline_candidates:
+        sample_metrics = _subject_metrics(
+            subject=sample, case_review_in_review_count=0.0
+        )
+        for metric_key in eligible_metric_keys:
             metric_value = sample_metrics.get(metric_key)
             if metric_value is None:
                 continue
@@ -1107,7 +1109,14 @@ def _load_refresh_sample(path: Path, source_artifacts: set[str]) -> _HistorySamp
     if run_id is None:
         raise ValueError(f"Refresh payload at {path} is missing run.run_id.")
 
-    run_status = _normalized_run_status(_as_str(run.get("status")) or "unknown")
+    raw_run_status = _as_str(run.get("status"))
+    if raw_run_status is None:
+        raise ValueError(f"Refresh payload at {path} is missing run.status.")
+    run_status = _normalized_run_status(raw_run_status)
+    if run_status not in {"succeeded", "failed"}:
+        raise ValueError(
+            f"Refresh payload at {path} has invalid run.status={raw_run_status!r}."
+        )
     run_started_at = _as_datetime(run.get("started_at"))
     run_finished_at = _as_datetime(run.get("finished_at"))
     sample_event_at = run_finished_at or run_started_at
