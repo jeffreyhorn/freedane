@@ -1,0 +1,386 @@
+# Sprint 7 Benchmark Pack v1 Contract
+
+Prepared on: 2026-03-21
+
+## Purpose
+
+Define the first stable benchmark-pack contract in Sprint 7 before implementing
+benchmark generation commands.
+
+This contract locks v1 behavior for:
+
+- benchmark pack schema for recurring fairness/performance studies
+- baseline-vs-current comparability keys and tolerance rules
+- recurring benchmark cadence and retention expectations
+- escalation criteria and operator actions for benchmark regressions
+
+## Scope
+
+In scope for v1:
+
+- one machine-readable benchmark pack payload per benchmark run
+- deterministic summary metrics for:
+  - coverage
+  - risk-band mix
+  - disposition mix
+  - geography/class segments
+- deterministic baseline-vs-current comparison output with severity classification
+- machine-readable escalation payload for warning/critical regressions
+
+Out of scope for v1:
+
+- automatic threshold/ruleset publication based only on benchmark results
+- external paging integrations (Slack/email/PagerDuty)
+- adaptive or model-driven tolerance tuning
+- cross-jurisdiction benchmark normalization in one pack
+
+## Design Goals
+
+- Keep benchmark evidence deterministic, auditable, and reproducible.
+- Make fairness/performance drift visible before promotion decisions.
+- Reduce false alarms by requiring explicit minimum sample thresholds.
+- Keep benchmark outputs compatible with threshold-promotion governance packet
+  assembly.
+
+## Baseline Assumptions
+
+- Sprint 6 review workflow artifacts are available and stable:
+  - `analysis_artifacts/review_queue.json`
+  - `analysis_artifacts/review_feedback.json`
+  - `investigation_artifacts/investigation_report.json`
+- Sprint 7 refresh automation artifacts are available under:
+  - `data/refresh_runs/<run_date>/<profile_name>/<run_id>/...`
+- Annual refresh governance linkage is defined in:
+  - `docs/planning/SPRINT_7/ANNUAL_REFRESH_V1.md`
+- Threshold promotion packet requirements are defined in:
+  - `docs/planning/SPRINT_7/THRESHOLD_PROMOTION_GOVERNANCE_NOTES.md`
+
+## Contract Terminology
+
+- `benchmark run`: one invocation of benchmark generation.
+- `benchmark pack`: one produced benchmark payload artifact.
+- `current`: measured period represented by the subject benchmark run.
+- `baseline`: approved comparison benchmark selected by baseline policy.
+- `segment`: one `(geography_key, class_key)` grouping.
+- `signal`: one comparison metric with severity and reason code.
+
+## Benchmark Pack Artifact Contract (v1)
+
+Required canonical path:
+
+- `data/benchmark_packs/<run_date>/<profile_name>/<benchmark_run_id>/benchmark_pack.json`
+
+Optional companion paths (if generator emits split artifacts):
+
+- `.../benchmark_pack_summary.json`
+- `.../benchmark_pack_segments.csv`
+- `.../benchmark_pack_alert.json` (when severity is `warn|critical`)
+
+Path token rule:
+
+- `run_date` uses `YYYYMMDD`.
+
+Top-level keys (canonical order):
+
+1. `run`
+2. `scope`
+3. `summary`
+4. `segments`
+5. `comparison`
+6. `alerts`
+7. `diagnostics`
+8. `error`
+
+Presence rules:
+
+- all top-level keys above must always be present
+- when `run.status = succeeded`, `error` must be `null`
+- when `run.status = failed`:
+  - `summary`, `segments`, and `comparison.signals` may be emitted as empty arrays/zero-value summaries
+  - `alerts` must be an empty array
+  - `error` must include `code` and `message`
+
+### `run` object
+
+Required fields:
+
+- `run_type` (`benchmark_pack`)
+- `version_tag` (`benchmark_pack_v1`)
+- `benchmark_run_id`
+- `status` (`succeeded|failed`)
+- `run_persisted` (bool)
+- `started_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+- `finished_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+
+### `scope` object
+
+Required fields:
+
+- `profile_name` (for example `daily_refresh`, `annual_refresh`)
+- `run_date` (`YYYYMMDD`)
+- `feature_version`
+- `ruleset_version`
+- `source_run_id` (refresh run id used as benchmark source)
+- `source_artifacts` (array of artifact paths used to compute benchmark)
+- `period_start` (RFC3339/ISO-8601 UTC with trailing `Z`)
+- `period_end` (RFC3339/ISO-8601 UTC with trailing `Z`)
+- `top_n` (int; reflects queue/report slicing policy)
+
+## Summary Metric Schema (v1)
+
+`summary` must include four required metric families.
+
+### 1) Coverage
+
+Required keys:
+
+- `coverage.scored_parcel_count`
+- `coverage.queue_parcel_count`
+- `coverage.reviewed_case_count`
+- `coverage.requires_review_count`
+- `coverage.review_rate` (`reviewed_case_count / max(queue_parcel_count, 1)`)
+
+### 2) Risk-Band Mix
+
+Required keys:
+
+- `risk_band_mix.low.count`
+- `risk_band_mix.low.rate`
+- `risk_band_mix.medium.count`
+- `risk_band_mix.medium.rate`
+- `risk_band_mix.high.count`
+- `risk_band_mix.high.rate`
+
+Rate denominator rule:
+
+- denominator is `queue_parcel_count`
+
+### 3) Disposition Mix
+
+Required keys:
+
+- `disposition_mix.confirmed_issue.count`
+- `disposition_mix.false_positive.count`
+- `disposition_mix.inconclusive.count`
+- `disposition_mix.needs_field_review.count`
+- `disposition_mix.duplicate_case.count`
+- `disposition_mix.unreviewed.count`
+- `disposition_mix.<key>.rate` for each key above
+
+Rate denominator rule:
+
+- denominator is `reviewed_case_count` for reviewed dispositions
+- `unreviewed.rate` denominator is `queue_parcel_count`
+
+### 4) Geography/Class Segments
+
+`segments` is an array of segment objects.
+
+Each segment must include:
+
+- `segment_id` (`<geography_key>::<class_key>`)
+- `geography_key`
+- `class_key`
+- `queue_parcel_count`
+- `reviewed_case_count`
+- `risk_band_mix` object with `low|medium|high` count/rate fields
+- `disposition_mix` object with v1 disposition count/rate fields
+
+Deterministic segment ordering:
+
+- `segments` must be sorted by:
+  1. `geography_key` ascending
+  2. `class_key` ascending
+
+## Baseline-vs-Current Comparability Contract (v1)
+
+`comparison` must include:
+
+- `baseline_reference`
+- `comparable` (bool)
+- `non_comparable_reasons` (array)
+- `signals` (array)
+- `overall_severity` (`ok|warn|critical`)
+
+### Baseline selection policy
+
+Use this order:
+
+1. explicit operator baseline override (if provided)
+2. latest approved benchmark baseline for same `profile_name`
+3. latest prior successful benchmark pack for same `profile_name`
+
+### Comparability key contract
+
+`baseline_reference` must include:
+
+- `benchmark_run_id`
+- `run_date`
+- `profile_name`
+- `feature_version`
+- `ruleset_version`
+- `top_n`
+- `period_length_days`
+
+`comparison.comparable = true` only when all conditions hold:
+
+- `profile_name` matches
+- `feature_version` matches
+- `ruleset_version` matches
+- `top_n` matches
+- `period_length_days` matches
+- baseline artifact version is `benchmark_pack_v1`
+
+If not comparable:
+
+- `comparison.comparable = false`
+- `comparison.non_comparable_reasons` must be non-empty
+- `comparison.signals` must be empty
+- `comparison.overall_severity = ok`
+
+### Signal schema
+
+Each `comparison.signals[]` item must include:
+
+- `signal_id`
+- `family` (`coverage|risk_band_mix|disposition_mix|segment_mix`)
+- `metric_key`
+- `baseline_value` (nullable float)
+- `current_value` (nullable float)
+- `delta_absolute` (nullable float)
+- `delta_relative` (nullable float)
+- `sample_size` (int)
+- `severity` (`ok|warn|critical`)
+- `reason_code`
+- `ignored` (bool)
+- `ignore_reason` (nullable string)
+
+Allowed `ignore_reason` values:
+
+- `insufficient_sample_size`
+- `missing_baseline_metric`
+- `missing_current_metric`
+
+### Drift tolerance policy (default v1)
+
+Absolute delta thresholds (percentage points unless noted):
+
+- `risk_band_mix.high.rate`:
+  - `warn`: `>= 0.04`
+  - `critical`: `>= 0.08`
+- `risk_band_mix.medium.rate`:
+  - `warn`: `>= 0.06`
+  - `critical`: `>= 0.10`
+- `disposition_mix.false_positive.rate`:
+  - `warn`: `>= 0.03`
+  - `critical`: `>= 0.06`
+- `disposition_mix.confirmed_issue.rate`:
+  - `warn`: `>= 0.03`
+  - `critical`: `>= 0.06`
+- `coverage.review_rate`:
+  - `warn`: absolute drop `>= 0.10`
+  - `critical`: absolute drop `>= 0.20`
+
+Segment-level policy:
+
+- for each segment with `queue_parcel_count >= 25`, evaluate:
+  - `segment.false_positive_rate_delta_abs`
+  - `segment.high_risk_rate_delta_abs`
+- `warn` at `>= 0.07`; `critical` at `>= 0.12`
+
+Minimum-sample guardrails:
+
+- do not severity-evaluate `disposition_mix.*.rate` when `reviewed_case_count < 20`
+- do not severity-evaluate segment metrics when segment `queue_parcel_count < 25`
+- guarded metrics must emit `ignored = true` with `ignore_reason = insufficient_sample_size`
+
+`comparison.overall_severity` derivation:
+
+- max severity over non-ignored signals (`critical > warn > ok`)
+- if all signals are ignored, `overall_severity = ok`
+
+## Cadence Policy (v1)
+
+Required recurring cadence:
+
+- `daily_refresh` benchmark pack: weekly (recommended every Monday)
+- `annual_refresh` benchmark pack: required for each annual cutover candidate run
+- correction replay benchmark pack: required for each `correction_replay` annual run
+
+On-demand benchmark runs are allowed when:
+
+- threshold-promotion proposal is being assembled
+- operator investigates suspected fairness/performance regressions
+
+## Retention Expectations (v1)
+
+Minimum retention policy:
+
+- retain all benchmark pack JSON artifacts for at least `400` days
+- retain segment CSV companions (if emitted) for at least `400` days
+- maintain latest pointers by profile:
+  - `data/benchmark_packs/latest/<profile_name>/latest_benchmark_pack.json`
+  - `data/benchmark_packs/latest/<profile_name>/latest_alert.json` (when present)
+
+Baseline retention policy:
+
+- never delete benchmark packs referenced by an approved threshold-promotion decision record
+- baseline pointers must be versioned and auditable; rebasing baseline requires
+  explicit operator action and decision note
+
+## Escalation Criteria And Operator Actions (v1)
+
+### Escalation criteria
+
+Escalation level is based on `comparison.overall_severity`:
+
+- `ok`: no escalation
+- `warn`: analyst review required before next promotion proposal
+- `critical`: promotion freeze recommended until triage completes
+
+Mandatory `critical` escalation triggers:
+
+- any non-ignored `critical` signal in `risk_band_mix` or `disposition_mix`
+- `coverage.review_rate` critical drop
+- two or more distinct segment-level critical signals in one benchmark run
+
+### Required operator actions
+
+When `warn`:
+
+1. review top contributing `reason_code` values
+2. validate source artifact integrity for benchmark inputs
+3. attach benchmark summary to open governance notes if promotion is pending
+
+When `critical`:
+
+1. open an incident/tracking entry in the operations log
+2. run targeted refresh/load diagnostics recheck
+3. attach benchmark pack to threshold promotion packet as blocking evidence
+4. require explicit reviewer sign-off before any threshold/ruleset publication
+
+## Governance Linkage (v1)
+
+Threshold promotion evidence packet integration:
+
+- benchmark pack artifact path must populate
+  `threshold_promotion_decision.evidence.benchmark_summary_path`
+- when benchmark severity is `critical`, promotion decision must not be `approved`
+  without explicit documented override rationale
+
+## Non-Goals And Deferred Items
+
+Deferred beyond v1:
+
+- automated tolerance tuning from rolling history
+- fairness metrics that require external demographic joins
+- automatic benchmark-triggered model/rules rollback
+- multi-profile unified benchmark dashboards
+
+## Acceptance Criteria For Day 11 Contract Completion
+
+- benchmark pack payload schema is explicit and versioned
+- comparability keys and non-comparable behavior are explicit
+- drift tolerances and minimum-sample guardrails are explicit
+- cadence and retention policy are explicit
+- escalation criteria and governance linkage are explicit
