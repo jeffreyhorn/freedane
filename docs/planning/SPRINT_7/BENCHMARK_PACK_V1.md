@@ -429,7 +429,9 @@ Each `comparison.signals[]` item must include:
 - `disposition_mix.*` signals:
   - for `disposition_mix.unreviewed.rate`: `sample_size = summary.coverage.queue_parcel_count`
   - for other `disposition_mix.*.rate`: `sample_size = summary.coverage.reviewed_case_count`
-- `segment.*` signals: `sample_size = segments[segment_id].queue_parcel_count`
+- `segment.*` signals:
+  - find the segment object in `segments[]` where `segments[].segment_id == {segment_id}` from `metric_key`
+  - `sample_size = matched_segment.queue_parcel_count`
 - if required source counts are unavailable, emit `sample_size = 0` and mark signal ignored using `ignore_reason = missing_current_metric`
 
 Allowed `ignore_reason` values:
@@ -467,8 +469,8 @@ Deterministic `comparison.signals` ordering:
 
 - producers must emit `comparison.signals` sorted by:
   1. `metric_key` ascending
-  2. `signal_id` ascending
-  3. `family` ascending
+  2. `family` ascending
+  3. `signal_id` ascending
 
 ### Drift tolerance policy (default v1)
 
