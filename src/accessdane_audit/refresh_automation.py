@@ -331,8 +331,6 @@ def run_scheduled_refresh(
         retr_file=retr_file,
         assessment_manifest_file=assessment_manifest_file,
         artifact_base_dir=artifact_base_dir,
-        run_date=run_date,
-        run_id=run_id,
     )
     if annual_preflight_error is not None:
         stages = [
@@ -929,8 +927,6 @@ def _validate_annual_preflight(
     retr_file: Optional[Path],
     assessment_manifest_file: Optional[Path],
     artifact_base_dir: Path,
-    run_date: str,
-    run_id: str,
 ) -> Optional[_AnnualPreflightError]:
     if profile_name != "annual_refresh":
         return None
