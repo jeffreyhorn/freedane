@@ -978,6 +978,15 @@ def _validate_annual_preflight(
                     "letters, digits, '.', '_' and '-' are allowed."
                 ),
             }
+        if ".." in parent_run_id or "/" in parent_run_id or "\\" in parent_run_id:
+            return {
+                "code": "invalid_parent_run_id",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": (
+                    "parent_run_id cannot contain '..' or path separators "
+                    "('/' or '\\')."
+                ),
+            }
         if not correction_reason_code:
             return {
                 "code": "missing_correction_reason_code",

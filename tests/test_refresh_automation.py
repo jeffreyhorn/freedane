@@ -636,6 +636,47 @@ def test_run_scheduled_refresh_correction_replay_requires_parent_run_id(
     )
 
 
+def test_run_scheduled_refresh_correction_replay_rejects_unsafe_parent_run_id(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    retr_file = tmp_path / "retr.csv"
+    assessment_manifest_file = tmp_path / "assessment_manifest.json"
+    retr_file.write_text("header\n", encoding="utf-8")
+    assessment_manifest_file.write_text(
+        '{"files": ["roll_2026.csv"]}\n', encoding="utf-8"
+    )
+
+    payload = run_scheduled_refresh(
+        profile_name="annual_refresh",
+        run_date="20260316",
+        run_id="20260316_annual_refresh_feature_v1_scoring_rules_v1_141415",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=retr_file,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+        assessment_manifest_file=assessment_manifest_file,
+        annual_target_year=2026,
+        replay_mode="correction_replay",
+        parent_run_id="unsafe..parent",
+        correction_reason_code="correction_replay_retr",
+        command_executor=lambda _: 0,
+    )
+
+    assert payload["run"]["status"] == "failed"
+    assert payload["error"] is not None
+    assert payload["error"]["code"] == "annual_preflight_failed"
+    assert (
+        "parent_run_id cannot contain '..' or path separators"
+        in payload["error"]["message"]
+    )
+
+
 def test_run_scheduled_refresh_annual_profile_reuses_standard_overlapping_lock_error(
     tmp_path: Path,
 ) -> None:
