@@ -1158,7 +1158,7 @@ def _run_refresh_runner_command(
     if retried_from_stage_id and resume_from_stage_id:
         raise typer.BadParameter(
             "Use only one of --retried-from-stage-id or --resume-from-stage-id.",
-            param_hint="--resume-from-stage-id",
+            param_hint="--retried-from-stage-id/--resume-from-stage-id",
         )
     resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
     if resolved_retry_stage and attempt_count <= 1:
