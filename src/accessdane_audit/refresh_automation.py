@@ -9,8 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, TypedDict
 
-from typing_extensions import NotRequired
-
 RUN_TYPE_REFRESH_AUTOMATION = "refresh_automation"
 REFRESH_AUTOMATION_VERSION_TAG = "refresh_automation_v1"
 _SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -62,7 +60,7 @@ class RefreshRequestSourceFiles(TypedDict):
     appeals: Optional[str]
 
 
-class RefreshRequest(TypedDict):
+class _RefreshRequestBase(TypedDict):
     profile_name: str
     run_date: str
     feature_version: str
@@ -70,11 +68,14 @@ class RefreshRequest(TypedDict):
     sales_ratio_base: str
     top: int
     source_files: RefreshRequestSourceFiles
-    annual_target_year: NotRequired[Optional[int]]
-    replay_mode: NotRequired[Optional[str]]
-    parent_run_id: NotRequired[Optional[str]]
-    correction_reason_code: NotRequired[Optional[str]]
-    source_manifest_paths: NotRequired[list[str]]
+
+
+class RefreshRequest(_RefreshRequestBase, total=False):
+    annual_target_year: Optional[int]
+    replay_mode: Optional[str]
+    parent_run_id: Optional[str]
+    correction_reason_code: Optional[str]
+    source_manifest_paths: list[str]
 
 
 class RefreshSummary(TypedDict):
@@ -1008,9 +1009,7 @@ def _validate_annual_preflight(
                 "replay_mode is correction_replay."
             ),
         }
-    write_probe_path = (
-        artifact_base_dir / f".annual_preflight_probe_{os.getpid()}_{run_date}_{run_id}"
-    )
+    write_probe_path = artifact_base_dir / f".annual_preflight_probe_{os.getpid()}"
     try:
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
         write_probe_path.write_text("ok\n", encoding="utf-8")
@@ -1023,7 +1022,12 @@ def _validate_annual_preflight(
             ),
         }
     finally:
-        _safe_unlink(write_probe_path)
+        try:
+            if write_probe_path.is_file():
+                _safe_unlink(write_probe_path)
+        except OSError:
+            # Best-effort cleanup only; probe deletion errors should not fail preflight.
+            pass
     return None
 
 
