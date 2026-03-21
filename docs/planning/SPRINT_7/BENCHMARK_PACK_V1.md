@@ -131,7 +131,15 @@ Required fields:
 - `source_artifacts` (array of artifact paths used to compute benchmark)
 - `period_start` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `period_end` (RFC3339/ISO-8601 UTC with trailing `Z`)
+- `period_length_days` (integer; inclusive UTC whole-day count for the benchmark period)
 - `top_n` (int; reflects queue/report slicing policy)
+
+`period_length_days` derivation rule (deterministic):
+
+- convert `period_start` and `period_end` to UTC instants
+- compute `D = period_end - period_start` in seconds
+- compute `period_length_days = 1 + floor(D / 86400)`
+- use this same derivation anywhere `period_length_days` appears, including `baseline_reference.period_length_days`
 
 ### `alerts` array
 
@@ -158,6 +166,18 @@ Additional rules:
 
 - for `run.status = failed`, `alerts` must be `[]`
 - consumers must tolerate unknown alert fields as a forward-compatible extension point
+
+Alert routing compatibility:
+
+- benchmark pack `alerts[]` reuses the Sprint 7 shared alert-routing model used by parser drift/load monitoring artifacts
+- canonical field mapping into the shared alert-routing payload:
+  - `alerts[].id` -> `alert_id`
+  - `alerts[].level` -> `severity`
+  - `alerts[].code` -> `reason_codes` as single-element array (`[code]`)
+  - `alerts[].message` -> alert summary/description
+  - `alerts[].scope`, `alerts[].segment_id`, `alerts[].signal_id` -> routing context fields
+  - `alerts[].created_at` -> alert creation timestamp
+- consumers expecting one embedded alert summary must fan out `alerts[]` and route each item as a separate alert instance
 
 ### `diagnostics` object
 
@@ -244,6 +264,7 @@ Required keys:
 Rate denominator rule:
 
 - denominator is `queue_parcel_count`
+- each `risk_band_mix.*.rate` must be computed as `count / max(queue_parcel_count, 1)` so zero-denominator cases never emit NaN/Infinity
 
 ### 3) Disposition Mix
 
@@ -261,6 +282,7 @@ Rate denominator rule:
 
 - denominator is `reviewed_case_count` for reviewed dispositions
 - `unreviewed.rate` denominator is `queue_parcel_count`
+- each `disposition_mix.*.rate` must be computed as `count / max(denominator, 1)` using the applicable denominator above so zero-denominator cases never emit NaN/Infinity
 
 ### 4) Geography/Class Segments
 
@@ -286,7 +308,7 @@ Deterministic segment ordering:
 
 `comparison` must include:
 
-- `baseline_reference`
+- `baseline_reference` (`object|null`)
 - `comparable` (bool)
 - `non_comparable_reasons` (array)
 - `signals` (array)
@@ -308,7 +330,7 @@ Use this order:
 
 ### Comparability key contract
 
-`baseline_reference` must include:
+When `comparison.comparable = true`, `baseline_reference` must be a non-null object including:
 
 - `benchmark_run_id`
 - `run_date`
@@ -332,6 +354,7 @@ If not comparable:
 - `comparison.comparable = false`
 - `comparison.non_comparable_reasons` must be non-empty
 - `comparison.non_comparable_reasons` should include `no_comparable_baseline_found` when baseline lookup fails
+- `comparison.baseline_reference = null`
 - `comparison.signals` must be empty
 - `comparison.overall_severity = ok`
 
@@ -366,9 +389,23 @@ Canonical `metric_key` formats:
   - `segment.{segment_id}.risk_band_mix.high.rate_delta_abs`
 - `{segment_id}` must exactly match one `segments[].segment_id`
 
+Value and delta semantics:
+
+- all `*.rate` values in this contract are fractions on `[0, 1]` (not `[0, 100]`)
+- rate deltas and thresholds use the same `[0, 1]` scale (for example `0.04` means a 4-point fraction-scale change)
+- for non-segment-delta metrics:
+  - `baseline_value` = baseline metric value for `metric_key`
+  - `current_value` = current metric value for `metric_key`
+  - `delta_absolute` = signed delta (`current_value - baseline_value`)
+  - `delta_relative` = `(current_value - baseline_value) / baseline_value` when `baseline_value != 0`, else `null`
+- for segment keys ending in `rate_delta_abs`:
+  - `baseline_value` and `current_value` are the underlying per-segment rates
+  - `delta_absolute` = absolute delta `abs(current_value - baseline_value)`
+  - `delta_relative` = `null`
+
 ### Drift tolerance policy (default v1)
 
-Absolute delta thresholds (percentage points unless noted):
+Absolute delta thresholds (fraction-scale rate points unless noted):
 
 - `risk_band_mix.high.rate`:
   - `warn`: `>= 0.04`
