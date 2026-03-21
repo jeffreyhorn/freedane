@@ -95,6 +95,13 @@ Companion alert artifact contract (`benchmark_pack_alert.json`):
   - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
   - `routing_key` (string)
   - `context` (object)
+- companion mapping rules:
+  - `summary = alerts[].message`
+  - `context` must include:
+    - `scope` (from `alerts[].scope`)
+    - `segment_id` (nullable; from `alerts[].segment_id`)
+    - `signal_id` (nullable; from `alerts[].signal_id`)
+  - when segment/signal context is unavailable, values must be explicit `null` (not omitted)
 
 Path token rule:
 
@@ -196,7 +203,7 @@ Alert routing compatibility:
   - fixed `alert_type = benchmark_pack`
   - `alerts[].level` -> `severity`
   - `alerts[].code` -> `reason_codes` as single-element array (`[code]`)
-  - `alerts[].message` -> alert summary/description
+  - `alerts[].message` -> `summary`
   - `alerts[].scope`, `alerts[].segment_id`, `alerts[].signal_id` -> routing context fields
   - `alerts[].created_at` -> `generated_at`
   - `routing_key` must be derived as `<profile_name>:<feature_version>:<ruleset_version>:<code>`
@@ -415,6 +422,16 @@ Each `comparison.signals[]` item must include:
 - `ignored` (bool)
 - `ignore_reason` (nullable string)
 
+`sample_size` semantics (deterministic by metric namespace):
+
+- `coverage.*` signals: `sample_size = summary.coverage.queue_parcel_count`
+- `risk_band_mix.*` signals: `sample_size = summary.coverage.queue_parcel_count`
+- `disposition_mix.*` signals:
+  - for `disposition_mix.unreviewed.rate`: `sample_size = summary.coverage.queue_parcel_count`
+  - for other `disposition_mix.*.rate`: `sample_size = summary.coverage.reviewed_case_count`
+- `segment.*` signals: `sample_size = segments[segment_id].queue_parcel_count`
+- if required source counts are unavailable, emit `sample_size = 0` and mark signal ignored using `ignore_reason = missing_current_metric`
+
 Allowed `ignore_reason` values:
 
 - `insufficient_sample_size`
@@ -445,6 +462,13 @@ Value and delta semantics:
   - `baseline_value` and `current_value` are the underlying per-segment rates
   - `delta_absolute` = absolute delta `abs(current_value - baseline_value)`
   - `delta_relative` = `null`
+
+Deterministic `comparison.signals` ordering:
+
+- producers must emit `comparison.signals` sorted by:
+  1. `metric_key` ascending
+  2. `signal_id` ascending
+  3. `family` ascending
 
 ### Drift tolerance policy (default v1)
 
