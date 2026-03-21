@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1013,10 +1014,17 @@ def _validate_annual_preflight(
                 "replay_mode is correction_replay."
             ),
         }
-    write_probe_path = artifact_base_dir / f".annual_preflight_probe_{os.getpid()}"
+    write_probe_path: Optional[Path] = None
     try:
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
-        write_probe_path.write_text("ok\n", encoding="utf-8")
+        probe_fd, probe_path = tempfile.mkstemp(
+            prefix=".annual_preflight_probe_",
+            dir=str(artifact_base_dir),
+            text=True,
+        )
+        write_probe_path = Path(probe_path)
+        with os.fdopen(probe_fd, "w", encoding="utf-8") as probe_file:
+            probe_file.write("ok\n")
     except OSError as exc:
         return {
             "code": "artifact_root_not_writable",
@@ -1027,7 +1035,7 @@ def _validate_annual_preflight(
         }
     finally:
         try:
-            if write_probe_path.is_file():
+            if write_probe_path is not None and write_probe_path.is_file():
                 _safe_unlink(write_probe_path)
         except OSError:
             # Best-effort cleanup only; probe deletion errors should not fail preflight.

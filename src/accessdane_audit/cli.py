@@ -1321,7 +1321,10 @@ def refresh_runner_cmd(
         "--annual-target-year",
         min=1900,
         max=3000,
-        help="Annual target year for annual_refresh profile",
+        help=(
+            "Annual target year for annual_refresh profile "
+            "(required when --profile-name=annual_refresh)"
+        ),
     ),
     replay_mode: Optional[str] = typer.Option(
         None,
