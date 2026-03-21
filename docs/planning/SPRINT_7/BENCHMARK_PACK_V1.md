@@ -76,6 +76,26 @@ Optional companion paths (if generator emits split artifacts):
 - `.../benchmark_pack_segments.csv`
 - `.../benchmark_pack_alert.json` (when severity is `warn|critical`)
 
+Companion alert artifact contract (`benchmark_pack_alert.json`):
+
+- emission rule:
+  - emit only when one or more `alerts[]` items exist
+  - do not emit when `alerts = []`
+- JSON shape:
+  - top-level object with:
+    - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+    - `alert_count` (int)
+    - `alerts` (array of shared alert summaries)
+- each `alerts[]` companion summary must include:
+  - `alert_id`
+  - `alert_type` (`benchmark_pack`)
+  - `severity` (`warn|critical`)
+  - `reason_codes` (array of strings)
+  - `summary` (string)
+  - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+  - `routing_key` (string)
+  - `context` (object)
+
 Path token rule:
 
 - `run_date` uses `YYYYMMDD`.
@@ -150,7 +170,7 @@ Top-level type:
 Each `alerts[]` item must include:
 
 - `id` (string; stable, generator-assigned identifier)
-- `level` (`info|warn|critical`)
+- `level` (`warn|critical`)
 - `code` (string; machine-parseable reason code)
 - `message` (string; operator-readable summary)
 - `scope` (`run|segment|comparison`)
@@ -170,13 +190,16 @@ Additional rules:
 Alert routing compatibility:
 
 - benchmark pack `alerts[]` reuses the Sprint 7 shared alert-routing model used by parser drift/load monitoring artifacts
+- each benchmark alert must be converted into one shared alert summary object for routing
 - canonical field mapping into the shared alert-routing payload:
   - `alerts[].id` -> `alert_id`
+  - fixed `alert_type = benchmark_pack`
   - `alerts[].level` -> `severity`
   - `alerts[].code` -> `reason_codes` as single-element array (`[code]`)
   - `alerts[].message` -> alert summary/description
   - `alerts[].scope`, `alerts[].segment_id`, `alerts[].signal_id` -> routing context fields
-  - `alerts[].created_at` -> alert creation timestamp
+  - `alerts[].created_at` -> `generated_at`
+  - `routing_key` must be derived as `<profile_name>:<feature_version>:<ruleset_version>:<code>`
 - consumers expecting one embedded alert summary must fan out `alerts[]` and route each item as a separate alert instance
 
 ### `diagnostics` object
@@ -238,7 +261,13 @@ Deterministic placeholder rules for failed runs:
 
 ## Summary Metric Schema (v1)
 
-`summary` must include four required metric families.
+Top-level metric families in the benchmark pack:
+
+- `summary` contains three required metric families:
+  - coverage
+  - risk-band mix
+  - disposition mix
+- `segments` is a separate top-level family for geography/class segmented metrics
 
 ### 1) Coverage
 
@@ -310,7 +339,7 @@ Deterministic segment ordering:
 
 - `baseline_reference` (`object|null`)
 - `comparable` (bool)
-- `non_comparable_reasons` (array)
+- `non_comparable_reasons` (array of strings)
 - `signals` (array)
 - `overall_severity` (`ok|warn|critical`)
 
@@ -358,6 +387,17 @@ If not comparable:
 - `comparison.signals` must be empty
 - `comparison.overall_severity = ok`
 
+Allowed `comparison.non_comparable_reasons` values (v1):
+
+- `no_comparable_baseline_found`
+- `profile_name_mismatch`
+- `feature_version_mismatch`
+- `ruleset_version_mismatch`
+- `top_n_mismatch`
+- `period_length_days_mismatch`
+- `baseline_schema_version_mismatch`
+- `operator_override_not_comparable`
+
 ### Signal schema
 
 Each `comparison.signals[]` item must include:
@@ -388,6 +428,9 @@ Canonical `metric_key` formats:
   - `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`
   - `segment.{segment_id}.risk_band_mix.high.rate_delta_abs`
 - `{segment_id}` must exactly match one `segments[].segment_id`
+- `family` assignment is deterministic:
+  - if `metric_key` starts with `segment.`, `family` must be `segment_mix`
+  - otherwise `family` must match the metric namespace (`coverage`, `risk_band_mix`, or `disposition_mix`)
 
 Value and delta semantics:
 
@@ -408,20 +451,25 @@ Value and delta semantics:
 Absolute delta thresholds (fraction-scale rate points unless noted):
 
 - `risk_band_mix.high.rate`:
-  - `warn`: `>= 0.04`
-  - `critical`: `>= 0.08`
+  - evaluate increase-only using signed `delta_absolute`
+  - `warn`: `delta_absolute >= 0.04`
+  - `critical`: `delta_absolute >= 0.08`
 - `risk_band_mix.medium.rate`:
-  - `warn`: `>= 0.06`
-  - `critical`: `>= 0.10`
+  - evaluate absolute magnitude using `abs(delta_absolute)`
+  - `warn`: `abs(delta_absolute) >= 0.06`
+  - `critical`: `abs(delta_absolute) >= 0.10`
 - `disposition_mix.false_positive.rate`:
-  - `warn`: `>= 0.03`
-  - `critical`: `>= 0.06`
+  - evaluate increase-only using signed `delta_absolute`
+  - `warn`: `delta_absolute >= 0.03`
+  - `critical`: `delta_absolute >= 0.06`
 - `disposition_mix.confirmed_issue.rate`:
-  - `warn`: `>= 0.03`
-  - `critical`: `>= 0.06`
+  - evaluate drop-only using signed `delta_absolute`
+  - `warn`: `delta_absolute <= -0.03`
+  - `critical`: `delta_absolute <= -0.06`
 - `coverage.review_rate`:
-  - `warn`: absolute drop `>= 0.10`
-  - `critical`: absolute drop `>= 0.20`
+  - evaluate drop-only using signed `delta_absolute`
+  - `warn`: `delta_absolute <= -0.10`
+  - `critical`: `delta_absolute <= -0.20`
 
 Segment-level policy:
 
@@ -508,8 +556,8 @@ When `critical`:
 
 Threshold promotion evidence packet integration:
 
-- benchmark pack artifact path must populate
-  `threshold_promotion_decision.evidence.benchmark_summary_path`
+- when `benchmark_pack_summary.json` is emitted, `threshold_promotion_decision.evidence.benchmark_summary_path` must reference that summary artifact
+- when split summary is not emitted, `threshold_promotion_decision.evidence.benchmark_summary_path` must reference the canonical `benchmark_pack.json`
 - when benchmark severity is `critical`, promotion decision must not be `approved`
   without explicit documented override rationale
 
