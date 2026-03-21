@@ -81,6 +81,13 @@ def test_run_scheduled_refresh_daily_profile_executes_deterministic_command_orde
         / "scoring_rules_v1"
     )
     assert payload["run"]["run_persisted"] is True
+    assert {
+        "annual_target_year",
+        "replay_mode",
+        "parent_run_id",
+        "correction_reason_code",
+        "source_manifest_paths",
+    }.isdisjoint(payload["request"].keys())
     root_path = Path(payload["artifacts"]["root_path"])
     refresh_payload_path = root_path / "health_summary" / "refresh_run_payload.json"
     assert refresh_payload_path.exists()
@@ -410,6 +417,21 @@ def test_run_scheduled_refresh_annual_profile_emits_signoff_and_checklist_artifa
     signoff_payload = json.loads(signoff_path.read_text(encoding="utf-8"))
     assert signoff_payload["run"]["status"] == "pending_signoff"
     assert signoff_payload["annual_context"]["annual_target_year"] == 2026
+    assert payload["request"]["replay_mode"] == "baseline_annual"
+    assert sorted(signoff_payload["artifacts"].keys()) == [
+        "investigation_report_html_path",
+        "investigation_report_json_path",
+        "load_monitoring_payload_path",
+        "refresh_run_payload_path",
+        "review_feedback_path",
+        "review_queue_path",
+    ]
+    cp01 = next(
+        checkpoint
+        for checkpoint in signoff_payload["checkpoints"]
+        if checkpoint["checkpoint_id"] == "CP-01_SOURCE_MANIFEST"
+    )
+    assert cp01["status"] == "passed"
 
 
 def test_run_scheduled_refresh_annual_profile_requires_retr_file_preflight(
