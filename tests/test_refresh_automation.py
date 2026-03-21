@@ -685,7 +685,7 @@ def test_run_scheduled_refresh_correction_replay_rejects_unsafe_parent_run_id(
     assert payload["error"] is not None
     assert payload["error"]["code"] == "annual_preflight_failed"
     assert (
-        "parent_run_id cannot contain '..' or path separators"
+        "parent_run_id cannot contain the path traversal sequence '..'"
         in payload["error"]["message"]
     )
 

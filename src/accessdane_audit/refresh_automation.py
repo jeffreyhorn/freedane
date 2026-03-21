@@ -969,6 +969,14 @@ def _validate_annual_preflight(
                 "checkpoint_id": "CP-01_SOURCE_MANIFEST",
                 "message": "parent_run_id is required for correction_replay mode.",
             }
+        if ".." in parent_run_id:
+            return {
+                "code": "invalid_parent_run_id",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": (
+                    "parent_run_id cannot contain the path traversal sequence '..'."
+                ),
+            }
         if not _SAFE_PATH_SEGMENT_RE.fullmatch(parent_run_id):
             return {
                 "code": "invalid_parent_run_id",
@@ -976,15 +984,6 @@ def _validate_annual_preflight(
                 "message": (
                     "parent_run_id contains unsupported path characters; only "
                     "letters, digits, '.', '_' and '-' are allowed."
-                ),
-            }
-        if ".." in parent_run_id or "/" in parent_run_id or "\\" in parent_run_id:
-            return {
-                "code": "invalid_parent_run_id",
-                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
-                "message": (
-                    "parent_run_id cannot contain '..' or path separators "
-                    "('/' or '\\')."
                 ),
             }
         if not correction_reason_code:

@@ -1124,6 +1124,94 @@ def investigation_report_cmd(
         raise typer.Exit(code=1)
 
 
+def _run_refresh_runner_command(
+    *,
+    profile_name: str,
+    run_date: Optional[str],
+    run_id: Optional[str],
+    feature_version: str,
+    ruleset_version: str,
+    sales_ratio_base: str,
+    top: int,
+    retr_file: Optional[Path],
+    assessment_manifest_file: Optional[Path],
+    permits_file: Optional[Path],
+    appeals_file: Optional[Path],
+    artifact_base_dir: Path,
+    accessdane_bin: str,
+    attempt_count: int,
+    retried_from_stage_id: Optional[str],
+    resume_from_stage_id: Optional[str],
+    annual_target_year: Optional[int],
+    replay_mode: Optional[str],
+    parent_run_id: Optional[str],
+    correction_reason_code: Optional[str],
+    out: Optional[Path],
+) -> None:
+    now_utc = datetime.now(timezone.utc)
+    resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            "--run-date must be in YYYYMMDD format.",
+            param_hint="--run-date",
+        )
+    if retried_from_stage_id and resume_from_stage_id:
+        raise typer.BadParameter(
+            "Use only one of --retried-from-stage-id or --resume-from-stage-id.",
+            param_hint="--resume-from-stage-id",
+        )
+    resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
+    if resolved_retry_stage and attempt_count <= 1:
+        retry_param_hint = (
+            "--retried-from-stage-id"
+            if retried_from_stage_id is not None
+            else "--resume-from-stage-id"
+        )
+        raise typer.BadParameter(
+            (
+                "--retried-from-stage-id/--resume-from-stage-id requires "
+                "--attempt-count >= 2."
+            ),
+            param_hint=retry_param_hint,
+        )
+    resolved_run_id = run_id or (
+        f"{resolved_run_date}_{profile_name}_{feature_version}_{ruleset_version}"
+        f"_{now_utc.strftime('%H%M%S')}"
+    )
+
+    payload = run_scheduled_refresh(
+        profile_name=profile_name,
+        run_date=resolved_run_date,
+        run_id=resolved_run_id,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+        sales_ratio_base=sales_ratio_base,
+        top=top,
+        retr_file=retr_file,
+        assessment_manifest_file=assessment_manifest_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin=accessdane_bin,
+        annual_target_year=annual_target_year,
+        replay_mode=replay_mode,
+        parent_run_id=parent_run_id,
+        correction_reason_code=correction_reason_code,
+        attempt_count=attempt_count,
+        retried_from_stage_id=resolved_retry_stage,
+    )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
 @app.command("refresh-runner")
 def refresh_runner_cmd(
     profile_name: str = typer.Option(
@@ -1256,41 +1344,10 @@ def refresh_runner_cmd(
         help="Output JSON path for refresh payload",
     ),
 ) -> None:
-    now_utc = datetime.now(timezone.utc)
-    resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
-    if not re.fullmatch(r"\d{8}", resolved_run_date):
-        raise typer.BadParameter(
-            "--run-date must be in YYYYMMDD format.",
-            param_hint="--run-date",
-        )
-    if retried_from_stage_id and resume_from_stage_id:
-        raise typer.BadParameter(
-            "Use only one of --retried-from-stage-id or --resume-from-stage-id.",
-            param_hint="--resume-from-stage-id",
-        )
-    resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
-    if resolved_retry_stage and attempt_count <= 1:
-        retry_param_hint = (
-            "--retried-from-stage-id"
-            if retried_from_stage_id is not None
-            else "--resume-from-stage-id"
-        )
-        raise typer.BadParameter(
-            (
-                "--retried-from-stage-id/--resume-from-stage-id requires "
-                "--attempt-count >= 2."
-            ),
-            param_hint=retry_param_hint,
-        )
-    resolved_run_id = run_id or (
-        f"{resolved_run_date}_{profile_name}_{feature_version}_{ruleset_version}"
-        f"_{now_utc.strftime('%H%M%S')}"
-    )
-
-    payload = run_scheduled_refresh(
+    _run_refresh_runner_command(
         profile_name=profile_name,
-        run_date=resolved_run_date,
-        run_id=resolved_run_id,
+        run_date=run_date,
+        run_id=run_id,
         feature_version=feature_version,
         ruleset_version=ruleset_version,
         sales_ratio_base=sales_ratio_base,
@@ -1306,18 +1363,10 @@ def refresh_runner_cmd(
         parent_run_id=parent_run_id,
         correction_reason_code=correction_reason_code,
         attempt_count=attempt_count,
-        retried_from_stage_id=resolved_retry_stage,
+        retried_from_stage_id=retried_from_stage_id,
+        resume_from_stage_id=resume_from_stage_id,
+        out=out,
     )
-
-    if out:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    else:
-        typer.echo(json.dumps(payload, indent=2))
-
-    run = payload.get("run", {})
-    if isinstance(run, dict) and run.get("status") == "failed":
-        raise typer.Exit(code=1)
 
 
 @app.command("annual-refresh-runner")
@@ -1444,41 +1493,10 @@ def annual_refresh_runner_cmd(
         help="Output JSON path for refresh payload",
     ),
 ) -> None:
-    now_utc = datetime.now(timezone.utc)
-    resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
-    if not re.fullmatch(r"\d{8}", resolved_run_date):
-        raise typer.BadParameter(
-            "--run-date must be in YYYYMMDD format.",
-            param_hint="--run-date",
-        )
-    if retried_from_stage_id and resume_from_stage_id:
-        raise typer.BadParameter(
-            "Use only one of --retried-from-stage-id or --resume-from-stage-id.",
-            param_hint="--resume-from-stage-id",
-        )
-    resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
-    if resolved_retry_stage and attempt_count <= 1:
-        retry_param_hint = (
-            "--retried-from-stage-id"
-            if retried_from_stage_id is not None
-            else "--resume-from-stage-id"
-        )
-        raise typer.BadParameter(
-            (
-                "--retried-from-stage-id/--resume-from-stage-id requires "
-                "--attempt-count >= 2."
-            ),
-            param_hint=retry_param_hint,
-        )
-    resolved_run_id = run_id or (
-        f"{resolved_run_date}_annual_refresh_{feature_version}_{ruleset_version}"
-        f"_{now_utc.strftime('%H%M%S')}"
-    )
-
-    payload = run_scheduled_refresh(
+    _run_refresh_runner_command(
         profile_name="annual_refresh",
-        run_date=resolved_run_date,
-        run_id=resolved_run_id,
+        run_date=run_date,
+        run_id=run_id,
         feature_version=feature_version,
         ruleset_version=ruleset_version,
         sales_ratio_base=sales_ratio_base,
@@ -1494,18 +1512,10 @@ def annual_refresh_runner_cmd(
         parent_run_id=parent_run_id,
         correction_reason_code=correction_reason_code,
         attempt_count=attempt_count,
-        retried_from_stage_id=resolved_retry_stage,
+        retried_from_stage_id=retried_from_stage_id,
+        resume_from_stage_id=resume_from_stage_id,
+        out=out,
     )
-
-    if out:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    else:
-        typer.echo(json.dumps(payload, indent=2))
-
-    run = payload.get("run", {})
-    if isinstance(run, dict) and run.get("status") == "failed":
-        raise typer.Exit(code=1)
 
 
 @app.command("enumerate-trs")
