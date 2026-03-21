@@ -365,6 +365,14 @@ def test_run_scheduled_refresh_annual_profile_emits_signoff_and_checklist_artifa
     )
 
     assert payload["run"]["status"] == "succeeded"
+    assert set(payload["artifacts"]["stage_artifacts"].keys()) == {
+        "ingest_context",
+        "build_context",
+        "score_pipeline",
+        "analysis_artifacts",
+        "investigation_artifacts",
+        "health_summary",
+    }
     assert sorted(payload["request"]["source_files"].keys()) == [
         "appeals",
         "permits",
@@ -381,14 +389,14 @@ def test_run_scheduled_refresh_annual_profile_emits_signoff_and_checklist_artifa
         "review-feedback",
         "investigation-report",
     ]
-    annual_artifacts = payload["artifacts"]["stage_artifacts"]["annual_signoff"]
+    health_artifacts = payload["artifacts"]["stage_artifacts"]["health_summary"]
     root_path = Path(payload["artifacts"]["root_path"])
     checklist_path = root_path / "annual_signoff" / "annual_stage_checklist.json"
     signoff_path = root_path / "annual_signoff" / "annual_signoff.json"
     assert checklist_path.exists()
     assert signoff_path.exists()
-    assert str(checklist_path) in annual_artifacts
-    assert str(signoff_path) in annual_artifacts
+    assert str(checklist_path) in health_artifacts
+    assert str(signoff_path) in health_artifacts
     checklist_payload = json.loads(checklist_path.read_text(encoding="utf-8"))
     assert checklist_payload["expected_stage_order"] == [
         "ingest_context",
@@ -556,7 +564,7 @@ def test_run_scheduled_refresh_correction_summary_includes_optional_sources(
     correction_summary = json.loads(correction_summary_path.read_text(encoding="utf-8"))
     assert (
         str(correction_summary_path)
-        in payload["artifacts"]["stage_artifacts"]["correction_summary"]
+        in payload["artifacts"]["stage_artifacts"]["health_summary"]
     )
     assert correction_summary["corrected_sources"] == [
         str(assessment_manifest_file),

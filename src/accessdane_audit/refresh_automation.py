@@ -28,14 +28,6 @@ ANNUAL_CORRECTION_REASON_CODES: set[str] = {
     "correction_replay_appeals",
     "correction_replay_assessment_roll",
 }
-ANNUAL_CHECKPOINT_IDS: tuple[str, ...] = (
-    "CP-01_SOURCE_MANIFEST",
-    "CP-02_INGEST_RECONCILIATION",
-    "CP-03_CONTEXT_REBUILD_VALIDATION",
-    "CP-04_SCORING_DISTRIBUTION_REVIEW",
-    "CP-05_INVESTIGATION_ARTIFACT_REVIEW",
-    "CP-06_CUTOVER_AUTHORIZATION",
-)
 SUPPORTED_PROFILES: dict[str, tuple[str, ...]] = {
     "daily_refresh": CANONICAL_STAGES,
     "annual_refresh": CANONICAL_STAGES,
@@ -1137,24 +1129,21 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
 def _persist_annual_artifacts(*, payload: RefreshPayload, root_path: Path) -> None:
     annual_signoff_dir = root_path / "annual_signoff"
     annual_signoff_dir.mkdir(parents=True, exist_ok=True)
-    annual_stage_artifacts = payload["artifacts"]["stage_artifacts"].setdefault(
-        "annual_signoff", []
+    health_stage_artifacts = payload["artifacts"]["stage_artifacts"].setdefault(
+        "health_summary", []
     )
     annual_checklist_path = annual_signoff_dir / "annual_stage_checklist.json"
     annual_signoff_path = annual_signoff_dir / "annual_signoff.json"
 
     annual_checklist_payload = _build_annual_stage_checklist(payload)
     _write_json_atomic(annual_checklist_path, annual_checklist_payload)
-    if str(annual_checklist_path) not in annual_stage_artifacts:
-        annual_stage_artifacts.append(str(annual_checklist_path))
+    if str(annual_checklist_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(annual_checklist_path))
 
     correction_summary_path: Optional[Path] = None
     if payload["request"]["replay_mode"] == "correction_replay":
         correction_dir = root_path / "correction_summary"
         correction_dir.mkdir(parents=True, exist_ok=True)
-        correction_stage_artifacts = payload["artifacts"]["stage_artifacts"].setdefault(
-            "correction_summary", []
-        )
         correction_summary_path = correction_dir / "correction_summary.json"
         _write_json_atomic(
             correction_summary_path,
@@ -1168,8 +1157,8 @@ def _persist_annual_artifacts(*, payload: RefreshPayload, root_path: Path) -> No
                 ],
             },
         )
-        if str(correction_summary_path) not in correction_stage_artifacts:
-            correction_stage_artifacts.append(str(correction_summary_path))
+        if str(correction_summary_path) not in health_stage_artifacts:
+            health_stage_artifacts.append(str(correction_summary_path))
 
     annual_signoff_payload = _build_annual_signoff_payload(
         payload=payload,
@@ -1177,8 +1166,8 @@ def _persist_annual_artifacts(*, payload: RefreshPayload, root_path: Path) -> No
         correction_summary_path=correction_summary_path,
     )
     _write_json_atomic(annual_signoff_path, annual_signoff_payload)
-    if str(annual_signoff_path) not in annual_stage_artifacts:
-        annual_stage_artifacts.append(str(annual_signoff_path))
+    if str(annual_signoff_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(annual_signoff_path))
 
 
 def _build_annual_stage_checklist(payload: RefreshPayload) -> dict[str, object]:
