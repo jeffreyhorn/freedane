@@ -1124,12 +1124,100 @@ def investigation_report_cmd(
         raise typer.Exit(code=1)
 
 
+def _run_refresh_runner_command(
+    *,
+    profile_name: str,
+    run_date: Optional[str],
+    run_id: Optional[str],
+    feature_version: str,
+    ruleset_version: str,
+    sales_ratio_base: str,
+    top: int,
+    retr_file: Optional[Path],
+    assessment_manifest_file: Optional[Path],
+    permits_file: Optional[Path],
+    appeals_file: Optional[Path],
+    artifact_base_dir: Path,
+    accessdane_bin: str,
+    attempt_count: int,
+    retried_from_stage_id: Optional[str],
+    resume_from_stage_id: Optional[str],
+    annual_target_year: Optional[int],
+    replay_mode: Optional[str],
+    parent_run_id: Optional[str],
+    correction_reason_code: Optional[str],
+    out: Optional[Path],
+) -> None:
+    now_utc = datetime.now(timezone.utc)
+    resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            "--run-date must be in YYYYMMDD format.",
+            param_hint="--run-date",
+        )
+    if retried_from_stage_id and resume_from_stage_id:
+        raise typer.BadParameter(
+            "Use only one of --retried-from-stage-id or --resume-from-stage-id.",
+            param_hint="--retried-from-stage-id/--resume-from-stage-id",
+        )
+    resolved_retry_stage = retried_from_stage_id or resume_from_stage_id
+    if resolved_retry_stage and attempt_count <= 1:
+        retry_param_hint = (
+            "--retried-from-stage-id"
+            if retried_from_stage_id is not None
+            else "--resume-from-stage-id"
+        )
+        raise typer.BadParameter(
+            (
+                "--retried-from-stage-id/--resume-from-stage-id requires "
+                "--attempt-count >= 2."
+            ),
+            param_hint=retry_param_hint,
+        )
+    resolved_run_id = run_id or (
+        f"{resolved_run_date}_{profile_name}_{feature_version}_{ruleset_version}"
+        f"_{now_utc.strftime('%H%M%S')}"
+    )
+
+    payload = run_scheduled_refresh(
+        profile_name=profile_name,
+        run_date=resolved_run_date,
+        run_id=resolved_run_id,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+        sales_ratio_base=sales_ratio_base,
+        top=top,
+        retr_file=retr_file,
+        assessment_manifest_file=assessment_manifest_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin=accessdane_bin,
+        annual_target_year=annual_target_year,
+        replay_mode=replay_mode,
+        parent_run_id=parent_run_id,
+        correction_reason_code=correction_reason_code,
+        attempt_count=attempt_count,
+        retried_from_stage_id=resolved_retry_stage,
+    )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    run = payload.get("run", {})
+    if isinstance(run, dict) and run.get("status") == "failed":
+        raise typer.Exit(code=1)
+
+
 @app.command("refresh-runner")
 def refresh_runner_cmd(
     profile_name: str = typer.Option(
         "daily_refresh",
         "--profile-name",
-        help="Refresh profile (daily_refresh, analysis_only)",
+        help="Refresh profile (daily_refresh, annual_refresh, analysis_only)",
     ),
     run_date: Optional[str] = typer.Option(
         None,
@@ -1170,7 +1258,19 @@ def refresh_runner_cmd(
         dir_okay=False,
         readable=True,
         resolve_path=True,
-        help="Optional RETR CSV source file",
+        help="RETR CSV source file (required for annual_refresh; optional otherwise)",
+    ),
+    assessment_manifest_file: Optional[Path] = typer.Option(
+        None,
+        "--assessment-manifest-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Annual assessment-roll manifest file "
+            "(required for annual_refresh; optional otherwise)"
+        ),
     ),
     permits_file: Optional[Path] = typer.Option(
         None,
@@ -1211,55 +1311,214 @@ def refresh_runner_cmd(
         "--retried-from-stage-id",
         help="Stage ID boundary for retry attempts",
     ),
+    resume_from_stage_id: Optional[str] = typer.Option(
+        None,
+        "--resume-from-stage-id",
+        help="Alias for --retried-from-stage-id",
+    ),
+    annual_target_year: Optional[int] = typer.Option(
+        None,
+        "--annual-target-year",
+        min=1900,
+        max=3000,
+        help=(
+            "Annual target year for annual_refresh profile "
+            "(required when --profile-name=annual_refresh)"
+        ),
+    ),
+    replay_mode: Optional[str] = typer.Option(
+        None,
+        "--replay-mode",
+        help="Annual replay mode (baseline_annual, correction_replay)",
+    ),
+    parent_run_id: Optional[str] = typer.Option(
+        None,
+        "--parent-run-id",
+        help="Parent annual run id for correction replay mode",
+    ),
+    correction_reason_code: Optional[str] = typer.Option(
+        None,
+        "--correction-reason-code",
+        help="Correction reason code for correction replay mode",
+    ),
     out: Optional[Path] = typer.Option(
         None,
         "--out",
         help="Output JSON path for refresh payload",
     ),
 ) -> None:
-    now_utc = datetime.now(timezone.utc)
-    resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
-    if not re.fullmatch(r"\d{8}", resolved_run_date):
-        raise typer.BadParameter(
-            "--run-date must be in YYYYMMDD format.",
-            param_hint="--run-date",
-        )
-    if retried_from_stage_id and attempt_count <= 1:
-        raise typer.BadParameter(
-            "--retried-from-stage-id requires --attempt-count >= 2.",
-            param_hint="--retried-from-stage-id",
-        )
-    resolved_run_id = run_id or (
-        f"{resolved_run_date}_{profile_name}_{feature_version}_{ruleset_version}"
-        f"_{now_utc.strftime('%H%M%S')}"
-    )
-
-    payload = run_scheduled_refresh(
+    _run_refresh_runner_command(
         profile_name=profile_name,
-        run_date=resolved_run_date,
-        run_id=resolved_run_id,
+        run_date=run_date,
+        run_id=run_id,
         feature_version=feature_version,
         ruleset_version=ruleset_version,
         sales_ratio_base=sales_ratio_base,
         top=top,
         retr_file=retr_file,
+        assessment_manifest_file=assessment_manifest_file,
         permits_file=permits_file,
         appeals_file=appeals_file,
         artifact_base_dir=artifact_base_dir,
         accessdane_bin=accessdane_bin,
+        annual_target_year=annual_target_year,
+        replay_mode=replay_mode,
+        parent_run_id=parent_run_id,
+        correction_reason_code=correction_reason_code,
         attempt_count=attempt_count,
         retried_from_stage_id=retried_from_stage_id,
+        resume_from_stage_id=resume_from_stage_id,
+        out=out,
     )
 
-    if out:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    else:
-        typer.echo(json.dumps(payload, indent=2))
 
-    run = payload.get("run", {})
-    if isinstance(run, dict) and run.get("status") == "failed":
-        raise typer.Exit(code=1)
+@app.command("annual-refresh-runner")
+def annual_refresh_runner_cmd(
+    run_date: Optional[str] = typer.Option(
+        None,
+        "--run-date",
+        help="Run date in YYYYMMDD (default: current UTC date)",
+    ),
+    run_id: Optional[str] = typer.Option(
+        None,
+        "--run-id",
+        help="Explicit run identifier (default generated from date/profile/versions)",
+    ),
+    annual_target_year: int = typer.Option(
+        ...,
+        "--annual-target-year",
+        min=1900,
+        max=3000,
+        help="Annual target year for cutover run",
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1",
+        "--feature-version",
+        help="Feature version for stage commands",
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1",
+        "--ruleset-version",
+        help="Ruleset version for stage commands",
+    ),
+    sales_ratio_base: str = typer.Option(
+        "sales_ratio_v1",
+        "--sales-ratio-base",
+        help="Sales ratio base token used in sales-ratio-study version tag",
+    ),
+    top: int = typer.Option(
+        100,
+        "--top",
+        min=1,
+        max=1000,
+        help="Top-N selector passed to review-queue and investigation-report",
+    ),
+    assessment_manifest_file: Path = typer.Option(
+        ...,
+        "--assessment-manifest-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Assessment-roll source manifest file",
+    ),
+    retr_file: Path = typer.Option(
+        ...,
+        "--retr-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="RETR CSV source file",
+    ),
+    permits_file: Optional[Path] = typer.Option(
+        None,
+        "--permits-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional permits CSV source file",
+    ),
+    appeals_file: Optional[Path] = typer.Option(
+        None,
+        "--appeals-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional appeals CSV source file",
+    ),
+    replay_mode: str = typer.Option(
+        "baseline_annual",
+        "--replay-mode",
+        help="Replay mode (baseline_annual, correction_replay)",
+    ),
+    parent_run_id: Optional[str] = typer.Option(
+        None,
+        "--parent-run-id",
+        help="Parent annual run id for correction replay mode",
+    ),
+    correction_reason_code: Optional[str] = typer.Option(
+        None,
+        "--correction-reason-code",
+        help="Correction reason code for correction replay mode",
+    ),
+    artifact_base_dir: Path = typer.Option(
+        Path("data/refresh_runs"),
+        "--artifact-base-dir",
+        help="Base directory for refresh run artifact roots",
+    ),
+    accessdane_bin: str = typer.Option(
+        ".venv/bin/accessdane",
+        "--accessdane-bin",
+        help="Executable used for chained accessdane commands",
+    ),
+    attempt_count: int = typer.Option(
+        1,
+        "--attempt-count",
+        min=1,
+        help="Run-level attempt number for manual retries",
+    ),
+    retried_from_stage_id: Optional[str] = typer.Option(
+        None,
+        "--retried-from-stage-id",
+        help="Stage ID boundary for retry attempts",
+    ),
+    resume_from_stage_id: Optional[str] = typer.Option(
+        None,
+        "--resume-from-stage-id",
+        help="Alias for --retried-from-stage-id",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path for refresh payload",
+    ),
+) -> None:
+    _run_refresh_runner_command(
+        profile_name="annual_refresh",
+        run_date=run_date,
+        run_id=run_id,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+        sales_ratio_base=sales_ratio_base,
+        top=top,
+        retr_file=retr_file,
+        assessment_manifest_file=assessment_manifest_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin=accessdane_bin,
+        annual_target_year=annual_target_year,
+        replay_mode=replay_mode,
+        parent_run_id=parent_run_id,
+        correction_reason_code=correction_reason_code,
+        attempt_count=attempt_count,
+        retried_from_stage_id=retried_from_stage_id,
+        resume_from_stage_id=resume_from_stage_id,
+        out=out,
+    )
 
 
 @app.command("enumerate-trs")

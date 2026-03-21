@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,8 +22,16 @@ CANONICAL_STAGES: tuple[str, ...] = (
     "investigation_artifacts",
     "health_summary",
 )
+ANNUAL_REPLAY_MODES: tuple[str, ...] = ("baseline_annual", "correction_replay")
+ANNUAL_CORRECTION_REASON_CODES: set[str] = {
+    "correction_replay_retr",
+    "correction_replay_permits",
+    "correction_replay_appeals",
+    "correction_replay_assessment_roll",
+}
 SUPPORTED_PROFILES: dict[str, tuple[str, ...]] = {
     "daily_refresh": CANONICAL_STAGES,
+    "annual_refresh": CANONICAL_STAGES,
     "analysis_only": (
         "analysis_artifacts",
         "investigation_artifacts",
@@ -52,7 +61,7 @@ class RefreshRequestSourceFiles(TypedDict):
     appeals: Optional[str]
 
 
-class RefreshRequest(TypedDict):
+class _RefreshRequestBase(TypedDict):
     profile_name: str
     run_date: str
     feature_version: str
@@ -60,6 +69,14 @@ class RefreshRequest(TypedDict):
     sales_ratio_base: str
     top: int
     source_files: RefreshRequestSourceFiles
+
+
+class RefreshRequest(_RefreshRequestBase, total=False):
+    annual_target_year: Optional[int]
+    replay_mode: Optional[str]
+    parent_run_id: Optional[str]
+    correction_reason_code: Optional[str]
+    source_manifest_paths: list[str]
 
 
 class RefreshSummary(TypedDict):
@@ -128,6 +145,12 @@ class RefreshPayload(TypedDict):
     error: Optional[RefreshError]
 
 
+class _AnnualPreflightError(TypedDict):
+    code: str
+    checkpoint_id: str
+    message: str
+
+
 @dataclass(frozen=True)
 class _CommandSpec:
     stage_id: str
@@ -151,6 +174,11 @@ def run_scheduled_refresh(
     appeals_file: Optional[Path],
     artifact_base_dir: Path,
     accessdane_bin: str,
+    assessment_manifest_file: Optional[Path] = None,
+    annual_target_year: Optional[int] = None,
+    replay_mode: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
+    correction_reason_code: Optional[str] = None,
     attempt_count: int = 1,
     retried_from_stage_id: Optional[str] = None,
     command_executor: Optional[CommandExecutor] = None,
@@ -175,6 +203,18 @@ def run_scheduled_refresh(
             "retried_from_stage_id": retried_from_stage_id,
         },
     }
+    resolved_replay_mode = replay_mode
+    if profile_name == "annual_refresh" and resolved_replay_mode is None:
+        resolved_replay_mode = "baseline_annual"
+    source_manifest_paths: list[str] = []
+    if assessment_manifest_file is not None:
+        source_manifest_paths.append(str(assessment_manifest_file))
+    if retr_file is not None:
+        source_manifest_paths.append(str(retr_file))
+    if permits_file is not None:
+        source_manifest_paths.append(str(permits_file))
+    if appeals_file is not None:
+        source_manifest_paths.append(str(appeals_file))
     request: RefreshRequest = {
         "profile_name": profile_name,
         "run_date": run_date,
@@ -188,6 +228,16 @@ def run_scheduled_refresh(
             "appeals": str(appeals_file) if appeals_file is not None else None,
         },
     }
+    if profile_name == "annual_refresh":
+        request.update(
+            {
+                "annual_target_year": annual_target_year,
+                "replay_mode": resolved_replay_mode,
+                "parent_run_id": parent_run_id,
+                "correction_reason_code": correction_reason_code,
+                "source_manifest_paths": source_manifest_paths,
+            }
+        )
     if context_error is not None:
         stages = [
             _blocked_stage(stage_id=stage_id, attempt=1)
@@ -270,6 +320,52 @@ def run_scheduled_refresh(
             error={
                 "code": "invalid_retry_boundary",
                 "message": retry_error,
+                "failed_stage_id": None,
+            },
+        )
+    annual_preflight_error = _validate_annual_preflight(
+        profile_name=profile_name,
+        annual_target_year=annual_target_year,
+        replay_mode=resolved_replay_mode,
+        parent_run_id=parent_run_id,
+        correction_reason_code=correction_reason_code,
+        retr_file=retr_file,
+        assessment_manifest_file=assessment_manifest_file,
+        artifact_base_dir=artifact_base_dir,
+    )
+    if annual_preflight_error is not None:
+        stages = [
+            _blocked_stage(stage_id=stage_id, attempt=1)
+            for stage_id in CANONICAL_STAGES
+        ]
+        diagnostics["warnings"].append(
+            (
+                "annual_preflight_failed:"
+                f"{annual_preflight_error['checkpoint_id']}:{annual_preflight_error['code']}"
+            )
+        )
+        finished_dt = _now_utc()
+        return _build_payload(
+            run_id=run_id,
+            profile_name=profile_name,
+            request=request,
+            started_dt=started_dt,
+            finished_dt=finished_dt,
+            stages=stages,
+            stage_artifacts=stage_artifacts,
+            diagnostics=diagnostics,
+            root_path=root_path,
+            artifact_base_dir=artifact_base_dir,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            run_status="failed",
+            error={
+                "code": "annual_preflight_failed",
+                "message": (
+                    "Annual preflight checkpoint "
+                    f"{annual_preflight_error['checkpoint_id']} failed: "
+                    f"{annual_preflight_error['message']}"
+                ),
                 "failed_stage_id": None,
             },
         )
@@ -822,6 +918,131 @@ def _validate_retry_context(
     return None
 
 
+def _validate_annual_preflight(
+    *,
+    profile_name: str,
+    annual_target_year: Optional[int],
+    replay_mode: Optional[str],
+    parent_run_id: Optional[str],
+    correction_reason_code: Optional[str],
+    retr_file: Optional[Path],
+    assessment_manifest_file: Optional[Path],
+    artifact_base_dir: Path,
+) -> Optional[_AnnualPreflightError]:
+    if profile_name != "annual_refresh":
+        return None
+    if annual_target_year is None:
+        return {
+            "code": "missing_annual_target_year",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": "annual_target_year is required for annual_refresh.",
+        }
+    if annual_target_year < 1900 or annual_target_year > 3000:
+        return {
+            "code": "invalid_annual_target_year",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": "annual_target_year must be between 1900 and 3000.",
+        }
+    if assessment_manifest_file is None:
+        return {
+            "code": "missing_assessment_manifest",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": "assessment_manifest_file is required for annual_refresh.",
+        }
+    if retr_file is None:
+        return {
+            "code": "missing_retr_source",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": "retr_file is required for annual_refresh.",
+        }
+    if replay_mode not in ANNUAL_REPLAY_MODES:
+        return {
+            "code": "invalid_replay_mode",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": (
+                "replay_mode must be one of: " + ", ".join(ANNUAL_REPLAY_MODES) + "."
+            ),
+        }
+    if replay_mode == "correction_replay":
+        if not parent_run_id:
+            return {
+                "code": "missing_parent_run_id",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": "parent_run_id is required for correction_replay mode.",
+            }
+        if ".." in parent_run_id:
+            return {
+                "code": "invalid_parent_run_id",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": (
+                    "parent_run_id cannot contain the path traversal sequence '..'."
+                ),
+            }
+        if not _SAFE_PATH_SEGMENT_RE.fullmatch(parent_run_id):
+            return {
+                "code": "invalid_parent_run_id",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": (
+                    "parent_run_id contains unsupported path characters; only "
+                    "letters, digits, '.', '_' and '-' are allowed."
+                ),
+            }
+        if not correction_reason_code:
+            return {
+                "code": "missing_correction_reason_code",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": (
+                    "correction_reason_code is required for correction_replay mode."
+                ),
+            }
+        if correction_reason_code not in ANNUAL_CORRECTION_REASON_CODES:
+            return {
+                "code": "invalid_correction_reason_code",
+                "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+                "message": (
+                    "correction_reason_code must be one of: "
+                    + ", ".join(sorted(ANNUAL_CORRECTION_REASON_CODES))
+                    + "."
+                ),
+            }
+    elif parent_run_id is not None or correction_reason_code is not None:
+        return {
+            "code": "invalid_replay_context",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": (
+                "parent_run_id and correction_reason_code are only allowed when "
+                "replay_mode is correction_replay."
+            ),
+        }
+    write_probe_path: Optional[Path] = None
+    try:
+        artifact_base_dir.mkdir(parents=True, exist_ok=True)
+        probe_fd, probe_path = tempfile.mkstemp(
+            prefix=".annual_preflight_probe_",
+            dir=str(artifact_base_dir),
+            text=True,
+        )
+        write_probe_path = Path(probe_path)
+        with os.fdopen(probe_fd, "w", encoding="utf-8") as probe_file:
+            probe_file.write("ok\n")
+    except OSError as exc:
+        return {
+            "code": "artifact_root_not_writable",
+            "checkpoint_id": "CP-01_SOURCE_MANIFEST",
+            "message": (
+                f"artifact destination is not writable: {artifact_base_dir} ({exc})."
+            ),
+        }
+    finally:
+        try:
+            if write_probe_path is not None and write_probe_path.is_file():
+                _safe_unlink(write_probe_path)
+        except OSError:
+            # Best-effort cleanup only; probe deletion errors should not fail preflight.
+            pass
+    return None
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -909,6 +1130,11 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
     _write_json_atomic(refresh_payload_path, payload)
     if str(refresh_payload_path) not in health_stage_artifacts:
         health_stage_artifacts.append(str(refresh_payload_path))
+    if payload["run"]["profile_name"] == "annual_refresh":
+        # Publish the base refresh payload before annual signoff/checklist files so
+        # annual_signoff references never point at a not-yet-written payload path.
+        _persist_annual_artifacts(payload=payload, root_path=root_path)
+        _write_json_atomic(refresh_payload_path, payload)
 
     latest_pointer_path.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(
@@ -921,6 +1147,348 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
             "finished_at": payload["run"]["finished_at"],
         },
     )
+
+
+def _persist_annual_artifacts(*, payload: RefreshPayload, root_path: Path) -> None:
+    annual_signoff_dir = root_path / "annual_signoff"
+    annual_signoff_dir.mkdir(parents=True, exist_ok=True)
+    health_stage_artifacts = payload["artifacts"]["stage_artifacts"].setdefault(
+        "health_summary", []
+    )
+    annual_checklist_path = annual_signoff_dir / "annual_stage_checklist.json"
+    annual_signoff_path = annual_signoff_dir / "annual_signoff.json"
+
+    annual_checklist_payload = _build_annual_stage_checklist(payload)
+    _write_json_atomic(annual_checklist_path, annual_checklist_payload)
+    if str(annual_checklist_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(annual_checklist_path))
+
+    if payload["request"].get("replay_mode") == "correction_replay":
+        correction_dir = root_path / "correction_summary"
+        correction_dir.mkdir(parents=True, exist_ok=True)
+        correction_summary_path = correction_dir / "correction_summary.json"
+        _write_json_atomic(
+            correction_summary_path,
+            {
+                "parent_run_id": payload["request"].get("parent_run_id"),
+                "correction_reason_code": payload["request"].get(
+                    "correction_reason_code"
+                ),
+                "corrected_sources": list(
+                    payload["request"].get("source_manifest_paths", [])
+                ),
+                "affected_metrics": [],
+                "recommended_actions": [
+                    "Re-run annual checkpoint review before cutover authorization."
+                ],
+            },
+        )
+        if str(correction_summary_path) not in health_stage_artifacts:
+            health_stage_artifacts.append(str(correction_summary_path))
+
+    annual_signoff_payload = _build_annual_signoff_payload(
+        payload=payload,
+    )
+    _write_json_atomic(annual_signoff_path, annual_signoff_payload)
+    if str(annual_signoff_path) not in health_stage_artifacts:
+        health_stage_artifacts.append(str(annual_signoff_path))
+
+
+def _build_annual_stage_checklist(payload: RefreshPayload) -> dict[str, object]:
+    stage_rows: list[dict[str, object]] = []
+    blocking_failures: list[dict[str, object]] = []
+    for stage in payload["stages"]:
+        stage_rows.append(
+            {
+                "stage_id": stage["stage_id"],
+                "status": stage["status"],
+                "attempt": stage["attempt"],
+                "started_at": stage["started_at"],
+                "finished_at": stage["finished_at"],
+            }
+        )
+        if stage["status"] == "failed":
+            blocking_failures.append(
+                {
+                    "stage_id": stage["stage_id"],
+                    "status": stage["status"],
+                    "failed_command_id": _failed_command_id(stage),
+                    "reason": "command_failed",
+                }
+            )
+        elif stage["status"] == "blocked":
+            blocking_failures.append(
+                {
+                    "stage_id": stage["stage_id"],
+                    "status": stage["status"],
+                    "failed_command_id": None,
+                    "reason": "blocked_by_upstream_failure",
+                }
+            )
+    return {
+        "run_id": payload["run"]["run_id"],
+        "profile_name": payload["run"]["profile_name"],
+        "annual_target_year": payload["request"].get("annual_target_year"),
+        "replay_mode": payload["request"].get("replay_mode"),
+        "run_status": payload["run"]["status"],
+        "expected_stage_order": list(CANONICAL_STAGES),
+        "stages": stage_rows,
+        "blocking_failures": blocking_failures,
+        "generated_at": payload["run"]["finished_at"],
+    }
+
+
+def _failed_command_id(stage: RefreshStage) -> Optional[str]:
+    for command_result in stage["command_results"]:
+        if command_result["status"] == "failed":
+            return command_result["command_id"]
+    return None
+
+
+def _build_annual_signoff_payload(
+    *,
+    payload: RefreshPayload,
+) -> dict[str, object]:
+    root_path = Path(payload["artifacts"]["root_path"])
+    annual_checklist_path = root_path / "annual_signoff" / "annual_stage_checklist.json"
+    stage_status_by_id = {
+        stage["stage_id"]: stage["status"] for stage in payload["stages"]
+    }
+    retry_boundary_skipped_stage_ids = {
+        skip_reason["stage_id"]
+        for skip_reason in payload["diagnostics"]["skip_reasons"]
+        if skip_reason["command_id"] == "_stage_retry_boundary"
+        and skip_reason["reason"].startswith("retry_boundary_before:")
+    }
+    finished_at = payload["run"]["finished_at"]
+    approvals: list[dict[str, object]] = []
+    cp06_status = _cutover_authorization_status(approvals)
+    cp01_status = "passed"
+    cp02_status = _checkpoint_status_from_stage(
+        stage_id="ingest_context",
+        stage_status=stage_status_by_id.get("ingest_context"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+    )
+    cp03_status = _checkpoint_status_from_stage(
+        stage_id="build_context",
+        stage_status=stage_status_by_id.get("build_context"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+    )
+    cp04_status = _checkpoint_status_from_stage(
+        stage_id="score_pipeline",
+        stage_status=stage_status_by_id.get("score_pipeline"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+    )
+    cp05_status = _checkpoint_status_from_stages(
+        first_stage_id="analysis_artifacts",
+        first_stage_status=stage_status_by_id.get("analysis_artifacts"),
+        second_stage_id="investigation_artifacts",
+        second_stage_status=stage_status_by_id.get("investigation_artifacts"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+    )
+    checkpoints = [
+        _build_annual_checkpoint(
+            checkpoint_id="CP-01_SOURCE_MANIFEST",
+            status=cp01_status,
+            evidence_paths=list(payload["request"].get("source_manifest_paths", [])),
+            reviewed_at=finished_at,
+        ),
+        _build_annual_checkpoint(
+            checkpoint_id="CP-02_INGEST_RECONCILIATION",
+            status=cp02_status,
+            evidence_paths=list(
+                payload["artifacts"]["stage_artifacts"].get("ingest_context", [])
+            ),
+            reviewed_at=finished_at,
+        ),
+        _build_annual_checkpoint(
+            checkpoint_id="CP-03_CONTEXT_REBUILD_VALIDATION",
+            status=cp03_status,
+            evidence_paths=list(
+                payload["artifacts"]["stage_artifacts"].get("build_context", [])
+            ),
+            reviewed_at=finished_at,
+        ),
+        _build_annual_checkpoint(
+            checkpoint_id="CP-04_SCORING_DISTRIBUTION_REVIEW",
+            status=cp04_status,
+            evidence_paths=list(
+                payload["artifacts"]["stage_artifacts"].get("score_pipeline", [])
+            ),
+            reviewed_at=finished_at,
+        ),
+        _build_annual_checkpoint(
+            checkpoint_id="CP-05_INVESTIGATION_ARTIFACT_REVIEW",
+            status=cp05_status,
+            evidence_paths=[
+                *payload["artifacts"]["stage_artifacts"].get("analysis_artifacts", []),
+                *payload["artifacts"]["stage_artifacts"].get(
+                    "investigation_artifacts", []
+                ),
+            ],
+            reviewed_at=finished_at,
+        ),
+        _build_annual_checkpoint(
+            checkpoint_id="CP-06_CUTOVER_AUTHORIZATION",
+            status=cp06_status,
+            evidence_paths=[str(annual_checklist_path)],
+            reviewed_at=finished_at,
+        ),
+    ]
+    signoff_status = "pending_signoff"
+    error: Optional[dict[str, str]] = None
+    if payload["run"]["status"] == "failed":
+        signoff_status = "rejected"
+        error = {
+            "code": "annual_refresh_failed",
+            "message": (
+                payload["error"]["message"]
+                if payload["error"] is not None
+                else "Annual refresh failed."
+            ),
+        }
+
+    sales_ratio_version_tag = (
+        f"annual_refresh_{payload['request']['run_date']}_"
+        f"{payload['request']['sales_ratio_base']}"
+    )
+    return {
+        "run": {
+            "run_id": payload["run"]["run_id"],
+            "profile_name": "annual_refresh",
+            "status": signoff_status,
+            "cutover_candidate": False,
+            "cutover_designated_at": None,
+            "created_at": finished_at,
+            "updated_at": finished_at,
+        },
+        "annual_context": {
+            "annual_target_year": payload["request"].get("annual_target_year"),
+            "feature_version": payload["request"]["feature_version"],
+            "ruleset_version": payload["request"]["ruleset_version"],
+            "sales_ratio_version_tag": sales_ratio_version_tag,
+            "source_manifest_paths": list(
+                payload["request"].get("source_manifest_paths", [])
+            ),
+        },
+        "checkpoints": checkpoints,
+        "approvals": approvals,
+        "artifacts": {
+            "refresh_run_payload_path": str(
+                root_path / "health_summary" / "refresh_run_payload.json"
+            ),
+            "review_queue_path": _first_stage_artifact(
+                payload,
+                stage_id="analysis_artifacts",
+                suffix="review_queue.json",
+            ),
+            "review_feedback_path": _first_stage_artifact(
+                payload,
+                stage_id="analysis_artifacts",
+                suffix="review_feedback.json",
+            ),
+            "investigation_report_json_path": _first_stage_artifact(
+                payload,
+                stage_id="investigation_artifacts",
+                suffix="investigation_report.json",
+            ),
+            "investigation_report_html_path": _first_stage_artifact(
+                payload,
+                stage_id="investigation_artifacts",
+                suffix="investigation_report.html",
+            ),
+            "load_monitoring_payload_path": None,
+        },
+        "error": error,
+    }
+
+
+def _build_annual_checkpoint(
+    *,
+    checkpoint_id: str,
+    status: str,
+    evidence_paths: list[str],
+    reviewed_at: str,
+) -> dict[str, object]:
+    if status == "pending":
+        reviewer: Optional[str] = None
+        resolved_reviewed_at: Optional[str] = None
+    else:
+        reviewer = "system:auto"
+        resolved_reviewed_at = reviewed_at
+    return {
+        "checkpoint_id": checkpoint_id,
+        "status": status,
+        "reviewer": reviewer,
+        "reviewed_at": resolved_reviewed_at,
+        "evidence_paths": evidence_paths,
+        "notes": None,
+    }
+
+
+def _checkpoint_status_from_stage(
+    *,
+    stage_id: str,
+    stage_status: Optional[str],
+    retry_boundary_skipped_stage_ids: set[str],
+) -> str:
+    if stage_status == "succeeded":
+        return "passed"
+    if stage_status == "skipped" and stage_id in retry_boundary_skipped_stage_ids:
+        return "passed"
+    if stage_status in {"failed", "blocked"}:
+        return "failed"
+    return "pending"
+
+
+def _checkpoint_status_from_stages(
+    *,
+    first_stage_id: str,
+    first_stage_status: Optional[str],
+    second_stage_id: str,
+    second_stage_status: Optional[str],
+    retry_boundary_skipped_stage_ids: set[str],
+) -> str:
+    statuses = (
+        _checkpoint_status_from_stage(
+            stage_id=first_stage_id,
+            stage_status=first_stage_status,
+            retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+        ),
+        _checkpoint_status_from_stage(
+            stage_id=second_stage_id,
+            stage_status=second_stage_status,
+            retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+        ),
+    )
+    if all(status == "passed" for status in statuses):
+        return "passed"
+    if any(status == "failed" for status in statuses):
+        return "failed"
+    return "pending"
+
+
+def _cutover_authorization_status(approvals: list[dict[str, object]]) -> str:
+    rejected = any(approval.get("decision") == "reject" for approval in approvals)
+    if rejected:
+        return "failed"
+    distinct_approvals = {
+        str(approval.get("approver"))
+        for approval in approvals
+        if approval.get("decision") == "approve"
+    }
+    if len(distinct_approvals) >= 2:
+        return "passed"
+    return "pending"
+
+
+def _first_stage_artifact(
+    payload: RefreshPayload, *, stage_id: str, suffix: str
+) -> Optional[str]:
+    for artifact_path in payload["artifacts"]["stage_artifacts"].get(stage_id, []):
+        if artifact_path.endswith(suffix):
+            return artifact_path
+    return None
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:
