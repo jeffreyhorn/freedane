@@ -1247,20 +1247,37 @@ def _build_annual_signoff_payload(
     stage_status_by_id = {
         stage["stage_id"]: stage["status"] for stage in payload["stages"]
     }
+    retry_boundary_skipped_stage_ids = {
+        skip_reason["stage_id"]
+        for skip_reason in payload["diagnostics"]["skip_reasons"]
+        if skip_reason["command_id"] == "_stage_retry_boundary"
+        and skip_reason["reason"].startswith("retry_boundary_before:")
+    }
     finished_at = payload["run"]["finished_at"]
     approvals: list[dict[str, object]] = []
     cp06_status = _cutover_authorization_status(approvals)
     cp01_status = "passed"
     cp02_status = _checkpoint_status_from_stage(
-        stage_status_by_id.get("ingest_context")
+        stage_id="ingest_context",
+        stage_status=stage_status_by_id.get("ingest_context"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
     )
-    cp03_status = _checkpoint_status_from_stage(stage_status_by_id.get("build_context"))
+    cp03_status = _checkpoint_status_from_stage(
+        stage_id="build_context",
+        stage_status=stage_status_by_id.get("build_context"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+    )
     cp04_status = _checkpoint_status_from_stage(
-        stage_status_by_id.get("score_pipeline")
+        stage_id="score_pipeline",
+        stage_status=stage_status_by_id.get("score_pipeline"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
     )
     cp05_status = _checkpoint_status_from_stages(
-        stage_status_by_id.get("analysis_artifacts"),
-        stage_status_by_id.get("investigation_artifacts"),
+        first_stage_id="analysis_artifacts",
+        first_stage_status=stage_status_by_id.get("analysis_artifacts"),
+        second_stage_id="investigation_artifacts",
+        second_stage_status=stage_status_by_id.get("investigation_artifacts"),
+        retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
     )
     checkpoints = [
         _build_annual_checkpoint(
@@ -1402,8 +1419,15 @@ def _build_annual_checkpoint(
     }
 
 
-def _checkpoint_status_from_stage(stage_status: Optional[str]) -> str:
+def _checkpoint_status_from_stage(
+    *,
+    stage_id: str,
+    stage_status: Optional[str],
+    retry_boundary_skipped_stage_ids: set[str],
+) -> str:
     if stage_status == "succeeded":
+        return "passed"
+    if stage_status == "skipped" and stage_id in retry_boundary_skipped_stage_ids:
         return "passed"
     if stage_status in {"failed", "blocked"}:
         return "failed"
@@ -1411,12 +1435,28 @@ def _checkpoint_status_from_stage(stage_status: Optional[str]) -> str:
 
 
 def _checkpoint_status_from_stages(
-    first_stage_status: Optional[str], second_stage_status: Optional[str]
+    *,
+    first_stage_id: str,
+    first_stage_status: Optional[str],
+    second_stage_id: str,
+    second_stage_status: Optional[str],
+    retry_boundary_skipped_stage_ids: set[str],
 ) -> str:
-    statuses = (first_stage_status, second_stage_status)
-    if all(status == "succeeded" for status in statuses):
+    statuses = (
+        _checkpoint_status_from_stage(
+            stage_id=first_stage_id,
+            stage_status=first_stage_status,
+            retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+        ),
+        _checkpoint_status_from_stage(
+            stage_id=second_stage_id,
+            stage_status=second_stage_status,
+            retry_boundary_skipped_stage_ids=retry_boundary_skipped_stage_ids,
+        ),
+    )
+    if all(status == "passed" for status in statuses):
         return "passed"
-    if any(status in {"failed", "blocked"} for status in statuses):
+    if any(status == "failed" for status in statuses):
         return "failed"
     return "pending"
 

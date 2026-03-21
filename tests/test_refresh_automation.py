@@ -540,6 +540,19 @@ def test_run_scheduled_refresh_annual_retry_reexecutes_from_stage_boundary_only(
         "attempt_count": 2,
         "retried_from_stage_id": "score_pipeline",
     }
+    signoff_payload = json.loads(
+        (
+            Path(payload["artifacts"]["root_path"])
+            / "annual_signoff"
+            / "annual_signoff.json"
+        ).read_text(encoding="utf-8")
+    )
+    checkpoint_statuses = {
+        checkpoint["checkpoint_id"]: checkpoint["status"]
+        for checkpoint in signoff_payload["checkpoints"]
+    }
+    assert checkpoint_statuses["CP-02_INGEST_RECONCILIATION"] == "passed"
+    assert checkpoint_statuses["CP-03_CONTEXT_REBUILD_VALIDATION"] == "passed"
 
 
 def test_run_scheduled_refresh_correction_summary_includes_optional_sources(
