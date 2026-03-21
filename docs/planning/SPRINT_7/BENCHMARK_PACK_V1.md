@@ -94,11 +94,18 @@ Top-level keys (canonical order):
 Presence rules:
 
 - all top-level keys above must always be present
-- when `run.status = succeeded`, `error` must be `null`
+- when `run.status = succeeded`:
+  - `summary`, `segments`, and `comparison` must reflect the completed benchmark
+  - `alerts` may be empty or contain one or more alert items conforming to the `alerts` schema
+  - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
+  - `error` must be `null`
 - when `run.status = failed`:
   - `summary`, `segments`, and `comparison.signals` may be emitted as empty arrays/zero-value summaries
-  - `alerts` must be an empty array
-  - `error` must include `code` and `message`
+  - `alerts` must be an empty array (`[]`)
+  - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
+  - `diagnostics.failure` must be non-null and include failure metadata
+  - `error` must be a non-null object conforming to the `error` schema and include at least `code` and `message`
+- generators must not omit or change the type of any top-level key based on status; only the contents may vary
 
 ### `run` object
 
@@ -125,6 +132,89 @@ Required fields:
 - `period_start` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `period_end` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `top_n` (int; reflects queue/report slicing policy)
+
+### `alerts` array
+
+Top-level type:
+
+- `alerts` is always an array
+
+Each `alerts[]` item must include:
+
+- `id` (string; stable, generator-assigned identifier)
+- `level` (`info|warn|critical`)
+- `code` (string; machine-parseable reason code)
+- `message` (string; operator-readable summary)
+- `scope` (`run|segment|comparison`)
+- `created_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+
+Optional fields:
+
+- `segment_id` (string; required when `scope = segment`; must match a `segments[].segment_id`)
+- `signal_id` (string; links to one `comparison.signals[].signal_id`)
+- `metadata` (object; defaults to `{}`)
+
+Additional rules:
+
+- for `run.status = failed`, `alerts` must be `[]`
+- consumers must tolerate unknown alert fields as a forward-compatible extension point
+
+### `diagnostics` object
+
+Top-level type:
+
+- `diagnostics` is always a non-null object
+
+Required fields:
+
+- `schema_version` (string; must be `benchmark_pack_v1`)
+- `generator_name` (string)
+- `generator_version` (string)
+- `input_artifacts` (array of strings; canonical paths to key benchmark inputs)
+- `runtime` object:
+  - `duration_ms` (integer; `>= 0`)
+  - `cpu_seconds` (number; `>= 0`; may be `0` if unavailable)
+- `counters` object:
+  - `total_segments` (integer; `>= 0`)
+  - `skipped_segments` (integer; `>= 0`)
+- `failure` (`object|null`):
+  - must be `null` when `run.status = succeeded`
+  - must be non-null when `run.status = failed` and include:
+    - `stage` (string; for example `load_inputs`, `compute_segments`, `persist_outputs`, or `unknown`)
+    - `class` (`validation|upstream|infrastructure|unexpected`)
+    - `retryable` (boolean)
+    - `details` (optional object; implementation-defined structured metadata)
+
+Optional fields:
+
+- `notes` (array of strings)
+- `trace_id` (string)
+
+### `error` object
+
+Top-level type:
+
+- `error` is `null` when `run.status = succeeded`
+- `error` is non-null when `run.status = failed`
+
+Required fields when non-null:
+
+- `code` (string; stable machine-parseable failure code)
+- `message` (string; human-readable failure summary)
+
+Optional fields when non-null:
+
+- `details` (`object|null`)
+- `occurred_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
+
+Deterministic placeholder rules for failed runs:
+
+- if failure occurs before domain metrics are computed:
+  - `summary`, `segments`, and `comparison.signals` must use empty/zero-value payloads as allowed by their schemas
+  - `alerts` must be `[]`
+  - `diagnostics.failure.stage` should reflect the last known stage, or `unknown`
+  - `error.code` and `error.message` must still be non-empty
+- generators must not emit `error = null` when `run.status = failed`
 
 ## Summary Metric Schema (v1)
 
@@ -206,9 +296,15 @@ Deterministic segment ordering:
 
 Use this order:
 
-1. explicit operator baseline override (if provided)
-2. latest approved benchmark baseline for same `profile_name`
-3. latest prior successful benchmark pack for same `profile_name`
+1. explicit operator baseline override (if provided and comparable on all comparability keys)
+2. latest approved benchmark baseline matching all comparability keys:
+   - `profile_name`
+   - `feature_version`
+   - `ruleset_version`
+   - `top_n`
+   - `period_length_days`
+3. latest prior successful benchmark pack matching all comparability keys above
+4. if no comparable baseline exists, mark run non-comparable without synthesizing fallback baseline
 
 ### Comparability key contract
 
@@ -235,6 +331,7 @@ If not comparable:
 
 - `comparison.comparable = false`
 - `comparison.non_comparable_reasons` must be non-empty
+- `comparison.non_comparable_reasons` should include `no_comparable_baseline_found` when baseline lookup fails
 - `comparison.signals` must be empty
 - `comparison.overall_severity = ok`
 
@@ -261,6 +358,14 @@ Allowed `ignore_reason` values:
 - `missing_baseline_metric`
 - `missing_current_metric`
 
+Canonical `metric_key` formats:
+
+- run-level and aggregate metrics use direct field-path style keys (for example `risk_band_mix.high.rate`)
+- segment-level signals must use:
+  - `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`
+  - `segment.{segment_id}.risk_band_mix.high.rate_delta_abs`
+- `{segment_id}` must exactly match one `segments[].segment_id`
+
 ### Drift tolerance policy (default v1)
 
 Absolute delta thresholds (percentage points unless noted):
@@ -283,9 +388,12 @@ Absolute delta thresholds (percentage points unless noted):
 
 Segment-level policy:
 
-- for each segment with `queue_parcel_count >= 25`, evaluate:
-  - `segment.false_positive_rate_delta_abs`
-  - `segment.high_risk_rate_delta_abs`
+- for each segment with `queue_parcel_count >= 25`, evaluate exactly two absolute delta metrics:
+  - `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`
+  - `segment.{segment_id}.risk_band_mix.high.rate_delta_abs`
+- delta definitions:
+  - `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs = abs(current_segment.disposition_mix.false_positive.rate - baseline_segment.disposition_mix.false_positive.rate)`
+  - `segment.{segment_id}.risk_band_mix.high.rate_delta_abs = abs(current_segment.risk_band_mix.high.rate - baseline_segment.risk_band_mix.high.rate)`
 - `warn` at `>= 0.07`; `critical` at `>= 0.12`
 
 Minimum-sample guardrails:
@@ -318,9 +426,9 @@ Minimum retention policy:
 
 - retain all benchmark pack JSON artifacts for at least `400` days
 - retain segment CSV companions (if emitted) for at least `400` days
-- maintain latest pointers by profile:
-  - `data/benchmark_packs/latest/<profile_name>/latest_benchmark_pack.json`
-  - `data/benchmark_packs/latest/<profile_name>/latest_alert.json` (when present)
+- maintain latest pointers by profile and version:
+  - `data/benchmark_packs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_benchmark_pack.json`
+  - `data/benchmark_packs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_alert.json` (when present)
 
 Baseline retention policy:
 
