@@ -350,6 +350,14 @@ Each segment must include:
 - `risk_band_mix` object with `low|medium|high` count/rate fields
 - `disposition_mix` object with v1 disposition count/rate fields
 
+Segment rate denominator rules (deterministic):
+
+- segment `risk_band_mix.*.rate` values must be computed as `count / max(segment.queue_parcel_count, 1)`
+- segment `disposition_mix.*.rate` values for reviewed dispositions must be computed as `count / max(segment.reviewed_case_count, 1)`
+- segment `disposition_mix.unreviewed.rate` must be computed as `count / max(segment.queue_parcel_count, 1)`
+- segment rate calculations must always use per-segment counts (never run-level totals)
+- all segment rate calculations must use `max(denominator, 1)` so zero-denominator cases never emit NaN/Infinity
+
 Segment identifier character constraints (v1):
 
 - `geography_key` and `class_key` must use characters matching `[A-Za-z0-9_-]+`
