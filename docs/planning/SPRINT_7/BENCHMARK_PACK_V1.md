@@ -96,11 +96,13 @@ Companion alert artifact contract (`benchmark_pack_alert.json`):
   - `routing_key` (string)
   - `context` (object)
 - companion mapping rules:
-  - `summary = alerts[].message`
+  - source records are from canonical benchmark pack payload `benchmark_pack.json` at `benchmark_pack.alerts[i]`
+  - destination records are in companion payload `benchmark_pack_alert.json` at `benchmark_pack_alert.alerts[j]`
+  - `benchmark_pack_alert.alerts[j].summary = benchmark_pack.alerts[i].message`
   - `context` must include:
-    - `scope` (from `alerts[].scope`)
-    - `segment_id` (nullable; from `alerts[].segment_id`)
-    - `signal_id` (nullable; from `alerts[].signal_id`)
+    - `scope` (from `benchmark_pack.alerts[i].scope`)
+    - `segment_id` (nullable; from `benchmark_pack.alerts[i].segment_id`)
+    - `signal_id` (nullable; from `benchmark_pack.alerts[i].signal_id`)
   - when segment/signal context is unavailable, values must be explicit `null` (not omitted)
 
 Path token rule:
