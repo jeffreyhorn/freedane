@@ -74,13 +74,14 @@ Optional companion paths (if generator emits split artifacts):
 
 - `.../benchmark_pack_summary.json`
 - `.../benchmark_pack_segments.csv`
-- `.../benchmark_pack_alert.json` (when severity is `warn|critical`)
+- `.../benchmark_pack_alert.json` (emitted iff one or more `alerts[]` items exist)
 
 Companion alert artifact contract (`benchmark_pack_alert.json`):
 
 - emission rule:
-  - emit only when one or more `alerts[]` items exist
-  - do not emit when `alerts = []`
+  - emit iff one or more `alerts[]` items exist (`alerts.length > 0`)
+  - do not emit when `alerts = []` (`alerts.length = 0`)
+  - producers must ensure that if `comparison.overall_severity` is `warn` or `critical`, then `alerts.length >= 1`
 - JSON shape:
   - top-level object with:
     - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
@@ -97,8 +98,15 @@ Companion alert artifact contract (`benchmark_pack_alert.json`):
   - `context` (object)
 - companion mapping rules:
   - source records are from canonical benchmark pack payload `benchmark_pack.json` at `benchmark_pack.alerts[i]`
+  - only source records with `benchmark_pack.alerts[i].level in {warn, critical}` are eligible for companion emission
   - destination records are in companion payload `benchmark_pack_alert.json` at `benchmark_pack_alert.alerts[j]`
+  - `benchmark_pack_alert.alerts[j].alert_id = benchmark_pack.alerts[i].id`
+  - `benchmark_pack_alert.alerts[j].alert_type = benchmark_pack`
+  - `benchmark_pack_alert.alerts[j].severity = benchmark_pack.alerts[i].level`
+  - `benchmark_pack_alert.alerts[j].reason_codes = [benchmark_pack.alerts[i].code]`
   - `benchmark_pack_alert.alerts[j].summary = benchmark_pack.alerts[i].message`
+  - `benchmark_pack_alert.alerts[j].generated_at = benchmark_pack.alerts[i].created_at`
+  - `benchmark_pack_alert.alerts[j].routing_key = <profile_name>:<feature_version>:<ruleset_version>:<benchmark_pack.alerts[i].code>`
   - `context` must include:
     - `scope` (from `benchmark_pack.alerts[i].scope`)
     - `segment_id` (nullable; from `benchmark_pack.alerts[i].segment_id`)
@@ -119,6 +127,11 @@ Top-level keys (canonical order):
 6. `alerts`
 7. `diagnostics`
 8. `error`
+
+Canonical-order note:
+
+- canonical top-level key order is for deterministic producer output and diff stability only
+- JSON object member order is non-semantic; consumers must not rely on member ordering for parsing or validation
 
 Presence rules:
 
@@ -142,6 +155,7 @@ Required fields:
 
 - `run_type` (`benchmark_pack`)
 - `version_tag` (`benchmark_pack_v1`)
+- `run_id` (must equal `benchmark_run_id`)
 - `benchmark_run_id`
 - `status` (`succeeded|failed`)
 - `run_persisted` (bool)
@@ -336,6 +350,13 @@ Each segment must include:
 - `risk_band_mix` object with `low|medium|high` count/rate fields
 - `disposition_mix` object with v1 disposition count/rate fields
 
+Segment identifier character constraints (v1):
+
+- `geography_key` and `class_key` must use characters matching `[A-Za-z0-9_-]+`
+- `segment_id` must equal `<geography_key>::<class_key>`
+- `segment_id`, `geography_key`, and `class_key` must not contain `.`, whitespace, `*`, or `?`
+- segment identifiers are opaque identifiers; do not embed additional dot-delimited structure
+
 Deterministic segment ordering:
 
 - `segments` must be sorted by:
@@ -433,7 +454,9 @@ Each `comparison.signals[]` item must include:
   - for other `disposition_mix.*.rate`: `sample_size = summary.coverage.reviewed_case_count`
 - `segment.*` signals:
   - find the segment object in `segments[]` where `segments[].segment_id == {segment_id}` from `metric_key`
-  - `sample_size = matched_segment.queue_parcel_count`
+  - for `segment.{segment_id}.risk_band_mix.*.rate_delta_abs`: `sample_size = matched_segment.queue_parcel_count`
+  - for `segment.{segment_id}.disposition_mix.unreviewed.rate_delta_abs`: `sample_size = matched_segment.queue_parcel_count`
+  - for other `segment.{segment_id}.disposition_mix.*.rate_delta_abs`: `sample_size = matched_segment.reviewed_case_count`
 - if required source counts are unavailable, emit `sample_size = 0` and mark signal ignored using `ignore_reason = missing_current_metric`
 
 Allowed `ignore_reason` values:
@@ -449,6 +472,7 @@ Canonical `metric_key` formats:
   - `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`
   - `segment.{segment_id}.risk_band_mix.high.rate_delta_abs`
 - `{segment_id}` must exactly match one `segments[].segment_id`
+- for unambiguous round-tripping in dot-delimited `metric_key` values, `segment_id` (and component `geography_key`/`class_key`) must follow the segment identifier character constraints above
 - `family` assignment is deterministic:
   - if `metric_key` starts with `segment.`, `family` must be `segment_mix`
   - otherwise `family` must match the metric namespace (`coverage`, `risk_band_mix`, or `disposition_mix`)
@@ -511,8 +535,9 @@ Segment-level policy:
 
 Minimum-sample guardrails:
 
-- do not severity-evaluate `disposition_mix.*.rate` when `reviewed_case_count < 20`
-- do not severity-evaluate segment metrics when segment `queue_parcel_count < 25`
+- run-level disposition metrics: do not severity-evaluate `disposition_mix.*.rate` when `summary.coverage.reviewed_case_count < 20`
+- segment-level disposition metrics (including `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`): do not severity-evaluate when that segment's `reviewed_case_count < 20`
+- segment metrics in general: do not severity-evaluate when segment `queue_parcel_count < 25`
 - guarded metrics must emit `ignored = true` with `ignore_reason = insufficient_sample_size`
 
 `comparison.overall_severity` derivation:
