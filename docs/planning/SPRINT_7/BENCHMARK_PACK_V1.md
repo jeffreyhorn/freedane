@@ -147,7 +147,7 @@ Presence rules:
   - `comparison` must use deterministic failed-run placeholders:
     - `comparison.baseline_reference = null`
     - `comparison.comparable = false`
-    - `comparison.non_comparable_reasons = [\"run_failed\"]`
+    - `comparison.non_comparable_reasons = ["run_failed"]`
     - `comparison.signals = []`
     - `comparison.overall_severity = ok`
   - `alerts` must be an empty array (`[]`)
@@ -466,6 +466,8 @@ v1 `reason_code` contract:
 - format: `<family>.<reason_token>.<metric_key>`
   - `family` must exactly equal `comparison.signals[].family`
   - `metric_key` must exactly equal `comparison.signals[].metric_key`
+  - parsing rule: only the first two `.` separators are structural (`family` and `reason_token`);
+    the remaining suffix is the literal `metric_key` (which may itself contain `.`)
   - `reason_token` must be one of:
     - `baseline_missing`
     - `current_missing`
