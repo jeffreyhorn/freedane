@@ -549,6 +549,19 @@ Value and delta semantics:
 
 - all `*.rate` values in this contract are fractions on `[0, 1]` (not `[0, 100]`)
 - rate deltas and thresholds use the same `[0, 1]` scale (for example `0.04` means a 4-point fraction-scale change)
+- nullability and missing-metric rules (all metrics unless explicitly overridden):
+  - if either `baseline_value` or `current_value` is `null`, producers must set both `delta_absolute` and `delta_relative` to `null`
+  - producers must not emit synthetic `0` values for `delta_absolute` or `delta_relative` when either value is `null`
+  - if baseline metric is missing and current metric exists:
+    - `baseline_value = null`
+    - `current_value` = observed current metric value
+    - `delta_absolute = null` and `delta_relative = null`
+    - emit `ignored = true` with `ignore_reason = missing_baseline_metric`
+  - if current metric is missing and baseline metric exists:
+    - `baseline_value` = observed baseline metric value
+    - `current_value = null`
+    - `delta_absolute = null` and `delta_relative = null`
+    - emit `ignored = true` with `ignore_reason = missing_current_metric`
 - for non-segment-delta metrics:
   - `baseline_value` = baseline metric value for `metric_key`
   - `current_value` = current metric value for `metric_key`
@@ -607,6 +620,7 @@ Minimum-sample guardrails:
 - segment-level disposition metrics (including `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`): do not severity-evaluate when that segment's `reviewed_case_count < 20`
 - segment metrics in general: do not severity-evaluate when segment `queue_parcel_count < 25`
 - guarded metrics must emit `ignored = true` with `ignore_reason = insufficient_sample_size`
+- any signal with `ignored = true` must set `severity = ok` (overall severity remains derived only from non-ignored signals)
 
 `comparison.overall_severity` derivation:
 
