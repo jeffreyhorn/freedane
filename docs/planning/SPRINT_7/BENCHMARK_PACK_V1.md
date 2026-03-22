@@ -299,6 +299,22 @@ Top-level metric families in the benchmark pack:
   - disposition mix
 - `segments` is a separate top-level family for geography/class segmented metrics
 
+Summary key notation and JSON shape:
+
+- dotted names in this section (for example `coverage.queue_parcel_count`) are path-style identifiers, not literal JSON member names containing dots
+- `summary` must be a nested JSON object with this structure:
+  - `summary.coverage.<metric_name>`
+  - `summary.risk_band_mix.<band>.{count,rate}`
+  - `summary.disposition_mix.<disposition>.{count,rate}`
+- producers must not flatten `summary` into dotted member names
+
+`comparison.signals[].metric_key` mapping:
+
+- for non-segment signals, `metric_key` maps to a path under `summary` by prefixing `summary.`
+  - example: `metric_key = risk_band_mix.high.rate` maps to JSON path `summary.risk_band_mix.high.rate`
+  - example: `metric_key = coverage.review_rate` maps to JSON path `summary.coverage.review_rate`
+- segment-prefixed keys (`segment.{segment_id}...`) map to paths under the matching object in `segments[]`, not under `summary`
+
 ### 1) Coverage
 
 Required keys:
