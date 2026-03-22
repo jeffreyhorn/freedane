@@ -81,7 +81,15 @@ Companion alert artifact contract (`benchmark_pack_alert.json`):
 - emission rule:
   - emit iff one or more `alerts[]` items exist (`alerts.length > 0`)
   - do not emit when `alerts = []` (`alerts.length = 0`)
-  - producers must ensure that if `comparison.overall_severity` is `warn` or `critical`, then `alerts.length >= 1`
+  - severity invariants tied to `comparison.overall_severity`:
+    - when `comparison.overall_severity = ok`:
+      - `alerts` must be `[]` (`alerts.length = 0`)
+      - `benchmark_pack_alert.json` must not be emitted
+    - when `comparison.overall_severity` is `warn` or `critical`:
+      - `alerts.length` must be `>= 1`
+      - `benchmark_pack_alert.json` must be emitted
+      - at least one `alerts[].level` must equal `comparison.overall_severity`
+      - no `alerts[].level` may represent a higher severity than `comparison.overall_severity` under ordering `warn < critical`
 - JSON shape:
   - top-level object with:
     - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`; MUST equal parent `benchmark_pack.run.finished_at` for deterministic re-runs)
