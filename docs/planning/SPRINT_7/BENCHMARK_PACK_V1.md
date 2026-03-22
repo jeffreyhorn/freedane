@@ -482,8 +482,9 @@ Deterministic `reason_token` derivation order (first match wins):
 3. else if `current_value = null` and `baseline_value != null`, use `current_missing`
 4. else if `baseline_value = null` and `current_value = null`, use `non_comparable`
 5. else if `delta_absolute = 0`, use `no_change`
-6. else if `severity = critical`, use `beyond_tolerance`
-7. else use `within_tolerance`
+6. else if `severity = warn` or `severity = critical`, use `beyond_tolerance`
+7. else if `severity = ok`, use `within_tolerance`
+8. else use `non_comparable`
 
 `sample_size` semantics (deterministic by metric namespace):
 
