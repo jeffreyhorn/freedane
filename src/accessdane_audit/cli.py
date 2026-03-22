@@ -17,6 +17,12 @@ from sqlalchemy import delete, select
 
 from .anomaly import detect_anomalies
 from .appeals import AppealImportFileError, ingest_appeals_csv
+from .benchmark_pack import (
+    build_alert_payload_from_benchmark_pack,
+    build_benchmark_pack,
+    build_benchmark_trend_payload,
+    persist_benchmark_artifacts,
+)
 from .build_features import build_features
 from .case_review import (
     create_case_review,
@@ -3061,6 +3067,126 @@ def load_monitor_cmd(
     run_payload = payload.get("run", {})
     if isinstance(run_payload, dict) and run_payload.get("status") == "failed":
         raise typer.Exit(code=1)
+
+
+@app.command("benchmark-pack")
+def benchmark_pack_cmd(
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Benchmark JSON output path"
+    ),
+    trend_out: Optional[Path] = typer.Option(
+        None, "--trend-out", help="Benchmark trend JSON output path"
+    ),
+    alert_out: Optional[Path] = typer.Option(
+        None, "--alert-out", help="Benchmark alert JSON output path"
+    ),
+    artifact_base_dir: Path = typer.Option(
+        Path("data/benchmark_packs"),
+        "--artifact-base-dir",
+        help="Base directory for benchmark artifacts",
+    ),
+    profile_name: str = typer.Option(
+        "daily_refresh", "--profile-name", help="Benchmark profile name"
+    ),
+    run_date: Optional[str] = typer.Option(
+        None, "--run-date", help="Run date in YYYYMMDD format"
+    ),
+    feature_version: str = typer.Option(
+        "feature_v1", "--feature-version", help="Feature version selector"
+    ),
+    ruleset_version: str = typer.Option(
+        "scoring_rules_v1", "--ruleset-version", help="Ruleset version selector"
+    ),
+    top_n: int = typer.Option(
+        100, "--top-n", min=1, help="Top-N queue slice used for benchmark metrics"
+    ),
+    baseline: Optional[Path] = typer.Option(
+        None,
+        "--baseline",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional explicit baseline benchmark pack path",
+    ),
+    source_artifact: list[Path] = typer.Option(
+        [],
+        "--source-artifact",
+        help="Optional source artifact path (repeatable)",
+    ),
+    run_id: Optional[str] = typer.Option(
+        None, "--run-id", help="Optional benchmark run id override"
+    ),
+    persist_artifacts: bool = typer.Option(
+        True,
+        "--persist-artifacts/--no-persist-artifacts",
+        help="Persist canonical benchmark artifacts under artifact-base-dir",
+    ),
+) -> None:
+    resolved_run_date = run_date or datetime.now(timezone.utc).strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
+            param_hint="--run-date",
+        )
+
+    source_artifacts = [str(path) for path in source_artifact]
+    settings = load_settings()
+    with session_scope(settings.database_url) as session:
+        payload = build_benchmark_pack(
+            session,
+            profile_name=profile_name,
+            run_date=resolved_run_date,
+            feature_version=feature_version,
+            ruleset_version=ruleset_version,
+            top_n=top_n,
+            artifact_base_dir=artifact_base_dir,
+            source_artifacts=source_artifacts,
+            benchmark_run_id=run_id,
+            baseline_path=baseline,
+            run_persisted=persist_artifacts or out is not None,
+        )
+
+    trend_payload = build_benchmark_trend_payload(payload)
+    alert_payload = build_alert_payload_from_benchmark_pack(payload)
+
+    if persist_artifacts:
+        persist_benchmark_artifacts(
+            payload,
+            artifact_base_dir=artifact_base_dir,
+            trend_payload=trend_payload,
+            alert_payload=alert_payload,
+        )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    if trend_out:
+        trend_out.parent.mkdir(parents=True, exist_ok=True)
+        trend_out.write_text(json.dumps(trend_payload, indent=2), encoding="utf-8")
+
+    if alert_out and alert_payload is not None:
+        alert_out.parent.mkdir(parents=True, exist_ok=True)
+        alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+
+    run_payload = _as_dict(payload.get("run"))
+    if _as_str(run_payload.get("status")) == "failed":
+        raise typer.Exit(code=1)
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _as_str(value: object) -> Optional[str]:
+    if isinstance(value, str):
+        return value
+    return None
 
 
 def _collect_ids(ids: Iterable[str], ids_file: Optional[Path]) -> list[str]:
