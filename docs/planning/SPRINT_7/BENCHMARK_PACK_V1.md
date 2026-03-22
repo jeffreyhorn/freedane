@@ -149,7 +149,7 @@ Presence rules:
     - `comparison.comparable = false`
     - `comparison.non_comparable_reasons = ["run_failed"]`
     - `comparison.signals = []`
-    - `comparison.overall_severity = ok`
+    - `comparison.overall_severity` = `ok`
   - `alerts` must be an empty array (`[]`)
   - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
   - `diagnostics.failure` must be non-null and include failure metadata
