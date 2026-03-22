@@ -314,6 +314,11 @@ Summary key notation and JSON shape:
   - example: `metric_key = risk_band_mix.high.rate` maps to JSON path `summary.risk_band_mix.high.rate`
   - example: `metric_key = coverage.review_rate` maps to JSON path `summary.coverage.review_rate`
 - segment-prefixed keys (`segment.{segment_id}...`) map to paths under the matching object in `segments[]`, not under `summary`
+  - resolve `segment_id` by parsing `metric_key` and selecting the element where `segments[].segment_id == {segment_id}`
+  - keys ending in `.rate_delta_abs` are virtual comparison metrics and do not correspond to a literal field in `segments[]`
+  - for `.rate_delta_abs` keys, derive the underlying segment-rate path by replacing the `.rate_delta_abs` suffix with `.rate` and resolve that path on the matched segment object
+  - example: `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs` uses underlying path `segments[].disposition_mix.false_positive.rate`
+  - example: `segment.{segment_id}.risk_band_mix.high.rate_delta_abs` uses underlying path `segments[].risk_band_mix.high.rate`
 
 ### 1) Coverage
 
