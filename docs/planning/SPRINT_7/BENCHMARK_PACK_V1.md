@@ -191,7 +191,7 @@ Required fields:
 - `feature_version`
 - `ruleset_version`
 - `source_run_id` (refresh run id used as benchmark source)
-- `source_artifacts` (array of artifact paths used to compute benchmark)
+- `source_artifacts` (array of strings; canonical artifact-path strings used to compute benchmark)
 - `period_start` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `period_end` (RFC3339/ISO-8601 UTC with trailing `Z`)
 - `period_length_days` (integer; inclusive UTC whole-day count for the benchmark period)
@@ -373,9 +373,9 @@ Required keys:
 
 Rate denominator rule:
 
-- denominator is `reviewed_case_count` for reviewed dispositions
-- `unreviewed.rate` denominator is `queue_parcel_count`
-- each `disposition_mix.*.rate` must be computed as `count / max(denominator, 1)` using the applicable denominator above so zero-denominator cases never emit NaN/Infinity
+- denominator is `summary.coverage.reviewed_case_count` for reviewed dispositions
+- `unreviewed.rate` denominator is `summary.coverage.queue_parcel_count`
+- each `disposition_mix.*.rate` must be computed as `count / max(denominator, 1)` using the applicable `summary.coverage.*` denominator above so zero-denominator cases never emit NaN/Infinity
 
 ### 4) Geography/Class Segments
 
