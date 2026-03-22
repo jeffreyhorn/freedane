@@ -142,7 +142,13 @@ Presence rules:
   - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
   - `error` must be `null`
 - when `run.status = failed`:
-  - `summary`, `segments`, and `comparison.signals` may be emitted as empty arrays/zero-value summaries
+  - `summary` and `segments` may be emitted as empty arrays/zero-value summaries
+  - `comparison` must use deterministic failed-run placeholders:
+    - `comparison.baseline_reference = null`
+    - `comparison.comparable = false`
+    - `comparison.non_comparable_reasons = [\"run_failed\"]`
+    - `comparison.signals = []`
+    - `comparison.overall_severity = ok`
   - `alerts` must be an empty array (`[]`)
   - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
   - `diagnostics.failure` must be non-null and include failure metadata
@@ -435,6 +441,7 @@ Allowed `comparison.non_comparable_reasons` values (v1):
 - `period_length_days_mismatch`
 - `baseline_schema_version_mismatch`
 - `operator_override_not_comparable`
+- `run_failed`
 
 ### Signal schema
 
@@ -559,7 +566,7 @@ Required recurring cadence:
 
 - `daily_refresh` benchmark pack: weekly (recommended every Monday)
 - `annual_refresh` benchmark pack: required for each annual cutover candidate run
-- correction replay benchmark pack: required for each `correction_replay` annual run
+- `annual_refresh` benchmark pack in correction replay mode: required for each `annual_refresh` run with `request.replay_mode = correction_replay`
 
 On-demand benchmark runs are allowed when:
 
