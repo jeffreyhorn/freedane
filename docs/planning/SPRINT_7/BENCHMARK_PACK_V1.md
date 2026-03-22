@@ -142,7 +142,8 @@ Presence rules:
   - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
   - `error` must be `null`
 - when `run.status = failed`:
-  - `summary` and `segments` may be emitted as empty arrays/zero-value summaries
+  - `summary` must remain an object conforming to the summary schema and may use deterministic zero-value placeholders
+  - `segments` may be emitted as an empty array (`[]`)
   - `comparison` must use deterministic failed-run placeholders:
     - `comparison.baseline_reference = null`
     - `comparison.comparable = false`
@@ -456,9 +457,33 @@ Each `comparison.signals[]` item must include:
 - `delta_relative` (nullable float)
 - `sample_size` (int)
 - `severity` (`ok|warn|critical`)
-- `reason_code`
+- `reason_code` (non-empty string; see v1 reason code contract)
 - `ignored` (bool)
 - `ignore_reason` (nullable string)
+
+v1 `reason_code` contract:
+
+- format: `<family>.<reason_token>.<metric_key>`
+  - `family` must exactly equal `comparison.signals[].family`
+  - `metric_key` must exactly equal `comparison.signals[].metric_key`
+  - `reason_token` must be one of:
+    - `baseline_missing`
+    - `current_missing`
+    - `non_comparable`
+    - `low_sample_size`
+    - `no_change`
+    - `within_tolerance`
+    - `beyond_tolerance`
+
+Deterministic `reason_token` derivation order (first match wins):
+
+1. if `ignored = true` and `ignore_reason = insufficient_sample_size`, use `low_sample_size`
+2. else if `baseline_value = null` and `current_value != null`, use `baseline_missing`
+3. else if `current_value = null` and `baseline_value != null`, use `current_missing`
+4. else if `baseline_value = null` and `current_value = null`, use `non_comparable`
+5. else if `delta_absolute = 0`, use `no_change`
+6. else if `severity = critical`, use `beyond_tolerance`
+7. else use `within_tolerance`
 
 `sample_size` semantics (deterministic by metric namespace):
 
@@ -581,7 +606,7 @@ Minimum retention policy:
 - retain segment CSV companions (if emitted) for at least `400` days
 - maintain latest pointers by profile and version:
   - `data/benchmark_packs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_benchmark_pack.json`
-  - `data/benchmark_packs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_alert.json` (when present)
+  - `data/benchmark_packs/latest/<profile_name>/<feature_version>/<ruleset_version>/latest_benchmark_pack_alert.json` (when present)
 
 Baseline retention policy:
 
