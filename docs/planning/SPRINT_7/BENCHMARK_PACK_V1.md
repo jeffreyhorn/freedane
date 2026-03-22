@@ -149,7 +149,9 @@ Presence rules:
 - all top-level keys above must always be present
 - when `run.status = succeeded`:
   - `summary`, `segments`, and `comparison` must reflect the completed benchmark
-  - `alerts` may be empty or contain one or more alert items conforming to the `alerts` schema
+  - `alerts` must conform to the `alerts` schema and be consistent with `comparison.overall_severity`:
+    - when `comparison.overall_severity = ok`, `alerts` must be an empty array (`[]`) and companion `benchmark_pack_alert.json` must be absent
+    - when `comparison.overall_severity` is `warn` or `critical`, `alerts` must contain one or more items (`alerts.length >= 1`) and companion `benchmark_pack_alert.json` must be present with semantically consistent alert summaries
   - `diagnostics` must be a non-null object conforming to the `diagnostics` schema
   - `error` must be `null`
 - when `run.status = failed`:
