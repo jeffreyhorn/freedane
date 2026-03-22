@@ -84,8 +84,8 @@ Companion alert artifact contract (`benchmark_pack_alert.json`):
   - producers must ensure that if `comparison.overall_severity` is `warn` or `critical`, then `alerts.length >= 1`
 - JSON shape:
   - top-level object with:
-    - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`)
-    - `alert_count` (int)
+    - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`; MUST equal parent `benchmark_pack.run.finished_at` for deterministic re-runs)
+    - `alert_count` (int; MUST equal `alerts.length` at emission time)
     - `alerts` (array of shared alert summaries)
 - each `alerts[]` companion summary must include:
   - `alert_id`
@@ -97,20 +97,20 @@ Companion alert artifact contract (`benchmark_pack_alert.json`):
   - `routing_key` (string)
   - `context` (object)
 - companion mapping rules:
-  - source records are from canonical benchmark pack payload `benchmark_pack.json` at `benchmark_pack.alerts[i]`
-  - only source records with `benchmark_pack.alerts[i].level in {warn, critical}` are eligible for companion emission
-  - destination records are in companion payload `benchmark_pack_alert.json` at `benchmark_pack_alert.alerts[j]`
-  - `benchmark_pack_alert.alerts[j].alert_id = benchmark_pack.alerts[i].id`
-  - `benchmark_pack_alert.alerts[j].alert_type = benchmark_pack`
-  - `benchmark_pack_alert.alerts[j].severity = benchmark_pack.alerts[i].level`
-  - `benchmark_pack_alert.alerts[j].reason_codes = [benchmark_pack.alerts[i].code]`
-  - `benchmark_pack_alert.alerts[j].summary = benchmark_pack.alerts[i].message`
-  - `benchmark_pack_alert.alerts[j].generated_at = benchmark_pack.alerts[i].created_at`
-  - `benchmark_pack_alert.alerts[j].routing_key = <profile_name>:<feature_version>:<ruleset_version>:<benchmark_pack.alerts[i].code>`
+  - source records are from canonical benchmark pack payload `benchmark_pack.json` at root-level `alerts[i]`
+  - only source records with `alerts[i].level in {warn, critical}` are eligible for companion emission
+  - destination records are in companion payload `benchmark_pack_alert.json` at root-level `alerts[j]`
+  - `alerts[j].alert_id = alerts[i].id`
+  - `alerts[j].alert_type = benchmark_pack`
+  - `alerts[j].severity = alerts[i].level`
+  - `alerts[j].reason_codes = [alerts[i].code]`
+  - `alerts[j].summary = alerts[i].message`
+  - `alerts[j].generated_at = alerts[i].created_at`
+  - `alerts[j].routing_key = <profile_name>:<feature_version>:<ruleset_version>:<alerts[i].code>`
   - `context` must include:
-    - `scope` (from `benchmark_pack.alerts[i].scope`)
-    - `segment_id` (nullable; from `benchmark_pack.alerts[i].segment_id`)
-    - `signal_id` (nullable; from `benchmark_pack.alerts[i].signal_id`)
+    - `scope` (from `alerts[i].scope`)
+    - `segment_id` (nullable; from `alerts[i].segment_id`)
+    - `signal_id` (nullable; from `alerts[i].signal_id`)
   - when segment/signal context is unavailable, values must be explicit `null` (not omitted)
 
 Path token rule:
@@ -437,7 +437,11 @@ When `comparison.comparable = true`, `baseline_reference` must be a non-null obj
 - `ruleset_version` matches
 - `top_n` matches
 - `period_length_days` matches
-- baseline artifact version is `benchmark_pack_v1`
+- baseline artifact version is comparable:
+  - authoritative field is `baseline.run.version_tag`
+  - comparable only if `baseline.run.version_tag == "benchmark_pack_v1"`
+  - if `baseline.run.version_tag` is present and not equal to `"benchmark_pack_v1"`, set `comparison.comparable = false` and include `baseline_version_tag_mismatch` in `comparison.non_comparable_reasons`
+  - `baseline.diagnostics.schema_version` is informational for this comparability check and must not override `baseline.run.version_tag`
 
 If not comparable:
 
@@ -456,7 +460,7 @@ Allowed `comparison.non_comparable_reasons` values (v1):
 - `ruleset_version_mismatch`
 - `top_n_mismatch`
 - `period_length_days_mismatch`
-- `baseline_schema_version_mismatch`
+- `baseline_version_tag_mismatch`
 - `operator_override_not_comparable`
 - `run_failed`
 
