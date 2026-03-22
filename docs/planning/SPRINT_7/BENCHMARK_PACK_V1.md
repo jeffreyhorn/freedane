@@ -74,22 +74,25 @@ Optional companion paths (if generator emits split artifacts):
 
 - `.../benchmark_pack_summary.json`
 - `.../benchmark_pack_segments.csv`
-- `.../benchmark_pack_alert.json` (emitted iff one or more `alerts[]` items exist)
+- `.../benchmark_pack_alert.json` (emitted iff one or more companion alert-summary items exist)
 
 Companion alert artifact contract (`benchmark_pack_alert.json`):
 
+- notation:
+  - `benchmark_pack.alerts`: root `alerts[]` array in `benchmark_pack.json` (source benchmark pack)
+  - `benchmark_pack_alert.alerts`: root `alerts[]` array in `benchmark_pack_alert.json` (companion destination payload)
 - emission rule:
-  - emit iff one or more `alerts[]` items exist (`alerts.length > 0`)
-  - do not emit when `alerts = []` (`alerts.length = 0`)
+  - emit iff one or more `benchmark_pack_alert.alerts[]` items exist (`benchmark_pack_alert.alerts.length > 0`)
+  - do not emit when `benchmark_pack_alert.alerts = []` (`benchmark_pack_alert.alerts.length = 0`)
   - severity invariants tied to `comparison.overall_severity`:
     - when `comparison.overall_severity = ok`:
-      - `alerts` must be `[]` (`alerts.length = 0`)
+      - `benchmark_pack_alert.alerts` must be `[]` (`benchmark_pack_alert.alerts.length = 0`)
       - `benchmark_pack_alert.json` must not be emitted
     - when `comparison.overall_severity` is `warn` or `critical`:
-      - `alerts.length` must be `>= 1`
+      - `benchmark_pack_alert.alerts.length` must be `>= 1`
       - `benchmark_pack_alert.json` must be emitted
-      - at least one `alerts[].level` must equal `comparison.overall_severity`
-      - no `alerts[].level` may represent a higher severity than `comparison.overall_severity` under ordering `warn < critical`
+      - at least one `benchmark_pack_alert.alerts[].severity` must equal `comparison.overall_severity`
+      - no `benchmark_pack_alert.alerts[].severity` may represent a higher severity than `comparison.overall_severity` under ordering `warn < critical`
 - JSON shape:
   - top-level object with:
     - `generated_at` (RFC3339/ISO-8601 UTC with trailing `Z`; MUST equal parent `benchmark_pack.run.finished_at` for deterministic re-runs)
@@ -336,7 +339,7 @@ Required keys:
 - `coverage.queue_parcel_count`
 - `coverage.reviewed_case_count`
 - `coverage.requires_review_count`
-- `coverage.review_rate` (`reviewed_case_count / max(queue_parcel_count, 1)`)
+- `coverage.review_rate` (`coverage.reviewed_case_count / max(coverage.queue_parcel_count, 1)`)
 
 ### 2) Risk-Band Mix
 
@@ -351,8 +354,8 @@ Required keys:
 
 Rate denominator rule:
 
-- denominator is `queue_parcel_count`
-- each `risk_band_mix.*.rate` must be computed as `count / max(queue_parcel_count, 1)` so zero-denominator cases never emit NaN/Infinity
+- denominator is `summary.coverage.queue_parcel_count` (that is, `coverage.queue_parcel_count` in this summary-key section)
+- each `risk_band_mix.*.rate` must be computed as `count / max(summary.coverage.queue_parcel_count, 1)` so zero-denominator cases never emit NaN/Infinity
 
 ### 3) Disposition Mix
 
@@ -624,7 +627,8 @@ Segment-level policy:
 
 Minimum-sample guardrails:
 
-- run-level disposition metrics: do not severity-evaluate `disposition_mix.*.rate` when `summary.coverage.reviewed_case_count < 20`
+- run-level reviewed disposition metrics (`disposition_mix.*.rate` except `disposition_mix.unreviewed.rate`): do not severity-evaluate when `summary.coverage.reviewed_case_count < 20`
+- run-level unreviewed disposition metric (`disposition_mix.unreviewed.rate`): do not severity-evaluate when `summary.coverage.queue_parcel_count < 20`
 - segment-level disposition metrics (including `segment.{segment_id}.disposition_mix.false_positive.rate_delta_abs`): do not severity-evaluate when that segment's `reviewed_case_count < 20`
 - segment metrics in general: do not severity-evaluate when segment `queue_parcel_count < 25`
 - guarded metrics must emit `ignored = true` with `ignore_reason = insufficient_sample_size`
