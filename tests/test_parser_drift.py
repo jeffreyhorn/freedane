@@ -387,6 +387,49 @@ def test_parser_drift_diff_cli_removes_stale_alert_out_when_no_alert(
     assert not alert_path.exists()
 
 
+def test_parser_drift_diff_cli_rejects_non_file_alert_out_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "parser_drift_cli_diff_alert_dir.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    baseline_path = tmp_path / "baseline_snapshot_alert_dir.json"
+    current_path = tmp_path / "current_snapshot_alert_dir.json"
+    diff_path = tmp_path / "diff_alert_dir.json"
+    alert_path = tmp_path / "alert_out_dir"
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    baseline_payload = _make_snapshot(snapshot_id="baseline_alert_dir")
+    current_payload = _make_snapshot(snapshot_id="current_alert_dir")
+    baseline_path.write_text(json.dumps(baseline_payload, indent=2), encoding="utf-8")
+    current_path.write_text(json.dumps(current_payload, indent=2), encoding="utf-8")
+    alert_path.mkdir(parents=True, exist_ok=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "parser-drift-diff",
+            "--baseline",
+            str(baseline_path),
+            "--current",
+            str(current_path),
+            "--out",
+            str(diff_path),
+            "--alert-out",
+            str(alert_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--alert-out must reference a file path" in result.output
+
+
 def test_parser_drift_metric_key_sets_are_in_sync() -> None:
     assert set(SELECTOR_MISS_METRIC_KEYS) == {
         "selector_miss.assessment_fetch_rate",

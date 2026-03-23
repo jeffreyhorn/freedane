@@ -101,15 +101,19 @@ scripts/run_scheduled_refresh.sh
 ```bash
 .venv/bin/accessdane benchmark-pack \
   --run-date <YYYYMMDD> \
+  --run-id <run_id> \
   --profile-name daily_refresh \
   --feature-version feature_v1 \
   --ruleset-version scoring_rules_v1 \
   --top-n 100 \
   --artifact-base-dir data/benchmark_packs \
-  --out data/benchmark_packs/<YYYYMMDD>/daily_refresh/benchmark_pack.json \
-  --trend-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/benchmark_pack_trend.json \
-  --alert-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/benchmark_pack_alert.json
+  --out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<run_id>/benchmark_pack.json \
+  --trend-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<run_id>/benchmark_pack_trend.json \
+  --alert-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<run_id>/benchmark_pack_alert.json
 ```
+
+`--out`, `--trend-out`, and `--alert-out` are convenience copies for operator workflows.
+Canonical benchmark artifacts are also persisted under the benchmark run root and latest pointer paths under `data/benchmark_packs/`.
 
 ## Annual Refresh Sequence
 

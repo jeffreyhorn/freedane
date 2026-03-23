@@ -2989,7 +2989,10 @@ def parser_drift_diff_cmd(
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
         elif alert_out.exists():
-            alert_out.unlink()
+            _remove_stale_output_file(
+                alert_out,
+                param_hint="--alert-out",
+            )
 
 
 @app.command("load-monitor")
@@ -3066,7 +3069,10 @@ def load_monitor_cmd(
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
         elif alert_out.exists():
-            alert_out.unlink()
+            _remove_stale_output_file(
+                alert_out,
+                param_hint="--alert-out",
+            )
 
     run_payload = payload.get("run", {})
     if isinstance(run_payload, dict) and run_payload.get("status") == "failed":
@@ -3252,6 +3258,19 @@ def _collect_transaction_ids(
                 param_hint=param_hint,
             ) from exc
     return transaction_ids
+
+
+def _remove_stale_output_file(path: Path, *, param_hint: str) -> None:
+    if path.is_file():
+        path.unlink()
+        return
+    raise typer.BadParameter(
+        (
+            f"{param_hint} must reference a file path when it already exists; "
+            f"got non-file path: {path}"
+        ),
+        param_hint=param_hint,
+    )
 
 
 def _ensure_parcel(session, parcel_id: str) -> None:
