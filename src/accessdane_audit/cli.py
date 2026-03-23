@@ -3158,8 +3158,10 @@ def benchmark_pack_cmd(
 
     trend_payload = build_benchmark_trend_payload(payload)
     alert_payload = build_alert_payload_from_benchmark_pack(payload)
+    run_payload = _as_dict(payload.get("run"))
+    run_status = _as_str(run_payload.get("status"))
 
-    if persist_artifacts:
+    if persist_artifacts and run_status == "succeeded":
         persist_benchmark_artifacts(
             payload,
             artifact_base_dir=artifact_base_dir,
@@ -3184,8 +3186,7 @@ def benchmark_pack_cmd(
         elif alert_out.exists():
             alert_out.unlink()
 
-    run_payload = _as_dict(payload.get("run"))
-    if _as_str(run_payload.get("status")) == "failed":
+    if run_status == "failed":
         raise typer.Exit(code=1)
 
 

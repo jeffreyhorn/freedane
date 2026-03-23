@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -297,6 +298,175 @@ def test_benchmark_pack_cli_invalid_profile_name_returns_bad_parameter(
 
     assert result.exit_code != 0
     assert "Invalid profile_name" in result.output
+
+
+def test_build_benchmark_pack_marks_failed_baseline_non_comparable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "benchmark_pack_failed_baseline.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(benchmark_pack, "_now_utc", lambda: fixed_now)
+
+    with session_scope(database_url) as session:
+        _seed_scores(session)
+        baseline_payload = benchmark_pack.build_benchmark_pack(
+            session,
+            profile_name="daily_refresh",
+            run_date="20260322",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            top_n=30,
+            benchmark_run_id="benchmark_run_baseline",
+        )
+
+    baseline_payload["run"]["status"] = "failed"
+    baseline_path = tmp_path / "baseline_failed.json"
+    baseline_path.write_text(json.dumps(baseline_payload, indent=2), encoding="utf-8")
+
+    with session_scope(database_url) as session:
+        current_payload = benchmark_pack.build_benchmark_pack(
+            session,
+            profile_name="daily_refresh",
+            run_date="20260322",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            top_n=30,
+            benchmark_run_id="benchmark_run_current",
+            baseline_path=baseline_path,
+        )
+
+    assert current_payload["run"]["status"] == "succeeded"
+    assert current_payload["comparison"]["comparable"] is False
+    assert current_payload["comparison"]["signals"] == []
+    assert (
+        "baseline_run_failed" in current_payload["comparison"]["non_comparable_reasons"]
+    )
+
+
+def test_benchmark_pack_cli_does_not_persist_canonical_artifacts_on_failed_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "benchmark_pack_failed_cli.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    artifact_base_dir = tmp_path / "benchmark_packs"
+    out_path = tmp_path / "benchmark_pack_failed_out.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "benchmark-pack",
+            "--artifact-base-dir",
+            str(artifact_base_dir),
+            "--run-date",
+            "20260322",
+            "--run-id",
+            "benchmark_run_failed",
+            "--ruleset-version",
+            "unsupported_ruleset",
+            "--out",
+            str(out_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    out_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert out_payload["run"]["status"] == "failed"
+    assert not (
+        artifact_base_dir
+        / "20260322"
+        / "daily_refresh"
+        / "benchmark_run_failed"
+        / "benchmark_pack.json"
+    ).exists()
+    assert not (
+        artifact_base_dir
+        / "latest"
+        / "daily_refresh"
+        / "feature_v1"
+        / "unsupported_ruleset"
+        / "latest_benchmark_pack.json"
+    ).exists()
+
+
+def test_persist_benchmark_artifacts_skips_latest_updates_for_failed_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "benchmark_pack_persist_gating.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(benchmark_pack, "_now_utc", lambda: fixed_now)
+
+    with session_scope(database_url) as session:
+        _seed_scores(session)
+        success_payload = benchmark_pack.build_benchmark_pack(
+            session,
+            profile_name="daily_refresh",
+            run_date="20260322",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            top_n=30,
+            benchmark_run_id="benchmark_run_success",
+        )
+
+    artifact_base_dir = tmp_path / "benchmark_packs"
+    success_trend = benchmark_pack.build_benchmark_trend_payload(success_payload)
+    benchmark_pack.persist_benchmark_artifacts(
+        success_payload,
+        artifact_base_dir=artifact_base_dir,
+        trend_payload=success_trend,
+        alert_payload=None,
+    )
+
+    latest_path = (
+        artifact_base_dir
+        / "latest"
+        / "daily_refresh"
+        / "feature_v1"
+        / "scoring_rules_v1"
+        / "latest_benchmark_pack.json"
+    )
+    latest_before = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert latest_before["run"]["run_id"] == "benchmark_run_success"
+
+    failed_payload = copy.deepcopy(success_payload)
+    failed_payload["run"]["run_id"] = "benchmark_run_failed_persist"
+    failed_payload["run"]["status"] = "failed"
+    failed_payload["error"] = {"code": "forced_failure", "message": "forced failure"}
+    failed_payload["comparison"] = {
+        "baseline_reference": None,
+        "comparable": False,
+        "non_comparable_reasons": ["run_failed"],
+        "signals": [],
+        "overall_severity": "ok",
+    }
+    failed_trend = benchmark_pack.build_benchmark_trend_payload(failed_payload)
+    benchmark_pack.persist_benchmark_artifacts(
+        failed_payload,
+        artifact_base_dir=artifact_base_dir,
+        trend_payload=failed_trend,
+        alert_payload=None,
+    )
+
+    latest_after = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert latest_after["run"]["run_id"] == "benchmark_run_success"
+    assert (
+        artifact_base_dir
+        / "20260322"
+        / "daily_refresh"
+        / "benchmark_run_failed_persist"
+        / "benchmark_pack.json"
+    ).exists()
 
 
 def _seed_scores(session) -> None:

@@ -122,7 +122,11 @@ def build_benchmark_pack(
         characteristics = _load_characteristics_by_parcel_id(session, parcel_ids)
         summary, segments = _build_summary_and_segments(queue_rows, characteristics)
 
-        baseline_payload, baseline_path_used = _resolve_baseline_payload(
+        (
+            baseline_payload,
+            baseline_path_used,
+            baseline_non_comparable_reasons,
+        ) = _resolve_baseline_payload(
             artifact_base_dir=artifact_base_dir,
             profile_name=resolved_profile_name,
             feature_version=resolved_feature_version,
@@ -141,6 +145,7 @@ def build_benchmark_pack(
                 period_start=resolved_period_start,
                 period_end=resolved_period_end,
             ),
+            baseline_non_comparable_reasons=baseline_non_comparable_reasons,
         )
         finished_at = _now_utc()
         alerts = _build_alerts(
@@ -419,6 +424,7 @@ def persist_benchmark_artifacts(
 ) -> dict[str, str]:
     run = _as_dict(payload.get("run"))
     scope = _as_dict(payload.get("scope"))
+    run_status = _as_str(run.get("status"))
     run_date = _validate_run_date(_as_str(scope.get("run_date")) or "")
     profile_name = _validate_artifact_component(
         _as_str(scope.get("profile_name")) or "",
@@ -451,27 +457,38 @@ def persist_benchmark_artifacts(
     elif alert_path.exists():
         alert_path.unlink()
 
-    latest_path = (
-        artifact_base_dir / "latest" / profile_name / feature_version / ruleset_version
-    )
-    latest_path.mkdir(parents=True, exist_ok=True)
-    latest_benchmark_path = latest_path / "latest_benchmark_pack.json"
-    _write_json_atomic(latest_benchmark_path, payload)
+    latest_benchmark_path: Optional[Path] = None
+    latest_alert_path: Optional[Path] = None
+    if run_status == "succeeded":
+        latest_path = (
+            artifact_base_dir
+            / "latest"
+            / profile_name
+            / feature_version
+            / ruleset_version
+        )
+        latest_path.mkdir(parents=True, exist_ok=True)
+        latest_benchmark_path = latest_path / "latest_benchmark_pack.json"
+        _write_json_atomic(latest_benchmark_path, payload)
 
-    latest_alert_path = latest_path / "latest_benchmark_pack_alert.json"
-    if alert_payload is not None:
-        _write_json_atomic(latest_alert_path, alert_payload)
-    elif latest_alert_path.exists():
-        latest_alert_path.unlink()
+        latest_alert_path = latest_path / "latest_benchmark_pack_alert.json"
+        if alert_payload is not None:
+            _write_json_atomic(latest_alert_path, alert_payload)
+        elif latest_alert_path.exists():
+            latest_alert_path.unlink()
 
     return {
         "root_path": str(root_path),
         "benchmark_pack_path": str(benchmark_path),
         "benchmark_trend_path": str(trend_path),
         "benchmark_alert_path": str(alert_path) if alert_payload is not None else "",
-        "latest_benchmark_pack_path": str(latest_benchmark_path),
+        "latest_benchmark_pack_path": (
+            str(latest_benchmark_path) if latest_benchmark_path is not None else ""
+        ),
         "latest_benchmark_alert_path": (
-            str(latest_alert_path) if alert_payload is not None else ""
+            str(latest_alert_path)
+            if alert_payload is not None and latest_alert_path is not None
+            else ""
         ),
     }
 
@@ -483,7 +500,7 @@ def _resolve_baseline_payload(
     feature_version: str,
     ruleset_version: str,
     baseline_path: Optional[Path],
-) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
+) -> tuple[Optional[dict[str, Any]], Optional[Path], list[str]]:
     resolved_baseline_path = baseline_path
     if resolved_baseline_path is None:
         candidate = (
@@ -497,13 +514,16 @@ def _resolve_baseline_payload(
         if candidate.exists():
             resolved_baseline_path = candidate
     if resolved_baseline_path is None:
-        return None, None
+        return None, None, ["no_comparable_baseline_found"]
     baseline_payload = json.loads(resolved_baseline_path.read_text(encoding="utf-8"))
     if not isinstance(baseline_payload, dict):
         raise ValueError(
             f"Baseline file '{resolved_baseline_path}' is not a JSON object."
         )
-    return baseline_payload, resolved_baseline_path
+    run_info = _as_dict(baseline_payload.get("run"))
+    if _as_str(run_info.get("status")) != "succeeded":
+        return None, resolved_baseline_path, ["baseline_run_failed"]
+    return baseline_payload, resolved_baseline_path, []
 
 
 def _build_summary_and_segments(
@@ -639,12 +659,15 @@ def _build_comparison(
     ruleset_version: str,
     top_n: int,
     period_length_days: int,
+    baseline_non_comparable_reasons: list[str],
 ) -> dict[str, Any]:
     if baseline_payload is None:
         return {
             "baseline_reference": None,
             "comparable": False,
-            "non_comparable_reasons": ["no_comparable_baseline_found"],
+            "non_comparable_reasons": (
+                baseline_non_comparable_reasons or ["no_comparable_baseline_found"]
+            ),
             "signals": [],
             "overall_severity": "ok",
         }
