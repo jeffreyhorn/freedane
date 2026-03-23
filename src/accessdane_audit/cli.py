@@ -2891,6 +2891,11 @@ def parser_drift_diff_cmd(
             f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
             param_hint="--run-date",
         )
+    if alert_out:
+        _ensure_output_file_path(
+            alert_out,
+            param_hint="--alert-out",
+        )
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
     baseline_snapshot_id: Optional[str] = None
@@ -2988,6 +2993,11 @@ def parser_drift_diff_cmd(
         if alert_payload is not None:
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+        elif alert_out.exists():
+            _remove_stale_output_file(
+                alert_out,
+                param_hint="--alert-out",
+            )
 
 
 @app.command("load-monitor")
@@ -3032,6 +3042,11 @@ def load_monitor_cmd(
         raise typer.BadParameter(
             "Specify at most one of --subject-run-id or --subject-refresh-payload."
         )
+    if alert_out:
+        _ensure_output_file_path(
+            alert_out,
+            param_hint="--alert-out",
+        )
 
     settings = load_settings()
     with session_scope(settings.database_url) as session:
@@ -3063,6 +3078,11 @@ def load_monitor_cmd(
         ):
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+        elif alert_out.exists():
+            _remove_stale_output_file(
+                alert_out,
+                param_hint="--alert-out",
+            )
 
     run_payload = payload.get("run", {})
     if isinstance(run_payload, dict) and run_payload.get("status") == "failed":
@@ -3129,6 +3149,11 @@ def benchmark_pack_cmd(
             f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
             param_hint="--run-date",
         )
+    if alert_out:
+        _ensure_output_file_path(
+            alert_out,
+            param_hint="--alert-out",
+        )
 
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
@@ -3186,7 +3211,10 @@ def benchmark_pack_cmd(
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
             wrote_alert_out = True
         elif alert_out.exists():
-            alert_out.unlink()
+            _remove_stale_output_file(
+                alert_out,
+                param_hint="--alert-out",
+            )
             wrote_alert_out = True
 
     if out is not None:
@@ -3248,6 +3276,30 @@ def _collect_transaction_ids(
                 param_hint=param_hint,
             ) from exc
     return transaction_ids
+
+
+def _remove_stale_output_file(path: Path, *, param_hint: str) -> None:
+    if path.is_file():
+        path.unlink()
+        return
+    raise typer.BadParameter(
+        (
+            f"{param_hint} must reference a file path when it already exists; "
+            f"got non-file path: {path}"
+        ),
+        param_hint=param_hint,
+    )
+
+
+def _ensure_output_file_path(path: Path, *, param_hint: str) -> None:
+    if path.exists() and not path.is_file():
+        raise typer.BadParameter(
+            (
+                f"{param_hint} must reference a file path when it already exists; "
+                f"got non-file path: {path}"
+            ),
+            param_hint=param_hint,
+        )
 
 
 def _ensure_parcel(session, parcel_id: str) -> None:
