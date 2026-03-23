@@ -190,9 +190,11 @@ Use this escalation rubric when recurring automation/monitoring runs fail:
   - refresh orchestration cannot complete (`run.status=failed`) for the active schedule window.
   - annual refresh preflight or signoff stage fails.
   - benchmark pack run fails during a scheduled publication window.
+  - parser drift severity is `error` with actionable alert payload.
+  - load monitoring emits `critical` threshold alerts.
 - `warn` (same-day triage, next business-day remediation plan):
-  - parser drift severity is `warn`/`error` with actionable alert payload.
-  - load monitoring emits `warn`/`critical` threshold alerts.
+  - parser drift severity is `warn` with actionable alert payload.
+  - load monitoring emits `warn` threshold alerts.
   - benchmark pack comparability breaks unexpectedly (`comparison.comparable=false`) for a previously stable profile/version pair.
 - `info` (track and monitor):
   - expected non-comparable baseline state for first-run benchmark packs.
