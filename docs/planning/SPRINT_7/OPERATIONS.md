@@ -182,6 +182,31 @@ Verify annual signoff artifacts exist under run root:
 - failed run persistence behavior:
   - failed packs do not update `latest/*` pointers.
 
+## Escalation Guidance
+
+Use this escalation rubric when recurring automation/monitoring runs fail:
+
+- `critical` (same-day escalation, immediate owner handoff):
+  - refresh orchestration cannot complete (`run.status=failed`) for the active schedule window.
+  - annual refresh preflight or signoff stage fails.
+  - benchmark pack run fails during a scheduled publication window.
+  - parser drift severity is `error` with actionable alert payload.
+  - load monitoring emits `critical` threshold alerts.
+- `warn` (same-day triage, next business-day remediation plan):
+  - parser drift severity is `warn` with actionable alert payload.
+  - load monitoring emits `warn` threshold alerts.
+  - benchmark pack comparability breaks unexpectedly (`comparison.comparable=false`) for a previously stable profile/version pair.
+- `info` (track and monitor):
+  - expected non-comparable baseline state for first-run benchmark packs.
+  - no-alert outcomes where diagnostics still report healthy `ok` status.
+
+Minimum escalation bundle to include in ticket/incident handoff:
+
+- refresh run payload (`data/refresh_runs/.../<run_id>/refresh_run.json` or scheduler log copy).
+- parser/load diagnostics JSON and alert payloads (if emitted).
+- benchmark pack JSON/trend payload and latest pointer snapshot.
+- command invocation context (profile, run-date, feature/ruleset versions, retry stage if used).
+
 ## Validation Loop (Targeted)
 
 Run this targeted Sprint 7 validation set after automation/monitoring changes:
