@@ -3133,19 +3133,28 @@ def benchmark_pack_cmd(
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
     with session_scope(settings.database_url) as session:
-        payload = build_benchmark_pack(
-            session,
-            profile_name=profile_name,
-            run_date=resolved_run_date,
-            feature_version=feature_version,
-            ruleset_version=ruleset_version,
-            top_n=top_n,
-            artifact_base_dir=artifact_base_dir,
-            source_artifacts=source_artifacts,
-            benchmark_run_id=run_id,
-            baseline_path=baseline,
-            run_persisted=persist_artifacts or out is not None,
-        )
+        try:
+            payload = build_benchmark_pack(
+                session,
+                profile_name=profile_name,
+                run_date=resolved_run_date,
+                feature_version=feature_version,
+                ruleset_version=ruleset_version,
+                top_n=top_n,
+                artifact_base_dir=artifact_base_dir,
+                source_artifacts=source_artifacts,
+                benchmark_run_id=run_id,
+                baseline_path=baseline,
+                run_persisted=persist_artifacts or out is not None,
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(
+                str(exc),
+                param_hint=(
+                    "--profile-name/--feature-version/--ruleset-version/"
+                    "--run-id/--run-date/--top-n"
+                ),
+            ) from exc
 
     trend_payload = build_benchmark_trend_payload(payload)
     alert_payload = build_alert_payload_from_benchmark_pack(payload)
@@ -3168,9 +3177,12 @@ def benchmark_pack_cmd(
         trend_out.parent.mkdir(parents=True, exist_ok=True)
         trend_out.write_text(json.dumps(trend_payload, indent=2), encoding="utf-8")
 
-    if alert_out and alert_payload is not None:
+    if alert_out:
         alert_out.parent.mkdir(parents=True, exist_ok=True)
-        alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+        if alert_payload is not None:
+            alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+        elif alert_out.exists():
+            alert_out.unlink()
 
     run_payload = _as_dict(payload.get("run"))
     if _as_str(run_payload.get("status")) == "failed":

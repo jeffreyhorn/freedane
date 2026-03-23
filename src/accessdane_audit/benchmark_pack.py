@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -26,6 +28,7 @@ BENCHMARK_PACK_VERSION_TAG = "benchmark_pack_v1"
 _SAFE_ARTIFACT_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SAFE_SEGMENT_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SEGMENT_COMPONENT_CLEANUP_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_ROUTING_COMPONENT_CLEANUP_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 _RISK_BANDS: tuple[str, ...] = ("low", "medium", "high")
 _REVIEW_DISPOSITIONS: tuple[str, ...] = (
@@ -366,13 +369,20 @@ def build_alert_payload_from_benchmark_pack(
     if not source_alerts:
         return None
 
-    profile_name = _as_str(scope.get("profile_name")) or "unknown_profile"
-    feature_version = _as_str(scope.get("feature_version")) or "unknown_feature"
-    ruleset_version = _as_str(scope.get("ruleset_version")) or "unknown_ruleset"
+    profile_name = _sanitize_routing_component(
+        _as_str(scope.get("profile_name")) or "unknown_profile"
+    )
+    feature_version = _sanitize_routing_component(
+        _as_str(scope.get("feature_version")) or "unknown_feature"
+    )
+    ruleset_version = _sanitize_routing_component(
+        _as_str(scope.get("ruleset_version")) or "unknown_ruleset"
+    )
 
     alerts = []
     for source_alert in source_alerts:
-        code = _as_str(source_alert.get("code")) or "benchmark_signal"
+        original_code = _as_str(source_alert.get("code")) or "benchmark_signal"
+        code = _sanitize_alert_code(original_code)
         alerts.append(
             {
                 "alert_id": _as_str(source_alert.get("id")),
@@ -388,6 +398,7 @@ def build_alert_payload_from_benchmark_pack(
                     "scope": _as_str(source_alert.get("scope")),
                     "segment_id": _as_str(source_alert.get("segment_id")),
                     "signal_id": _as_str(source_alert.get("signal_id")),
+                    "original_code": original_code,
                 },
             }
         )
@@ -994,7 +1005,7 @@ def _build_alerts(
                 "id": f"{run_id}.alert.{index:03d}",
                 "level": severity,
                 "code": _as_str(signal.get("reason_code")) or "benchmark_signal",
-                "message": f"Benchmark regression on {metric_key}.",
+                "message": f"Benchmark change beyond tolerance on {metric_key}.",
                 "scope": scope,
                 "created_at": _iso_utc(finished_at),
                 "segment_id": segment_id,
@@ -1253,9 +1264,18 @@ def _validate_artifact_component(value: str, *, name: str) -> str:
 
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    json_payload = json.dumps(payload, indent=2)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(json_payload)
+        tmp_name = handle.name
+    os.replace(tmp_name, path)
 
 
 def _now_utc() -> datetime:
@@ -1337,3 +1357,19 @@ def _as_float_or_none(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _sanitize_alert_code(value: str) -> str:
+    sanitized = _ROUTING_COMPONENT_CLEANUP_RE.sub("_", value.replace(":", "_"))
+    sanitized = sanitized.strip("._-")
+    if sanitized == "":
+        return "benchmark_signal"
+    return sanitized
+
+
+def _sanitize_routing_component(value: str) -> str:
+    sanitized = _ROUTING_COMPONENT_CLEANUP_RE.sub("_", value.replace(":", "_"))
+    sanitized = sanitized.strip("._-")
+    if sanitized == "":
+        return "unknown"
+    return sanitized

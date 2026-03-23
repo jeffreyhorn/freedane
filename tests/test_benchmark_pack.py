@@ -165,6 +165,7 @@ def test_benchmark_pack_cli_persists_canonical_artifacts_and_trend(
     out_path = tmp_path / "benchmark_pack_out.json"
     trend_out_path = tmp_path / "benchmark_trend_out.json"
     alert_out_path = tmp_path / "benchmark_alert_out.json"
+    alert_out_path.write_text('{"stale": true}\n', encoding="utf-8")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -223,6 +224,79 @@ def test_benchmark_pack_cli_persists_canonical_artifacts_and_trend(
     assert benchmark_pack_path.exists()
     assert benchmark_trend_path.exists()
     assert latest_benchmark_pack_path.exists()
+
+
+def test_benchmark_alert_payload_sanitizes_reason_code_for_routing_key() -> None:
+    payload = {
+        "run": {
+            "status": "succeeded",
+            "finished_at": "2026-03-22T12:00:00Z",
+        },
+        "scope": {
+            "profile_name": "daily_refresh",
+            "feature_version": "feature_v1",
+            "ruleset_version": "scoring_rules_v1",
+        },
+        "comparison": {
+            "overall_severity": "warn",
+        },
+        "alerts": [
+            {
+                "id": "alert-1",
+                "level": "warn",
+                "code": (
+                    "segment_mix.beyond_tolerance."
+                    "segment.55097::res.risk_band_mix.high.rate_delta_abs"
+                ),
+                "message": (
+                    "Benchmark change beyond tolerance on "
+                    "segment.55097::res.risk_band_mix.high.rate_delta_abs."
+                ),
+                "scope": "segment",
+                "created_at": "2026-03-22T12:00:00Z",
+                "segment_id": "55097::res",
+                "signal_id": "signal-1",
+            }
+        ],
+    }
+
+    alert_payload = benchmark_pack.build_alert_payload_from_benchmark_pack(payload)
+
+    assert alert_payload is not None
+    alert = alert_payload["alerts"][0]
+    code = alert["reason_codes"][0]
+    assert ":" not in code
+    assert len(alert["routing_key"].split(":")) == 4
+    assert alert["routing_key"].split(":")[3] == code
+    assert alert["context"]["segment_id"] == "55097::res"
+
+
+def test_benchmark_pack_cli_invalid_profile_name_returns_bad_parameter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "benchmark_pack_invalid_profile.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "benchmark-pack",
+            "--profile-name",
+            "daily:refresh",
+            "--run-date",
+            "20260322",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid profile_name" in result.output
 
 
 def _seed_scores(session) -> None:
