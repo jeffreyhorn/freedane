@@ -566,6 +566,59 @@ def test_load_monitor_cli_skips_alert_out_for_error_payload(
     assert not alert_out.exists()
 
 
+def test_load_monitor_cli_removes_stale_alert_out_when_no_alert(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "load_monitor_cli_stale_alert.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    artifact_base_dir = tmp_path / "refresh_runs"
+    fixed_now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(load_monitoring, "_now_utc", lambda: fixed_now)
+
+    subject_path = _write_refresh_run(
+        artifact_base_dir=artifact_base_dir,
+        run_id="20260318_daily_refresh_feature_v1_scoring_rules_v1_cli_stale_alert",
+        run_finished_at=fixed_now - timedelta(minutes=1),
+        duration_seconds=90.0,
+        review_queue_rows=_queue_rows(high=1, medium=1, low=1, unreviewed=1),
+        reviewed_case_count=1,
+        threshold_candidate_count=0,
+        exclusion_candidate_count=0,
+    )
+
+    monkeypatch.setattr(cli, "build_alert_payload_from_diagnostics", lambda _p: None)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    diagnostics_out = tmp_path / "load_monitor_diagnostics_stale_alert.json"
+    alert_out = tmp_path / "load_monitor_alert_stale.json"
+    alert_out.write_text('{"stale": true}\n', encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "load-monitor",
+            "--artifact-base-dir",
+            str(artifact_base_dir),
+            "--subject-refresh-payload",
+            str(subject_path),
+            "--out",
+            str(diagnostics_out),
+            "--alert-out",
+            str(alert_out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert diagnostics_out.exists()
+    assert not alert_out.exists()
+
+
 def test_load_monitoring_resolves_subject_by_run_id_and_reports_not_found(
     tmp_path: Path, monkeypatch
 ) -> None:

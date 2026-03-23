@@ -2988,6 +2988,8 @@ def parser_drift_diff_cmd(
         if alert_payload is not None:
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+        elif alert_out.exists():
+            alert_out.unlink()
 
 
 @app.command("load-monitor")
@@ -3063,6 +3065,8 @@ def load_monitor_cmd(
         ):
             alert_out.parent.mkdir(parents=True, exist_ok=True)
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+        elif alert_out.exists():
+            alert_out.unlink()
 
     run_payload = payload.get("run", {})
     if isinstance(run_payload, dict) and run_payload.get("status") == "failed":

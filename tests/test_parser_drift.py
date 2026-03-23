@@ -343,6 +343,50 @@ def test_parser_drift_diff_cli_writes_diff_and_alert_payload(
     assert alert_payload["alert"]["severity"] == "error"
 
 
+def test_parser_drift_diff_cli_removes_stale_alert_out_when_no_alert(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "parser_drift_cli_diff_stale_alert.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    baseline_path = tmp_path / "baseline_snapshot_stale_alert.json"
+    current_path = tmp_path / "current_snapshot_stale_alert.json"
+    diff_path = tmp_path / "diff_stale_alert.json"
+    alert_path = tmp_path / "alert_stale.json"
+
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    baseline_payload = _make_snapshot(snapshot_id="baseline_stale")
+    current_payload = _make_snapshot(snapshot_id="current_stale")
+    baseline_path.write_text(json.dumps(baseline_payload, indent=2), encoding="utf-8")
+    current_path.write_text(json.dumps(current_payload, indent=2), encoding="utf-8")
+    alert_path.write_text('{"stale": true}\n', encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "parser-drift-diff",
+            "--baseline",
+            str(baseline_path),
+            "--current",
+            str(current_path),
+            "--out",
+            str(diff_path),
+            "--alert-out",
+            str(alert_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert diff_path.exists()
+    assert not alert_path.exists()
+
+
 def test_parser_drift_metric_key_sets_are_in_sync() -> None:
     assert set(SELECTOR_MISS_METRIC_KEYS) == {
         "selector_miss.assessment_fetch_rate",
