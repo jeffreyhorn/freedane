@@ -3149,6 +3149,11 @@ def benchmark_pack_cmd(
             f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
             param_hint="--run-date",
         )
+    if alert_out:
+        _ensure_output_file_path(
+            alert_out,
+            param_hint="--alert-out",
+        )
 
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
@@ -3206,7 +3211,10 @@ def benchmark_pack_cmd(
             alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
             wrote_alert_out = True
         elif alert_out.exists():
-            alert_out.unlink()
+            _remove_stale_output_file(
+                alert_out,
+                param_hint="--alert-out",
+            )
             wrote_alert_out = True
 
     if out is not None:

@@ -227,6 +227,48 @@ def test_benchmark_pack_cli_persists_canonical_artifacts_and_trend(
     assert latest_benchmark_pack_path.exists()
 
 
+def test_benchmark_pack_cli_rejects_non_file_alert_out_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "benchmark_pack_alert_dir.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    with session_scope(database_url) as session:
+        _seed_scores(session)
+
+    alert_out_dir = tmp_path / "benchmark_alert_out_dir"
+    alert_out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = tmp_path / "benchmark_pack_out.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "benchmark-pack",
+            "--run-date",
+            "20260322",
+            "--run-id",
+            "benchmark_run_alert_dir",
+            "--top-n",
+            "30",
+            "--out",
+            str(out_path),
+            "--alert-out",
+            str(alert_out_dir),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--alert-out must reference a file path" in result.output
+    assert not out_path.exists()
+
+
 def test_benchmark_alert_payload_sanitizes_reason_code_for_routing_key() -> None:
     payload = {
         "run": {
