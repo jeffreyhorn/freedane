@@ -46,8 +46,9 @@ Key refresh paths:
 
 Key benchmark paths:
 
-- run root: `data/benchmark_packs/<run_date>/<profile>/<run_id>/`
+- run root: `data/benchmark_packs/<run_date>/<profile>/<benchmark_run_id>/`
 - latest pointer: `data/benchmark_packs/latest/<profile>/<feature>/<ruleset>/latest_benchmark_pack.json`
+- note: `<benchmark_run_id>` is the benchmark-pack run id passed via `benchmark-pack --run-id` (it is not the refresh run id)
 
 ## Daily Operations Sequence
 
@@ -104,15 +105,15 @@ Canonical refresh and monitoring artifacts still remain under each run root and 
 ```bash
 .venv/bin/accessdane benchmark-pack \
   --run-date <YYYYMMDD> \
-  --run-id <run_id> \
+  --run-id <benchmark_run_id> \
   --profile-name daily_refresh \
   --feature-version feature_v1 \
   --ruleset-version scoring_rules_v1 \
   --top-n 100 \
   --artifact-base-dir data/benchmark_packs \
-  --out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<run_id>/benchmark_pack.json \
-  --trend-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<run_id>/benchmark_pack_trend.json \
-  --alert-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<run_id>/benchmark_pack_alert.json
+  --out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<benchmark_run_id>/benchmark_pack.json \
+  --trend-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<benchmark_run_id>/benchmark_pack_trend.json \
+  --alert-out data/benchmark_packs/<YYYYMMDD>/daily_refresh/<benchmark_run_id>/benchmark_pack_alert.json
 ```
 
 `--out`, `--trend-out`, and `--alert-out` are convenience copies for operator workflows.
