@@ -906,7 +906,7 @@ def _ignore_state_for_signal(
     if current_value is None and baseline_value is not None:
         return True, "missing_current_metric"
     if baseline_value is None and current_value is None:
-        return True, "missing_current_metric"
+        return True, "missing_baseline_and_current_metric"
 
     if metric_key.startswith("segment."):
         segment_id = _segment_id_from_metric_key(metric_key)

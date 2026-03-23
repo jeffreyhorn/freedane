@@ -469,6 +469,19 @@ def test_persist_benchmark_artifacts_skips_latest_updates_for_failed_payload(
     ).exists()
 
 
+def test_ignore_state_for_signal_distinguishes_missing_baseline_and_current() -> None:
+    ignored, reason = benchmark_pack._ignore_state_for_signal(
+        metric_key="coverage.review_rate",
+        baseline_value=None,
+        current_value=None,
+        sample_size=0,
+        current_segment_by_id={},
+    )
+
+    assert ignored is True
+    assert reason == "missing_baseline_and_current_metric"
+
+
 def _seed_scores(session) -> None:
     run = ScoringRun(
         run_type="score_fraud",
