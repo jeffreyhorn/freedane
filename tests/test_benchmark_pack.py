@@ -381,6 +381,7 @@ def test_benchmark_pack_cli_does_not_persist_canonical_artifacts_on_failed_run(
     assert result.exit_code == 1
     out_payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert out_payload["run"]["status"] == "failed"
+    assert out_payload["run"]["run_persisted"] is True
     assert not (
         artifact_base_dir
         / "20260322"
@@ -396,6 +397,38 @@ def test_benchmark_pack_cli_does_not_persist_canonical_artifacts_on_failed_run(
         / "unsupported_ruleset"
         / "latest_benchmark_pack.json"
     ).exists()
+
+
+def test_benchmark_pack_cli_failed_run_without_outputs_marks_not_persisted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "benchmark_pack_failed_cli_stdout.sqlite"
+    database_url = f"sqlite:///{db_path}"
+    init_db(database_url)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: SimpleNamespace(database_url=database_url),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "benchmark-pack",
+            "--run-date",
+            "20260322",
+            "--run-id",
+            "benchmark_run_failed_stdout",
+            "--ruleset-version",
+            "unsupported_ruleset",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["run_persisted"] is False
 
 
 def test_persist_benchmark_artifacts_skips_latest_updates_for_failed_payload(

@@ -3145,7 +3145,7 @@ def benchmark_pack_cmd(
                 source_artifacts=source_artifacts,
                 benchmark_run_id=run_id,
                 baseline_path=baseline,
-                run_persisted=persist_artifacts or out is not None,
+                run_persisted=False,
             )
         except ValueError as exc:
             raise typer.BadParameter(
@@ -3160,31 +3160,48 @@ def benchmark_pack_cmd(
     alert_payload = build_alert_payload_from_benchmark_pack(payload)
     run_payload = _as_dict(payload.get("run"))
     run_status = _as_str(run_payload.get("status"))
+    run_persisted = False
 
     if persist_artifacts and run_status == "succeeded":
+        run_payload["run_persisted"] = True
         persist_benchmark_artifacts(
             payload,
             artifact_base_dir=artifact_base_dir,
             trend_payload=trend_payload,
             alert_payload=alert_payload,
         )
+        run_persisted = True
+
+    wrote_trend_out = False
+    if trend_out:
+        trend_out.parent.mkdir(parents=True, exist_ok=True)
+        trend_out.write_text(json.dumps(trend_payload, indent=2), encoding="utf-8")
+        wrote_trend_out = True
+
+    wrote_alert_out = False
+
+    if alert_out:
+        alert_out.parent.mkdir(parents=True, exist_ok=True)
+        if alert_payload is not None:
+            alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
+            wrote_alert_out = True
+        elif alert_out.exists():
+            alert_out.unlink()
+            wrote_alert_out = True
+
+    if out is not None:
+        run_persisted = True
+    if wrote_trend_out:
+        run_persisted = True
+    if wrote_alert_out:
+        run_persisted = True
+    run_payload["run_persisted"] = run_persisted
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     else:
         typer.echo(json.dumps(payload, indent=2))
-
-    if trend_out:
-        trend_out.parent.mkdir(parents=True, exist_ok=True)
-        trend_out.write_text(json.dumps(trend_payload, indent=2), encoding="utf-8")
-
-    if alert_out:
-        alert_out.parent.mkdir(parents=True, exist_ok=True)
-        if alert_payload is not None:
-            alert_out.write_text(json.dumps(alert_payload, indent=2), encoding="utf-8")
-        elif alert_out.exists():
-            alert_out.unlink()
 
     if run_status == "failed":
         raise typer.Exit(code=1)
