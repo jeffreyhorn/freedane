@@ -48,7 +48,7 @@ Key benchmark paths:
 
 - run root: `data/benchmark_packs/<run_date>/<profile>/<benchmark_run_id>/`
 - latest pointer: `data/benchmark_packs/latest/<profile>/<feature>/<ruleset>/latest_benchmark_pack.json`
-- note: `<benchmark_run_id>` is the benchmark-pack run id passed via `benchmark-pack --run-id` (it is not the refresh run id)
+- note: `<benchmark_run_id>` is the exact value passed via `benchmark-pack --run-id` and names the benchmark run root directory (distinct from refresh `<run_id>`)
 
 ## Daily Operations Sequence
 

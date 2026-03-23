@@ -404,8 +404,14 @@ def test_parser_drift_diff_cli_rejects_non_file_alert_out_path(
         lambda: SimpleNamespace(database_url=database_url),
     )
 
-    baseline_payload = _make_snapshot(snapshot_id="baseline_alert_dir")
-    current_payload = _make_snapshot(snapshot_id="current_alert_dir")
+    baseline_payload = _make_snapshot(
+        snapshot_id="baseline_alert_dir",
+        selector_override={"tax_fetch_rate": 0.00},
+    )
+    current_payload = _make_snapshot(
+        snapshot_id="current_alert_dir",
+        selector_override={"tax_fetch_rate": 0.35},
+    )
     baseline_path.write_text(json.dumps(baseline_payload, indent=2), encoding="utf-8")
     current_path.write_text(json.dumps(current_payload, indent=2), encoding="utf-8")
     alert_path.mkdir(parents=True, exist_ok=True)
@@ -428,6 +434,7 @@ def test_parser_drift_diff_cli_rejects_non_file_alert_out_path(
 
     assert result.exit_code != 0
     assert "--alert-out must reference a file path" in result.output
+    assert not diff_path.exists()
 
 
 def test_parser_drift_metric_key_sets_are_in_sync() -> None:

@@ -2891,6 +2891,11 @@ def parser_drift_diff_cmd(
             f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
             param_hint="--run-date",
         )
+    if alert_out:
+        _ensure_output_file_path(
+            alert_out,
+            param_hint="--alert-out",
+        )
     source_artifacts = [str(path) for path in source_artifact]
     settings = load_settings()
     baseline_snapshot_id: Optional[str] = None
