@@ -3037,6 +3037,11 @@ def load_monitor_cmd(
         raise typer.BadParameter(
             "Specify at most one of --subject-run-id or --subject-refresh-payload."
         )
+    if alert_out:
+        _ensure_output_file_path(
+            alert_out,
+            param_hint="--alert-out",
+        )
 
     settings = load_settings()
     with session_scope(settings.database_url) as session:
@@ -3271,6 +3276,17 @@ def _remove_stale_output_file(path: Path, *, param_hint: str) -> None:
         ),
         param_hint=param_hint,
     )
+
+
+def _ensure_output_file_path(path: Path, *, param_hint: str) -> None:
+    if path.exists() and not path.is_file():
+        raise typer.BadParameter(
+            (
+                f"{param_hint} must reference a file path when it already exists; "
+                f"got non-file path: {path}"
+            ),
+            param_hint=param_hint,
+        )
 
 
 def _ensure_parcel(session, parcel_id: str) -> None:
