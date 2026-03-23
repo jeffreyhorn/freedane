@@ -70,7 +70,7 @@ scripts/run_scheduled_refresh.sh
 .venv/bin/accessdane parser-drift-snapshot \
   --profile-name daily_refresh \
   --run-date <YYYYMMDD> \
-  --out data/refresh_runs/<YYYYMMDD>/daily_refresh/parser_drift_snapshot.json
+  --out data/refresh_runs/<YYYYMMDD>/daily_refresh/<run_id>/parser_drift_snapshot.json
 ```
 
 3. Compare against baseline snapshot and emit alert payload if needed.
@@ -78,9 +78,9 @@ scripts/run_scheduled_refresh.sh
 ```bash
 .venv/bin/accessdane parser-drift-diff \
   --baseline <baseline_snapshot.json> \
-  --current data/refresh_runs/<YYYYMMDD>/daily_refresh/parser_drift_snapshot.json \
-  --out data/refresh_runs/<YYYYMMDD>/daily_refresh/parser_drift_diff.json \
-  --alert-out data/refresh_runs/<YYYYMMDD>/daily_refresh/parser_drift_alert.json
+  --current data/refresh_runs/<YYYYMMDD>/daily_refresh/<run_id>/parser_drift_snapshot.json \
+  --out data/refresh_runs/<YYYYMMDD>/daily_refresh/<run_id>/parser_drift_diff.json \
+  --alert-out data/refresh_runs/<YYYYMMDD>/daily_refresh/<run_id>/parser_drift_alert.json
 ```
 
 4. Run load diagnostics for the subject refresh run.
@@ -92,9 +92,12 @@ scripts/run_scheduled_refresh.sh
   --feature-version feature_v1 \
   --ruleset-version scoring_rules_v1 \
   --subject-run-id <run_id> \
-  --out data/refresh_runs/<YYYYMMDD>/daily_refresh/load_monitor.json \
-  --alert-out data/refresh_runs/<YYYYMMDD>/daily_refresh/load_monitor_alert.json
+  --out data/refresh_runs/<YYYYMMDD>/daily_refresh/<run_id>/load_monitor.json \
+  --alert-out data/refresh_runs/<YYYYMMDD>/daily_refresh/<run_id>/load_monitor_alert.json
 ```
+
+These `--out` and `--alert-out` files are convenience copies for operator workflows.
+Canonical refresh and monitoring artifacts still remain under each run root and latest pointers in `data/refresh_runs/`.
 
 5. Build recurring benchmark pack and trend artifact.
 
