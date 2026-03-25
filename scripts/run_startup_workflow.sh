@@ -134,6 +134,14 @@ fi
 if [[ -z "${RUN_ID}" ]]; then
   RUN_ID="startup_${RUN_DATE}_${PROFILE_NAME}_${FEATURE_VERSION}_${RULESET_VERSION}"
 fi
+if [[ "${RUN_ID}" == "." || "${RUN_ID}" == ".." || "${RUN_ID}" == *".."* || "${RUN_ID}" == *"/"* || "${RUN_ID}" == *"\\"* ]]; then
+  echo "Invalid --run-id '${RUN_ID}'; must be a safe single path component." >&2
+  exit 2
+fi
+if ! [[ "${RUN_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "Invalid --run-id '${RUN_ID}'; only letters, digits, '.', '_' and '-' are allowed." >&2
+  exit 2
+fi
 
 if [[ ! -x "${ACCESSDANE_BIN}" ]]; then
   echo "accessdane executable not found or not executable at '${ACCESSDANE_BIN}'." >&2
@@ -355,6 +363,7 @@ run_step \
   "${LOAD_MONITOR_OUT}" \
   "${LOAD_MONITOR_ALERT_OUT}" \
   "${BENCHMARK_OUT}" \
+  "${BENCHMARK_TREND_OUT}" \
   "${BENCHMARK_ALERT_OUT}" \
   "${PARSER_SNAPSHOT_OUT}" <<'PY'
 import json
@@ -388,6 +397,7 @@ from pathlib import Path
     load_monitor_out,
     load_monitor_alert_out,
     benchmark_out,
+    benchmark_trend_out,
     benchmark_alert_out,
     parser_snapshot_out,
 ) = sys.argv[1:]
@@ -670,6 +680,7 @@ summary_payload = {
         "load_monitor": load_monitor_out,
         "load_monitor_alert": load_monitor_alert_out,
         "benchmark_pack": benchmark_out,
+        "benchmark_trend": benchmark_trend_out,
         "benchmark_alert": benchmark_alert_out,
         "go_no_go": go_no_go_path,
     },
