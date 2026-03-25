@@ -180,6 +180,19 @@ def _validate_required_metadata(manifest: dict[str, Any]) -> None:
         raise PromotionError(
             "activation_state must be 'not_started' before activation."
         )
+    if manifest["activation_started_at_utc"] is not None:
+        raise PromotionError(
+            "activation_started_at_utc must be null while activation_state is "
+            "'not_started'."
+        )
+    if manifest["activated_at_utc"] is not None:
+        raise PromotionError(
+            "activated_at_utc must be null while activation_state is 'not_started'."
+        )
+    if manifest["activated_by"] is not None:
+        raise PromotionError(
+            "activated_by must be null while activation_state is 'not_started'."
+        )
     requested_by = str(manifest["requested_by"]).strip()
     if not requested_by:
         raise PromotionError("requested_by is required.")
@@ -203,34 +216,36 @@ def _validate_required_metadata(manifest: dict[str, Any]) -> None:
         raise PromotionError("evidence_artifacts must be a non-empty list.")
 
     target_run_id = manifest["target_run_id"]
-    if target_run_id is not None and not str(target_run_id).strip():
-        raise PromotionError("target_run_id must be null or a non-empty string.")
+    if target_run_id is not None:
+        target_run_id = str(target_run_id).strip()
+        if not target_run_id:
+            raise PromotionError("target_run_id must be null or a non-empty string.")
+        manifest["target_run_id"] = target_run_id
 
     freeze_override_note = manifest["freeze_override_note"]
-    if freeze_override_note is not None and not str(freeze_override_note).strip():
-        raise PromotionError("freeze_override_note must be null or a non-empty string.")
+    if freeze_override_note is not None:
+        freeze_override_note = str(freeze_override_note).strip()
+        if not freeze_override_note:
+            raise PromotionError(
+                "freeze_override_note must be null or a non-empty string."
+            )
+        manifest["freeze_override_note"] = freeze_override_note
 
     break_glass_used = manifest["break_glass_used"]
     if not isinstance(break_glass_used, bool):
         raise PromotionError("break_glass_used must be a boolean.")
     break_glass_incident_id = manifest["break_glass_incident_id"]
-    if break_glass_incident_id is not None and not str(break_glass_incident_id).strip():
-        raise PromotionError(
-            "break_glass_incident_id must be null or a non-empty string."
-        )
+    if break_glass_incident_id is not None:
+        break_glass_incident_id = str(break_glass_incident_id).strip()
+        if not break_glass_incident_id:
+            raise PromotionError(
+                "break_glass_incident_id must be null or a non-empty string."
+            )
+        manifest["break_glass_incident_id"] = break_glass_incident_id
     if break_glass_used and break_glass_incident_id is None:
         raise PromotionError(
             "break_glass_incident_id is required when break_glass_used is true."
         )
-
-    for nullable_timestamp in ("activation_started_at_utc", "activated_at_utc"):
-        value = manifest[nullable_timestamp]
-        if value is not None:
-            _parse_iso_utc(str(value), field_name=nullable_timestamp)
-
-    activated_by = manifest["activated_by"]
-    if activated_by is not None and not str(activated_by).strip():
-        raise PromotionError("activated_by must be null or a non-empty string.")
 
     rollback_reference = manifest["rollback_reference"]
     if rollback_reference is not None and not isinstance(rollback_reference, dict):
@@ -321,6 +336,10 @@ def _enforce_freeze_policy(
             raise PromotionError(
                 "advisory freeze requires freeze_override_note in manifest."
             )
+    if state != "hard" and manifest.get("break_glass_used") is True:
+        raise PromotionError(
+            "break_glass_used may be true only when the freeze file state is hard."
+        )
     if state != "hard":
         return
 
