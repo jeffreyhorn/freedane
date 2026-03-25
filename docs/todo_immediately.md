@@ -7,6 +7,34 @@ Important framing:
 - Treat all model output as **triage signal**, not proof of fraud.
 - Use dossier evidence + review workflow before any enforcement conclusion.
 
+## 0. One-Command Startup Workflow (Recommended)
+
+Run the scripted bootstrap for migrations, optional ingest files, analysis outputs, and go/no-go gating:
+
+```bash
+scripts/run_startup_workflow.sh \
+  --run-date <YYYYMMDD> \
+  --run-id startup_<YYYYMMDD>_daily_refresh_feature_v1_scoring_rules_v1 \
+  --retr-file <retr_export.csv> \
+  --permits-file <permits.csv> \
+  --appeals-file <appeals.csv>
+```
+
+Output location (deterministic by run date + run id):
+
+- `data/startup_runs/<YYYYMMDD>/<run_id>/outputs/startup_go_no_go.json`
+- `data/startup_runs/<YYYYMMDD>/<run_id>/outputs/startup_run_summary.json`
+
+Behavior:
+
+- Exit code `0` + decision `GO`: analyst intake may proceed.
+- Exit code `1` + decision `NO_GO`: analyst intake stays blocked until reasons are resolved.
+
+Notes:
+
+- `--retr-file`, `--permits-file`, and `--appeals-file` are optional; when omitted those ingest steps are skipped.
+- If you need manual control, follow sections 1-6 below.
+
 ## 1. Environment And Database Migrations
 
 Run once per environment (or after pulling schema changes):
