@@ -194,7 +194,7 @@ Required promotion manifest fields:
 - `approval_state`
 - `approvals[]`
 - `activation_state`
-- `activation_started_at_utc` (nullable until `activation_state` becomes `in_progress`)
+- `activation_started_at_utc` (nullable until activation starts)
 - `activated_by` (nullable until `activation_state` reaches terminal state)
 - `activated_at_utc` (nullable until `activation_state` reaches terminal state)
 - `rollback_reference` (previous active selectors in target)
@@ -239,9 +239,13 @@ Required transition rules:
 - activation may start only from `approval_state = approved`
 - `activation_state` may transition:
   - `not_started -> in_progress`
+  - `not_started -> succeeded` (single-step synchronous activation path)
   - `in_progress -> succeeded|failed|aborted`
   - `succeeded -> rolled_back`
 - when transitioning to `in_progress`, `activation_started_at_utc` must be set and immutable for that activation attempt.
+- when transitioning directly from `not_started -> succeeded`, `activation_started_at_utc`,
+  `activated_by`, and `activated_at_utc` must all be set in the same persisted activation
+  record.
 - when transitioning from `in_progress` to a terminal state (`succeeded|failed|aborted`), `activated_by` and `activated_at_utc` must be set.
 - manifest edits after any recorded approval force:
   - `approval_state = invalidated`
