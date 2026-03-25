@@ -107,8 +107,50 @@ def test_run_scheduled_refresh_daily_profile_executes_deterministic_command_orde
     assert latest_run.exists()
     latest_payload = json.loads(latest_run.read_text(encoding="utf-8"))
     assert latest_payload["run_id"] == payload["run"]["run_id"]
-    assert latest_payload["root_path"] == payload["artifacts"]["root_path"]
+    assert latest_payload["root_path"] == str(root_path.resolve())
     assert not (artifact_base_dir / "locks" / "daily_refresh.lock").exists()
+
+
+def test_run_scheduled_refresh_latest_pointer_uses_absolute_root_path_for_relative_base(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    artifact_base_dir = Path("data/refresh_runs")
+    run_id = "20260316_daily_refresh_feature_v1_scoring_rules_v1_010131"
+
+    def _executor(_: list[str]) -> int:
+        return 0
+
+    run_scheduled_refresh(
+        profile_name="daily_refresh",
+        run_date="20260316",
+        run_id=run_id,
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        accessdane_bin="accessdane",
+        command_executor=_executor,
+    )
+
+    latest_run = (
+        artifact_base_dir
+        / "latest"
+        / "daily_refresh"
+        / "feature_v1"
+        / "scoring_rules_v1"
+        / "latest_run.json"
+    )
+    latest_payload = json.loads(latest_run.read_text(encoding="utf-8"))
+    expected_root = (
+        tmp_path / artifact_base_dir / "20260316" / "daily_refresh" / run_id
+    ).resolve()
+    assert latest_payload["root_path"] == str(expected_root)
+    assert Path(latest_payload["root_path"]).is_absolute()
 
 
 def test_run_scheduled_refresh_blocks_downstream_stages_after_failure(

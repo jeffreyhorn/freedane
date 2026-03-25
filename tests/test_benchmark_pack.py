@@ -25,6 +25,7 @@ def test_build_benchmark_pack_stable_comparison_and_segment_rollups(
 ) -> None:
     db_path = tmp_path / "benchmark_pack.sqlite"
     database_url = f"sqlite:///{db_path}"
+    artifact_base_dir = tmp_path / "benchmark_packs"
     init_db(database_url)
     fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(benchmark_pack, "_now_utc", lambda: fixed_now)
@@ -41,6 +42,7 @@ def test_build_benchmark_pack_stable_comparison_and_segment_rollups(
             ruleset_version="scoring_rules_v1",
             top_n=30,
             benchmark_run_id="benchmark_run_a",
+            artifact_base_dir=artifact_base_dir,
         )
 
     assert payload_a["run"]["status"] == "succeeded"
@@ -71,6 +73,7 @@ def test_build_benchmark_pack_stable_comparison_and_segment_rollups(
             top_n=30,
             benchmark_run_id="benchmark_run_b",
             baseline_path=baseline_path,
+            artifact_base_dir=artifact_base_dir,
         )
 
     assert payload_b["run"]["status"] == "succeeded"
@@ -105,6 +108,7 @@ def test_build_benchmark_pack_marks_baseline_version_mismatch_non_comparable(
 ) -> None:
     db_path = tmp_path / "benchmark_pack_version_mismatch.sqlite"
     database_url = f"sqlite:///{db_path}"
+    artifact_base_dir = tmp_path / "benchmark_packs"
     init_db(database_url)
     fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(benchmark_pack, "_now_utc", lambda: fixed_now)
@@ -119,6 +123,7 @@ def test_build_benchmark_pack_marks_baseline_version_mismatch_non_comparable(
             ruleset_version="scoring_rules_v1",
             top_n=30,
             benchmark_run_id="benchmark_run_base",
+            artifact_base_dir=artifact_base_dir,
         )
 
     payload["run"]["version_tag"] = "benchmark_pack_v0"
@@ -135,6 +140,7 @@ def test_build_benchmark_pack_marks_baseline_version_mismatch_non_comparable(
             top_n=30,
             benchmark_run_id="benchmark_run_current",
             baseline_path=baseline_path,
+            artifact_base_dir=artifact_base_dir,
         )
 
     assert current_payload["comparison"]["comparable"] is False
@@ -347,6 +353,7 @@ def test_build_benchmark_pack_marks_failed_baseline_non_comparable(
 ) -> None:
     db_path = tmp_path / "benchmark_pack_failed_baseline.sqlite"
     database_url = f"sqlite:///{db_path}"
+    artifact_base_dir = tmp_path / "benchmark_packs"
     init_db(database_url)
     fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(benchmark_pack, "_now_utc", lambda: fixed_now)
@@ -361,6 +368,7 @@ def test_build_benchmark_pack_marks_failed_baseline_non_comparable(
             ruleset_version="scoring_rules_v1",
             top_n=30,
             benchmark_run_id="benchmark_run_baseline",
+            artifact_base_dir=artifact_base_dir,
         )
 
     baseline_payload["run"]["status"] = "failed"
@@ -377,6 +385,7 @@ def test_build_benchmark_pack_marks_failed_baseline_non_comparable(
             top_n=30,
             benchmark_run_id="benchmark_run_current",
             baseline_path=baseline_path,
+            artifact_base_dir=artifact_base_dir,
         )
 
     assert current_payload["run"]["status"] == "succeeded"
@@ -478,6 +487,7 @@ def test_persist_benchmark_artifacts_skips_latest_updates_for_failed_payload(
 ) -> None:
     db_path = tmp_path / "benchmark_pack_persist_gating.sqlite"
     database_url = f"sqlite:///{db_path}"
+    artifact_base_dir = tmp_path / "benchmark_packs"
     init_db(database_url)
     fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(benchmark_pack, "_now_utc", lambda: fixed_now)
@@ -492,9 +502,8 @@ def test_persist_benchmark_artifacts_skips_latest_updates_for_failed_payload(
             ruleset_version="scoring_rules_v1",
             top_n=30,
             benchmark_run_id="benchmark_run_success",
+            artifact_base_dir=artifact_base_dir,
         )
-
-    artifact_base_dir = tmp_path / "benchmark_packs"
     success_trend = benchmark_pack.build_benchmark_trend_payload(success_payload)
     benchmark_pack.persist_benchmark_artifacts(
         success_payload,

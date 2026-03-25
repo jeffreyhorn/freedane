@@ -1099,6 +1099,7 @@ def _release_profile_lock(lock_path: Path) -> None:
 def _persist_run_artifacts(payload: RefreshPayload) -> None:
     root_path = Path(payload["artifacts"]["root_path"])
     latest_pointer_path = Path(payload["artifacts"]["latest_pointer_path"])
+    latest_root_path = str(root_path.resolve())
     health_dir = root_path / "health_summary"
     health_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1143,7 +1144,7 @@ def _persist_run_artifacts(payload: RefreshPayload) -> None:
             "run_id": payload["run"]["run_id"],
             "profile_name": payload["run"]["profile_name"],
             "status": payload["run"]["status"],
-            "root_path": str(root_path),
+            "root_path": latest_root_path,
             "finished_at": payload["run"]["finished_at"],
         },
     )
