@@ -1,6 +1,7 @@
 # Sprint 8 Day 1 Baseline
 
 Date: 2026-03-24
+Note: `benchmark-pack` was run with `--run-date 20260325` to align with the scheduled refresh window, so the logical run date differs by one day from the wall-clock date above.
 
 Branch: `sprint8/day-01-baseline`
 
@@ -84,7 +85,8 @@ Section 6 go/no-go scaffolding:
 - no unresolved `critical` monitor/diagnostic alerts without owner assignment: no
   - `load-monitor` produced `critical` with `load_monitoring_failed`
   - error path shows duplicated artifact-base prefix:
-    - `/Users/jeff/experiments/freedane/data/refresh_runs/data/refresh_runs/.../refresh_run_payload.json`
+    - `/path/to/artifacts/data/refresh_runs/data/refresh_runs/.../refresh_run_payload.json`
+  - Note: this `load-monitor` failure and duplicated artifact-base prefix were observed prior to the change that persists an absolute `root_path` in `latest_run.json`; the Day 1 baseline has not yet been re-run with that fix applied.
 
 Current decision from scaffolding: **NO-GO** for analyst intake until load-monitor baseline is corrected and criticals are either resolved or explicitly owned.
 
