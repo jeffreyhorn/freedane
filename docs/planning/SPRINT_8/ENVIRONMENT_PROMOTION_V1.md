@@ -244,8 +244,7 @@ Required transition rules:
   - `succeeded -> rolled_back`
 - when transitioning to `in_progress`, `activation_started_at_utc` must be set and immutable for that activation attempt.
 - when transitioning directly from `not_started -> succeeded`, `activation_started_at_utc`,
-  `activated_by`, and `activated_at_utc` must all be set in the same persisted activation
-  record.
+  `activated_by`, and `activated_at_utc` must all be set in the same persisted activation record.
 - when transitioning from `in_progress` to a terminal state (`succeeded|failed|aborted`), `activated_by` and `activated_at_utc` must be set.
 - manifest edits after any recorded approval force:
   - `approval_state = invalidated`

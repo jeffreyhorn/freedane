@@ -79,7 +79,12 @@ def activate_promotion_manifest(
     _validate_source_target_matrix(manifest=manifest, profile=profile)
     _validate_required_metadata(manifest)
 
-    activation_dt = activation_started_at or datetime.now(timezone.utc)
+    if activation_started_at is None:
+        activation_dt = datetime.now(timezone.utc)
+    elif activation_started_at.tzinfo is None:
+        raise PromotionError("activation_started_at must include timezone information.")
+    else:
+        activation_dt = activation_started_at.astimezone(timezone.utc)
     activation_started_at_utc = _iso_utc(activation_dt)
     _enforce_freeze_policy(
         manifest=manifest,
@@ -154,13 +159,15 @@ def _validate_manifest_required_fields(manifest: dict[str, Any]) -> None:
 def _validate_source_target_matrix(
     *, manifest: dict[str, Any], profile: EnvironmentProfile
 ) -> None:
-    source_environment = str(manifest["source_environment"])
-    target_environment = str(manifest["target_environment"])
+    source_environment = str(manifest["source_environment"]).strip().lower()
+    target_environment = str(manifest["target_environment"]).strip().lower()
+    manifest["source_environment"] = source_environment
+    manifest["target_environment"] = target_environment
     if (source_environment, target_environment) not in ALLOWED_PROMOTION_PATHS:
         raise PromotionError(
             "Unsupported promotion path. Allowed paths are dev->stage and stage->prod."
         )
-    if target_environment != profile.environment_name:
+    if target_environment != profile.environment_name.lower():
         raise PromotionError(
             "target_environment must match ACCESSDANE_ENVIRONMENT for activation."
         )

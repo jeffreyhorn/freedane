@@ -1663,7 +1663,7 @@ def promotion_activate_cmd(
             profile=profile,
             activated_by=activated_by,
         )
-    except (PromotionError, json.JSONDecodeError) as exc:
+    except PromotionError as exc:
         typer.echo(f"promotion activation blocked: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 

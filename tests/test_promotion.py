@@ -349,6 +349,64 @@ def test_manifest_selector_versions_are_normalized_before_persist(
     assert active_selectors["ruleset_version"] == "scoring_rules_v1"
 
 
+def test_promotion_rejects_naive_activation_started_at(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment="dev", target_environment="stage")
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    with pytest.raises(
+        PromotionError, match="activation_started_at must include timezone information"
+    ):
+        activate_promotion_manifest(
+            manifest_path=manifest_path,
+            profile=profile,
+            activated_by="operator@example.test",
+            activation_started_at=datetime(2026, 3, 25, 2, 0),
+        )
+
+
+def test_promotion_normalizes_source_target_environment_names(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment=" Dev ", target_environment=" Stage ")
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    result = activate_promotion_manifest(
+        manifest_path=manifest_path,
+        profile=profile,
+        activated_by="operator@example.test",
+        activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+    )
+    persisted_manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert persisted_manifest["source_environment"] == "dev"
+    assert persisted_manifest["target_environment"] == "stage"
+
+
 def test_hard_freeze_break_glass_requires_override_approvers(tmp_path: Path) -> None:
     env = _profile_env(tmp_path, environment_name="stage")
     freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
