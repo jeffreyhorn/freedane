@@ -78,6 +78,9 @@ def activate_promotion_manifest(
     _validate_manifest_required_fields(manifest)
     _validate_source_target_matrix(manifest=manifest, profile=profile)
     _validate_required_metadata(manifest)
+    activated_by_normalized = str(activated_by).strip()
+    if not activated_by_normalized:
+        raise PromotionError("activated_by must be a non-empty string.")
 
     if activation_started_at is None:
         activation_dt = datetime.now(timezone.utc)
@@ -106,7 +109,7 @@ def activate_promotion_manifest(
 
     manifest["activation_started_at_utc"] = activation_started_at_utc
     manifest["activation_state"] = "succeeded"
-    manifest["activated_by"] = activated_by
+    manifest["activated_by"] = activated_by_normalized
     manifest["activated_at_utc"] = activation_started_at_utc
     manifest["rollback_reference"] = rollback_reference
     if not manifest.get("target_run_id"):
@@ -125,7 +128,7 @@ def activate_promotion_manifest(
             "target_environment": manifest["target_environment"],
             "activation_started_at_utc": activation_started_at_utc,
             "activation_state": manifest["activation_state"],
-            "activated_by": activated_by,
+            "activated_by": activated_by_normalized,
             "rollback_reference": rollback_reference,
         },
     )
