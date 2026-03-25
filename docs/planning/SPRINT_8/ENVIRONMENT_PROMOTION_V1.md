@@ -60,9 +60,15 @@ Required boundary rule:
 
 Each environment profile must expose this key set.
 
+Profile representation contract:
+
+- v1 profiles are key/value configuration maps that use env-var style uppercase keys.
+- canonical environment identity key is `ACCESSDANE_ENVIRONMENT`.
+- legacy `environment_name` may be accepted as a read-only compatibility alias, but writers must emit `ACCESSDANE_ENVIRONMENT`.
+
 | Key | Required | Secret | Description |
 | --- | --- | --- | --- |
-| `environment_name` | yes | no | One of `dev`, `stage`, `prod`. |
+| `ACCESSDANE_ENVIRONMENT` | yes | no | One of `dev`, `stage`, `prod`. |
 | `DATABASE_URL` | yes | yes | Environment-specific database connection URL. |
 | `ACCESSDANE_BASE_URL` | yes | no | Source endpoint root. |
 | `ACCESSDANE_RAW_DIR` | yes | no | Environment-local root for raw scraper/html capture artifacts. |
@@ -86,7 +92,7 @@ Profile validation rules:
 
 - path-valued keys must resolve inside approved environment roots.
 - `ACCESSDANE_RAW_DIR`, `ACCESSDANE_ARTIFACT_BASE_DIR`, `ACCESSDANE_REFRESH_LOG_DIR`, and `ACCESSDANE_BENCHMARK_BASE_DIR` must be environment-local and must not point at another environment's root.
-- `environment_name` must match profile file/selector identity.
+- `ACCESSDANE_ENVIRONMENT` must match profile file/selector identity.
 - prod profile must not allow fallback defaults that point to `dev`/`stage` paths.
 
 ## Secrets Boundary Rules
@@ -127,6 +133,12 @@ Hard requirements:
 - no shared mutable run roots across environments.
 - latest pointers (`latest/...`) are environment-local.
 - lock files (`locks/<profile>.lock`) are environment-local.
+
+Compatibility note with Sprint 7 docs:
+
+- Sprint 7 operations docs reference shared roots (`data/refresh_runs`, `data/benchmark_packs`) for a single-environment setup.
+- Sprint 8 supersedes that layout for multi-environment operation: canonical mutable roots are environment-isolated as defined above.
+- if legacy shared roots are used temporarily, they are valid only for one environment at a time and must not be shared across `dev`, `stage`, and `prod`.
 
 ## Run-Id Naming Contract
 
@@ -183,8 +195,8 @@ Required promotion manifest fields:
 - `approvals[]`
 - `activation_state`
 - `activation_started_at_utc` (nullable until `activation_state` becomes `in_progress`)
-- `activated_by`
-- `activated_at_utc`
+- `activated_by` (nullable until `activation_state` reaches terminal state)
+- `activated_at_utc` (nullable until `activation_state` reaches terminal state)
 - `rollback_reference` (previous active selectors in target)
 
 `approvals[]` record contract:
@@ -192,7 +204,11 @@ Required promotion manifest fields:
 - each approval record must include:
   - `approved_by`
   - `approved_at_utc`
-  - `approver_role` (for example `engineering_owner`, `analyst_owner`)
+  - `approver_role`
+- allowed `approver_role` enum values:
+  - `engineering_owner`
+  - `analyst_owner`
+  - `release_operator`
 - approval records are append-only; edits require manifest invalidation and re-approval.
 
 ## Manifest State Enums And Transitions
@@ -223,9 +239,13 @@ Required transition rules:
   - `in_progress -> succeeded|failed|aborted`
   - `succeeded -> rolled_back`
 - when transitioning to `in_progress`, `activation_started_at_utc` must be set and immutable for that activation attempt.
+- when transitioning from `in_progress` to a terminal state (`succeeded|failed|aborted`), `activated_by` and `activated_at_utc` must be set.
 - manifest edits after any recorded approval force:
   - `approval_state = invalidated`
   - `activation_state` remains unchanged until explicit re-approval and activation action
+- `approval_state` expiry semantics:
+  - `approved -> expired` when activation has not started and required approvals are no longer fully unexpired at evaluation time.
+  - `expired -> approved` only after fresh approvals satisfy role/count requirements.
 
 ## Promotion Workflow v1
 
@@ -251,8 +271,8 @@ Approval policy matrix:
 
 | Promotion | Required approvals | Additional rules |
 | --- | --- | --- |
-| `dev -> stage` | 1 | approver cannot equal requester |
-| `stage -> prod` | 2 | one data/analyst owner + one engineering owner; neither can equal requester |
+| `dev -> stage` | 1 | approver role must be one of `engineering_owner`, `analyst_owner`, `release_operator`; approver cannot equal requester |
+| `stage -> prod` | 2 | one `analyst_owner` + one `engineering_owner`; neither can equal requester |
 
 Required approval behavior:
 
