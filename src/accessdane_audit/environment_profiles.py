@@ -29,6 +29,8 @@ REQUIRED_PROFILE_KEYS: tuple[str, ...] = (
     "PROMOTION_APPROVER_GROUP",
     "PROMOTION_FREEZE_FILE",
 )
+REFRESH_TOP_MIN = 1
+REFRESH_TOP_MAX = 1000
 
 
 class EnvironmentProfileError(ValueError):
@@ -126,6 +128,11 @@ def load_environment_profile(
         key="ACCESSDANE_BACKOFF",
     )
     refresh_top = _parse_int_key(values=values, key="ACCESSDANE_REFRESH_TOP")
+    if not REFRESH_TOP_MIN <= refresh_top <= REFRESH_TOP_MAX:
+        raise EnvironmentProfileError(
+            "ACCESSDANE_REFRESH_TOP must be between "
+            f"{REFRESH_TOP_MIN} and {REFRESH_TOP_MAX} (inclusive)."
+        )
 
     return EnvironmentProfile(
         environment_name=resolved_env,
@@ -152,12 +159,14 @@ def load_environment_profile(
 
 def validate_artifact_path_override(
     *, profile: EnvironmentProfile, artifact_base_dir: Path
-) -> None:
+) -> Path:
+    resolved_path = artifact_base_dir.expanduser().resolve()
     _validate_environment_local_path(
         key="--artifact-base-dir",
-        value=artifact_base_dir.expanduser().resolve(),
+        value=resolved_path,
         environment_name=profile.environment_name,
     )
+    return resolved_path
 
 
 def _resolve_path(value: str) -> Path:

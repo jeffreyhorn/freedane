@@ -320,3 +320,64 @@ def test_stage_prod_approval_role_whitespace_is_normalized(tmp_path: Path) -> No
         activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
     )
     assert result.promotion_id == "promotion_001"
+
+
+def test_promotion_rejects_future_approval_timestamps(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="prod")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment="stage", target_environment="prod")
+    manifest["approvals"] = [
+        {
+            "approved_by": "engineer@example.test",
+            "approved_at_utc": "2026-03-25T03:00:00Z",
+            "approver_role": "engineering_owner",
+        },
+        {
+            "approved_by": "analyst@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "analyst_owner",
+        },
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    with pytest.raises(
+        PromotionError, match="must not be later than activation_started_at"
+    ):
+        activate_promotion_manifest(
+            manifest_path=manifest_path,
+            profile=profile,
+            activated_by="operator@example.test",
+            activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_promotion_surfaces_invalid_freeze_file_json(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text("{not-json", encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment="dev", target_environment="stage")
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    with pytest.raises(PromotionError, match="Invalid JSON in"):
+        activate_promotion_manifest(
+            manifest_path=manifest_path,
+            profile=profile,
+            activated_by="operator@example.test",
+            activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+        )

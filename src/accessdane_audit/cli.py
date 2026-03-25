@@ -1205,7 +1205,7 @@ def _run_refresh_runner_command(
 
     if environment_profile is not None:
         try:
-            validate_artifact_path_override(
+            artifact_base_dir = validate_artifact_path_override(
                 profile=environment_profile,
                 artifact_base_dir=artifact_base_dir,
             )

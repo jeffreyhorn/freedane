@@ -247,6 +247,10 @@ def _validate_approvals_for_activation(
         if approved_by == requester:
             raise PromotionError("no self-approval is allowed.")
         approved_at = _parse_iso_utc(approved_at_raw, field_name="approved_at_utc")
+        if approved_at > activation_started_at:
+            raise PromotionError(
+                "approved_at_utc must not be later than activation_started_at."
+            )
         if approved_at + timedelta(hours=24) <= activation_started_at:
             continue
         valid_approvals.append(
@@ -354,7 +358,10 @@ def _enforce_freeze_policy(
 def _read_json_if_exists(path: Path) -> Optional[dict[str, Any]]:
     if not path.is_file():
         return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PromotionError(f"Invalid JSON in {path}.") from exc
     if not isinstance(payload, dict):
         raise PromotionError(f"Expected object payload in {path}.")
     return payload

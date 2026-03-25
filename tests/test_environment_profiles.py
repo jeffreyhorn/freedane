@@ -99,3 +99,13 @@ def test_load_environment_profile_rejects_invalid_numeric_fields(
 
     with pytest.raises(EnvironmentProfileError, match="ACCESSDANE_TIMEOUT"):
         load_environment_profile(environ=env)
+
+
+def test_load_environment_profile_rejects_out_of_range_refresh_top(
+    tmp_path: Path,
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    env["ACCESSDANE_REFRESH_TOP"] = "0"
+
+    with pytest.raises(EnvironmentProfileError, match="between 1 and 1000"):
+        load_environment_profile(environ=env)
