@@ -198,6 +198,9 @@ Required promotion manifest fields:
 - `activated_by` (nullable until `activation_state` reaches terminal state)
 - `activated_at_utc` (nullable until `activation_state` reaches terminal state)
 - `rollback_reference` (previous active selectors in target)
+- `freeze_override_note` (nullable; required when promotion proceeds during `advisory` freeze)
+- `break_glass_used` (boolean; must be `true` only for `hard` freeze break-glass activation)
+- `break_glass_incident_id` (nullable; required when `break_glass_used = true`)
 
 `approvals[]` record contract:
 
@@ -306,7 +309,7 @@ Rollback behavior:
 Freeze levels:
 
 - `advisory`:
-  - promotion allowed with explicit override note.
+  - promotion allowed only with explicit override note recorded in manifest field `freeze_override_note`.
 - `hard`:
   - all promotions to frozen environment blocked.
   - only break-glass activation allowed.
@@ -322,7 +325,7 @@ Freeze file contract (`PROMOTION_FREEZE_FILE`):
 Break-glass rules for `hard` freeze:
 
 - requires two explicit override approvers with distinct `approved_by` identities.
-- requires incident id.
+- requires incident id recorded as `break_glass_incident_id` in the promotion manifest.
 - must emit `break_glass_used = true` in promotion manifest.
 
 ## Audit Artifacts
