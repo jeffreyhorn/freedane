@@ -19,6 +19,7 @@ RETR_FILE="${ACCESSDANE_RETR_FILE:-}"
 PERMITS_FILE="${ACCESSDANE_PERMITS_FILE:-}"
 APPEALS_FILE="${ACCESSDANE_APPEALS_FILE:-}"
 RUN_ID="${ACCESSDANE_STARTUP_RUN_ID:-}"
+FORCE_OVERWRITE="${ACCESSDANE_STARTUP_FORCE:-false}"
 
 usage() {
   cat <<'EOF'
@@ -43,6 +44,7 @@ Options:
   --appeals-file PATH                 Optional appeals CSV input
   --accessdane-bin PATH               accessdane executable (default: .venv/bin/accessdane)
   --python-bin PATH                   Python executable for summary generation
+  --force                             Overwrite existing startup run directory if present
   -h, --help                          Show this help
 EOF
 }
@@ -109,6 +111,10 @@ while [[ $# -gt 0 ]]; do
       PYTHON_BIN="$2"
       shift 2
       ;;
+    --force)
+      FORCE_OVERWRITE="true"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -131,6 +137,11 @@ if ! [[ "${TOP_N}" =~ ^[0-9]+$ ]] || [[ "${TOP_N}" -lt 1 ]]; then
   exit 2
 fi
 
+if [[ "${FORCE_OVERWRITE}" != "true" && "${FORCE_OVERWRITE}" != "false" ]]; then
+  echo "Invalid ACCESSDANE_STARTUP_FORCE '${FORCE_OVERWRITE}'; expected 'true' or 'false'." >&2
+  exit 2
+fi
+
 if [[ -z "${RUN_ID}" ]]; then
   RUN_ID="startup_${RUN_DATE}_${PROFILE_NAME}_${FEATURE_VERSION}_${RULESET_VERSION}"
 fi
@@ -143,18 +154,45 @@ if ! [[ "${RUN_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 2
 fi
 
-if [[ ! -x "${ACCESSDANE_BIN}" ]]; then
-  echo "accessdane executable not found or not executable at '${ACCESSDANE_BIN}'." >&2
-  exit 2
-fi
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-  else
-    echo "Python executable not found at '${PYTHON_BIN}' and python3 is unavailable." >&2
+if [[ "${ACCESSDANE_BIN}" == */* ]]; then
+  if [[ ! -x "${ACCESSDANE_BIN}" ]]; then
+    echo "accessdane executable not found or not executable at '${ACCESSDANE_BIN}'." >&2
     exit 2
   fi
+else
+  resolved_bin="$(command -v "${ACCESSDANE_BIN}" 2>/dev/null || true)"
+  if [[ -n "${resolved_bin}" && -x "${resolved_bin}" ]]; then
+    ACCESSDANE_BIN="${resolved_bin}"
+  else
+    echo "accessdane executable not found in PATH for '${ACCESSDANE_BIN}'." >&2
+    exit 2
+  fi
+fi
+
+resolved_python=""
+if [[ "${PYTHON_BIN}" == */* ]]; then
+  if [[ -x "${PYTHON_BIN}" ]]; then
+    resolved_python="${PYTHON_BIN}"
+  fi
+else
+  resolved_python="$(command -v "${PYTHON_BIN}" 2>/dev/null || true)"
+fi
+if [[ -z "${resolved_python}" ]]; then
+  resolved_python="$(command -v python3 2>/dev/null || true)"
+fi
+if [[ -z "${resolved_python}" || ! -x "${resolved_python}" ]]; then
+  echo "Python executable not found at '${PYTHON_BIN}' and python3 is unavailable." >&2
+  exit 2
+fi
+PYTHON_BIN="${resolved_python}"
+
+if ! "${PYTHON_BIN}" - <<'EOF'
+import sys
+sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)
+EOF
+then
+  echo "Python interpreter '${PYTHON_BIN}' is too old; Python 3.10 or newer is required." >&2
+  exit 2
 fi
 
 for optional_file in "${RETR_FILE}" "${PERMITS_FILE}" "${APPEALS_FILE}"; do
@@ -168,6 +206,15 @@ RUN_DIR="${STARTUP_ARTIFACT_ROOT}/${RUN_DATE}/${RUN_ID}"
 OUTPUT_DIR="${RUN_DIR}/outputs"
 LOG_DIR="${RUN_DIR}/logs"
 STEP_RESULTS_FILE="${RUN_DIR}/step_results.tsv"
+
+if [[ -e "${RUN_DIR}" ]]; then
+  if [[ "${FORCE_OVERWRITE}" == "true" ]]; then
+    rm -rf "${RUN_DIR}"
+  else
+    echo "Startup run directory already exists: '${RUN_DIR}'. Re-run with --force to overwrite." >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 : > "${STEP_RESULTS_FILE}"
