@@ -202,8 +202,11 @@ def _validate_required_metadata(manifest: dict[str, Any]) -> None:
         field_name="requested_at_utc",
     )
     manifest["requested_at_utc"] = _iso_utc(requested_at)
-    if not str(manifest["source_run_id"]).strip():
-        raise PromotionError("source_run_id is required.")
+    source_run_id = _validate_safe_path_component(
+        str(manifest["source_run_id"]),
+        field_name="source_run_id",
+    )
+    manifest["source_run_id"] = source_run_id
     feature_version = str(manifest["feature_version"]).strip()
     ruleset_version = str(manifest["ruleset_version"]).strip()
     if not feature_version or not ruleset_version:
@@ -220,7 +223,10 @@ def _validate_required_metadata(manifest: dict[str, Any]) -> None:
         target_run_id = str(target_run_id).strip()
         if not target_run_id:
             raise PromotionError("target_run_id must be null or a non-empty string.")
-        manifest["target_run_id"] = target_run_id
+        manifest["target_run_id"] = _validate_safe_path_component(
+            target_run_id,
+            field_name="target_run_id",
+        )
 
     freeze_override_note = manifest["freeze_override_note"]
     if freeze_override_note is not None:
@@ -451,18 +457,25 @@ def _iso_utc(value: datetime) -> str:
 
 
 def _validate_promotion_id(value: str) -> str:
-    if not value:
-        raise PromotionError("promotion_id is required.")
-    promotion_path = Path(value)
-    if promotion_path.is_absolute():
-        raise PromotionError("promotion_id must not be an absolute path.")
-    if value in {".", ".."} or ".." in value:
-        raise PromotionError("promotion_id must not contain path traversal segments.")
-    if "/" in value or "\\" in value:
-        raise PromotionError("promotion_id must be a single filesystem path component.")
-    if not SAFE_PATH_SEGMENT_RE.fullmatch(value):
+    return _validate_safe_path_component(value, field_name="promotion_id")
+
+
+def _validate_safe_path_component(value: str, *, field_name: str) -> str:
+    component = value.strip()
+    if not component:
+        raise PromotionError(f"{field_name} is required.")
+    component_path = Path(component)
+    if component_path.is_absolute():
+        raise PromotionError(f"{field_name} must not be an absolute path.")
+    if component in {".", ".."} or ".." in component:
+        raise PromotionError(f"{field_name} must not contain path traversal segments.")
+    if "/" in component or "\\" in component:
         raise PromotionError(
-            "promotion_id contains unsupported path characters; only letters, "
+            f"{field_name} must be a single filesystem path component."
+        )
+    if not SAFE_PATH_SEGMENT_RE.fullmatch(component):
+        raise PromotionError(
+            f"{field_name} contains unsupported path characters; only letters, "
             "digits, '.', '_' and '-' are allowed."
         )
-    return value
+    return component
