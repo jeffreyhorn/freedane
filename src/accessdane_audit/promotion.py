@@ -66,7 +66,10 @@ def activate_promotion_manifest(
     activated_by: str,
     activation_started_at: Optional[datetime] = None,
 ) -> PromotionActivationResult:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PromotionError(f"Invalid JSON in {manifest_path}.") from exc
     if not isinstance(manifest, dict):
         raise PromotionError(
             "Promotion manifest must be a JSON object, but got "
@@ -170,12 +173,23 @@ def _validate_required_metadata(manifest: dict[str, Any]) -> None:
         raise PromotionError(
             "activation_state must be 'not_started' before activation."
         )
+    requested_by = str(manifest["requested_by"]).strip()
+    if not requested_by:
+        raise PromotionError("requested_by is required.")
+    manifest["requested_by"] = requested_by
+    requested_at = _parse_iso_utc(
+        str(manifest["requested_at_utc"]),
+        field_name="requested_at_utc",
+    )
+    manifest["requested_at_utc"] = _iso_utc(requested_at)
     if not str(manifest["source_run_id"]).strip():
         raise PromotionError("source_run_id is required.")
     feature_version = str(manifest["feature_version"]).strip()
     ruleset_version = str(manifest["ruleset_version"]).strip()
     if not feature_version or not ruleset_version:
         raise PromotionError("feature_version and ruleset_version are required.")
+    manifest["feature_version"] = feature_version
+    manifest["ruleset_version"] = ruleset_version
 
     evidence = manifest["evidence_artifacts"]
     if not isinstance(evidence, list) or not evidence:

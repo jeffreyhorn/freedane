@@ -91,6 +91,28 @@ def test_load_environment_profile_rejects_cross_environment_freeze_file(
         load_environment_profile(environ=env)
 
 
+def test_load_environment_profile_rejects_nested_environment_segments(
+    tmp_path: Path,
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    env["ACCESSDANE_RAW_DIR"] = str(
+        tmp_path
+        / "data"
+        / "environments"
+        / "stage"
+        / "raw"
+        / "environments"
+        / "prod"
+        / "raw"
+    )
+
+    with pytest.raises(
+        EnvironmentProfileError,
+        match="must not contain multiple 'environments' segments",
+    ):
+        load_environment_profile(environ=env)
+
+
 def test_load_environment_profile_rejects_invalid_numeric_fields(
     tmp_path: Path,
 ) -> None:

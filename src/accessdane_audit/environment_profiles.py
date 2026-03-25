@@ -183,12 +183,23 @@ def _validate_environment_local_path(
             raise EnvironmentProfileError(
                 f"{key} path must include the environment segment after 'environments'."
             )
+        expected_environment = environment_name.lower()
         declared = parts[environments_index + 1]
-        if declared != environment_name:
+        if declared != expected_environment:
             raise EnvironmentProfileError(
                 f"{key} path points to environment '{declared}', expected "
                 f"'{environment_name}'."
             )
+        suffix_parts = parts[environments_index + 2 :]
+        for segment in suffix_parts:
+            if segment == "environments":
+                raise EnvironmentProfileError(
+                    f"{key} path must not contain multiple 'environments' segments."
+                )
+            if segment in ENVIRONMENTS and segment != expected_environment:
+                raise EnvironmentProfileError(
+                    f"{key} path contains foreign environment segment " f"'{segment}'."
+                )
         return
 
     # If a path does not include '/environments/<env>/', reject obvious
