@@ -175,12 +175,20 @@ Required promotion manifest fields:
 - `ruleset_version`
 - `evidence_artifacts[]`
 - `approval_state`
-- `approved_by[]`
-- `approved_at_utc[]`
+- `approvals[]`
 - `activation_state`
+- `activation_started_at_utc` (nullable until `activation_state` becomes `in_progress`)
 - `activated_by`
 - `activated_at_utc`
 - `rollback_reference` (previous active selectors in target)
+
+`approvals[]` record contract:
+
+- each approval record must include:
+  - `approved_by`
+  - `approved_at_utc`
+  - `approver_role` (for example `engineering_owner`, `analyst_owner`)
+- approval records are append-only; edits require manifest invalidation and re-approval.
 
 ## Manifest State Enums And Transitions
 
@@ -209,6 +217,7 @@ Required transition rules:
   - `not_started -> in_progress`
   - `in_progress -> succeeded|failed|aborted`
   - `succeeded -> rolled_back`
+- when transitioning to `in_progress`, `activation_started_at_utc` must be set and immutable for that activation attempt.
 - manifest edits after any recorded approval force:
   - `approval_state = invalidated`
   - `activation_state` remains unchanged until explicit re-approval and activation action
