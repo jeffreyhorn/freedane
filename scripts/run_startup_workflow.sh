@@ -49,65 +49,90 @@ Options:
 EOF
 }
 
+require_option_value() {
+  local option_name="$1"
+  local argc="$2"
+  if [[ "${argc}" -lt 2 ]]; then
+    echo "Missing value for ${option_name}" >&2
+    usage >&2
+    exit 2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-date)
+      require_option_value "$1" "$#"
       RUN_DATE="$2"
       shift 2
       ;;
     --run-id)
+      require_option_value "$1" "$#"
       RUN_ID="$2"
       shift 2
       ;;
     --profile-name)
+      require_option_value "$1" "$#"
       PROFILE_NAME="$2"
       shift 2
       ;;
     --feature-version)
+      require_option_value "$1" "$#"
       FEATURE_VERSION="$2"
       shift 2
       ;;
     --ruleset-version)
+      require_option_value "$1" "$#"
       RULESET_VERSION="$2"
       shift 2
       ;;
     --sales-ratio-base)
+      require_option_value "$1" "$#"
       SALES_RATIO_BASE="$2"
       shift 2
       ;;
     --top)
+      require_option_value "$1" "$#"
       TOP_N="$2"
       shift 2
       ;;
     --startup-artifact-root)
+      require_option_value "$1" "$#"
       STARTUP_ARTIFACT_ROOT="$2"
       shift 2
       ;;
     --refresh-artifact-base-dir)
+      require_option_value "$1" "$#"
       REFRESH_ARTIFACT_BASE_DIR="$2"
       shift 2
       ;;
     --benchmark-artifact-base-dir)
+      require_option_value "$1" "$#"
       BENCHMARK_ARTIFACT_BASE_DIR="$2"
       shift 2
       ;;
     --retr-file)
+      require_option_value "$1" "$#"
       RETR_FILE="$2"
       shift 2
       ;;
     --permits-file)
+      require_option_value "$1" "$#"
       PERMITS_FILE="$2"
       shift 2
       ;;
     --appeals-file)
+      require_option_value "$1" "$#"
       APPEALS_FILE="$2"
       shift 2
       ;;
     --accessdane-bin)
+      require_option_value "$1" "$#"
       ACCESSDANE_BIN="$2"
       shift 2
       ;;
     --python-bin)
+      require_option_value "$1" "$#"
       PYTHON_BIN="$2"
       shift 2
       ;;
@@ -139,6 +164,11 @@ fi
 
 if [[ "${FORCE_OVERWRITE}" != "true" && "${FORCE_OVERWRITE}" != "false" ]]; then
   echo "Invalid ACCESSDANE_STARTUP_FORCE '${FORCE_OVERWRITE}'; expected 'true' or 'false'." >&2
+  exit 2
+fi
+
+if [[ -z "${STARTUP_ARTIFACT_ROOT}" || "${STARTUP_ARTIFACT_ROOT}" == "/" ]]; then
+  echo "Invalid --startup-artifact-root '${STARTUP_ARTIFACT_ROOT}'; must be non-empty and not '/'." >&2
   exit 2
 fi
 
