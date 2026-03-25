@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AccessDane Investigation Report v1</title>
+  <style>
+    :root {
+      --bg: #f4efe3;
+      --ink: #18222d;
+      --muted: #5a6878;
+      --panel: #ffffff;
+      --line: #d2c7b4;
+      --accent: #8f2f26;
+      --accent-soft: #fae1de;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #efe4cf 0%, var(--bg) 40%, #efe7d7 100%);
+      color: var(--ink);
+      font-family: "Source Serif 4", Georgia, serif;
+      line-height: 1.45;
+    }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2rem 1rem 4rem;
+    }
+    h1, h2, h3, h4 {
+      margin: 0 0 0.75rem;
+      line-height: 1.2;
+    }
+    h1 { font-size: 2rem; }
+    h2 {
+      font-size: 1.35rem;
+      margin-top: 2rem;
+    }
+    section, article {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      margin: 1rem 0;
+      box-shadow: 0 8px 20px rgba(24, 34, 45, 0.06);
+    }
+    .notice {
+      border-left: 5px solid var(--accent);
+      background: var(--accent-soft);
+    }
+    .meta { color: var(--muted); font-size: 0.95rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.75rem;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      padding: 0.5rem;
+      vertical-align: top;
+    }
+    th {
+      font-size: 0.85rem;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    a { color: #0e4f7a; }
+    code {
+      background: #f2f3f5;
+      border-radius: 4px;
+      padding: 0.08rem 0.28rem;
+    }
+    .pill {
+      display: inline-block;
+      background: #eef4ff;
+      border: 1px solid #c7d6f0;
+      border-radius: 999px;
+      padding: 0.08rem 0.55rem;
+      margin-right: 0.45rem;
+      font-size: 0.85rem;
+    }
+    @media (max-width: 760px) {
+      th, td { font-size: 0.92rem; }
+      h1 { font-size: 1.6rem; }
+    }
+  </style>
+</head>
+<body id="top">
+  <main>
+    <h1>AccessDane Investigation Report</h1>
+    <p class="meta">Version: investigation_report_v1</p>
+    <section class="notice"><p>Risk signals are triage guidance, not proof. Analyst review and case evidence determine findings.</p></section>
+    <section id="queue-summary">
+      <h2>Top Review Queue</h2>
+      <p class="meta">
+        Candidates: 58684 |
+        Filtered: 58637 |
+        Skipped: 0 |
+        Returned: 10
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th><th>Parcel</th><th>Year</th><th>Score</th><th>Risk</th><th>Review status</th><th>Disposition</th><th>Primary reason</th><th>Dossier</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>061002408541</td>
+            <td>2025</td>
+            <td>91.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255547">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>061002410651</td>
+            <td>2025</td>
+            <td>91.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255631">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>061002401001</td>
+            <td>2024</td>
+            <td>91.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255246">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>061002403431</td>
+            <td>2025</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255343">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>061002403541</td>
+            <td>2025</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255347">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>061002404431</td>
+            <td>2025</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255383">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>061002400101</td>
+            <td>2024</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255210">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td>061002400321</td>
+            <td>2024</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255218">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td>061002402101</td>
+            <td>2024</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255290">Open dossier</a></td>
+          </tr>
+          <tr>
+            <td>10</td>
+            <td>061002401101</td>
+            <td>2023</td>
+            <td>83.00</td>
+            <td>high</td>
+            <td>unreviewed</td>
+            <td>(none)</td>
+            <td>ratio__assessment_to_sale_below_floor</td>
+            <td><a href="#dossier-score-255249">Open dossier</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="reason-summary">
+      <h2>Reason Code Summary</h2>
+      <p>
+        <span class="pill">high: 10</span>
+      </p>
+      <table>
+        <thead>
+          <tr><th>Reason code</th><th>Count</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>ratio__assessment_to_sale_below_floor</td><td>10</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="dossier-drill-in">
+      <h2>Parcel Dossier Drill-In</h2>
+      <article id="dossier-score-255547">
+        <h3>Rank 1: Parcel 061002408541 (2025)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002408541 --year 2025</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: JONATHAN LESER
+JENNA LESER |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 4
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>2</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255631">
+        <h3>Rank 2: Parcel 061002410651 (2025)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002410651 --year 2025</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: STEVEN W HOLMES
+JENNIFER D HOLMES |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 4
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>2</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255246">
+        <h3>Rank 3: Parcel 061002401001 (2024)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002401001 --year 2024</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: PARK VALENZA REV LIVING TR |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 3
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255343">
+        <h3>Rank 4: Parcel 061002403431 (2025)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002403431 --year 2025</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: NASIM DANAEI
+MORTEZA SEIFI |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 4
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>2</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255347">
+        <h3>Rank 5: Parcel 061002403541 (2025)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002403541 --year 2025</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: CHRISTOPHER MATZ
+JESSICA MATZ |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 4
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>2</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255383">
+        <h3>Rank 6: Parcel 061002404431 (2025)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002404431 --year 2025</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner:  |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 4
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>2</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255210">
+        <h3>Rank 7: Parcel 061002400101 (2024)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002400101 --year 2024</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: EMILY D HAMPTON
+MICHAEL HAMPTON |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 3
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255218">
+        <h3>Rank 8: Parcel 061002400321 (2024)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002400321 --year 2024</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: PATRICK H HOTTMAN
+KARI L WAGNER |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 3
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255290">
+        <h3>Rank 9: Parcel 061002402101 (2024)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002402101 --year 2024</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: MATTHEW GRAY
+SARA GRAY |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 3
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+      <article id="dossier-score-255249">
+        <h3>Rank 10: Parcel 061002401101 (2023)</h3>
+        <p>
+          <a href="#top">Back to queue</a> | <code>accessdane parcel-dossier --id 061002401101 --year 2023</code>
+        </p>
+        <p class="meta">
+          Municipality: VILLAGE OF MCFARLAND |
+          Owner: SARAH EGAN
+KURT W EGAN |
+          TRS: 
+        </p>
+        <p>
+          Timeline events: 3
+        </p>
+        <table>
+          <thead>
+            <tr><th>Section</th><th>Status</th><th>Rows</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>assessment_history</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>matched_sales</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>peer_context</td><td>populated</td><td>1</td><td></td></tr>
+            <tr><td>permit_events</td><td>empty</td><td>0</td><td>no_permits_for_scope</td></tr>
+            <tr><td>appeal_events</td><td>empty</td><td>0</td><td>no_appeals_for_scope</td></tr>
+            <tr><td>reason_code_evidence</td><td>populated</td><td>1</td><td></td></tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
