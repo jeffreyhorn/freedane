@@ -212,6 +212,45 @@ def test_promotion_activate_cli_blocks_unsafe_stage_to_prod_manifest(
     assert "stage->prod requires two valid approvals" in result.output
 
 
+def test_promotion_activate_cli_rejects_directory_out_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    monkeypatch.delenv("environment_name", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_manifest(source_environment="dev", target_environment="stage")
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+    out_dir = tmp_path / "activation_output_dir"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-activate",
+            "--manifest-file",
+            str(manifest_path),
+            "--out",
+            str(out_dir),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid value for '--out'" in result.output
+
+
 def test_promotion_manifest_must_be_json_object(tmp_path: Path) -> None:
     env = _profile_env(tmp_path, environment_name="stage")
     freeze_path = Path(env["PROMOTION_FREEZE_FILE"])

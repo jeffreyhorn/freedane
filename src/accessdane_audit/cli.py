@@ -1640,6 +1640,7 @@ def promotion_activate_cmd(
     out: Optional[Path] = typer.Option(
         None,
         "--out",
+        dir_okay=False,
         help="Optional output JSON path for activation summary.",
     ),
 ) -> None:
