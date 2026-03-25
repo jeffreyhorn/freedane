@@ -65,6 +65,7 @@ Each environment profile must expose this key set.
 | `environment_name` | yes | no | One of `dev`, `stage`, `prod`. |
 | `DATABASE_URL` | yes | yes | Environment-specific database connection URL. |
 | `ACCESSDANE_BASE_URL` | yes | no | Source endpoint root. |
+| `ACCESSDANE_RAW_DIR` | yes | no | Environment-local root for raw scraper/html capture artifacts. |
 | `ACCESSDANE_USER_AGENT` | yes | no | Traceable user-agent string. |
 | `ACCESSDANE_TIMEOUT` | yes | no | HTTP timeout setting for fetch commands. |
 | `ACCESSDANE_RETRIES` | yes | no | Retry count for fetch operations. |
@@ -84,6 +85,7 @@ Each environment profile must expose this key set.
 Profile validation rules:
 
 - path-valued keys must resolve inside approved environment roots.
+- `ACCESSDANE_RAW_DIR`, `ACCESSDANE_ARTIFACT_BASE_DIR`, `ACCESSDANE_REFRESH_LOG_DIR`, and `ACCESSDANE_BENCHMARK_BASE_DIR` must be environment-local and must not point at another environment's root.
 - `environment_name` must match profile file/selector identity.
 - prod profile must not allow fallback defaults that point to `dev`/`stage` paths.
 
@@ -108,12 +110,15 @@ Required controls:
 Recommended environment-isolated roots:
 
 - `dev`:
+  - raw: `data/environments/dev/raw`
   - refresh: `data/environments/dev/refresh_runs`
   - benchmark: `data/environments/dev/benchmark_packs`
 - `stage`:
+  - raw: `data/environments/stage/raw`
   - refresh: `data/environments/stage/refresh_runs`
   - benchmark: `data/environments/stage/benchmark_packs`
 - `prod`:
+  - raw: `data/environments/prod/raw`
   - refresh: `data/environments/prod/refresh_runs`
   - benchmark: `data/environments/prod/benchmark_packs`
 
