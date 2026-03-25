@@ -272,7 +272,7 @@ Approval policy matrix:
 | Promotion | Required approvals | Additional rules |
 | --- | --- | --- |
 | `dev -> stage` | 1 | approver role must be one of `engineering_owner`, `analyst_owner`, `release_operator`; approver cannot equal requester |
-| `stage -> prod` | 2 | one `analyst_owner` + one `engineering_owner`; neither can equal requester |
+| `stage -> prod` | 2 | one `analyst_owner` + one `engineering_owner`; approvers must be two distinct `approved_by` identities; neither can equal requester |
 
 Required approval behavior:
 
@@ -281,6 +281,7 @@ Required approval behavior:
 - each approval expires 24h after its own `approved_at_utc`.
 - activation is allowed only when, at `activation_started_at_utc`, all required approvals are present and unexpired.
 - manifest edits after any approval invalidate all recorded approvals; fresh approvals must be collected against the edited manifest.
+- for `stage -> prod`, required approvals must come from two distinct `approved_by` identities.
 
 ## Rollback Semantics
 
@@ -320,7 +321,7 @@ Freeze file contract (`PROMOTION_FREEZE_FILE`):
 
 Break-glass rules for `hard` freeze:
 
-- requires two explicit override approvers.
+- requires two explicit override approvers with distinct `approved_by` identities.
 - requires incident id.
 - must emit `break_glass_used = true` in promotion manifest.
 
@@ -328,7 +329,7 @@ Break-glass rules for `hard` freeze:
 
 Recommended environment-local promotion registry root:
 
-- `data/environments/<environment_name>/promotion_registry/`
+- `data/environments/<environment>/promotion_registry/`
 
 Required saved artifacts per promotion:
 
