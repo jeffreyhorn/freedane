@@ -13,7 +13,7 @@ This plan is based on:
 - [docs/todo_immediately.md](../../todo_immediately.md), especially startup migrations/loads/analysis/reporting requirements before analyst triage
 - [docs/daily_analyst_runbook.md](../../daily_analyst_runbook.md), especially daily analyst workflow expectations
 
-Total planned effort: `80` hours.
+Total planned effort: `79` hours.
 
 ## Planning Constraints
 
@@ -390,6 +390,6 @@ PR closeout:
 - Days 1-4: `23h` on baseline, environment promotion foundations, and immediate startup automation
 - Days 5-8: `23h` on resilient scheduler and alert transport implementation
 - Days 9-12: `21h` on observability and data quality/replay controls
-- Days 13-14: `13h` on governance enforcement and analyst-readiness acceptance
+- Days 13-14: `12h` on governance enforcement and analyst-readiness acceptance
 
-This preserves the `80h` Sprint 8 target while structuring delivery as 14 PR-driven daily increments from `main`, ending with analyst-ready operations.
+This preserves the `79h` Sprint 8 target while structuring delivery as 14 PR-driven daily increments from `main`, ending with analyst-ready operations.

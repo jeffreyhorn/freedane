@@ -82,6 +82,8 @@ Use recurring patterns in reviewed cases to decide acquisition priorities.
 
 ## 5.1 Data-Gap Decision Matrix
 
+Use standard 3-column markdown table formatting (single leading/trailing `|` per row):
+
 | Observed pattern in dossiers/reviews | Likely missing input | Action |
 | --- | --- | --- |
 | Large assessment change with no matching permit context | permits detail depth/coverage | Request updated permits export (scoped by year/parcel class). |
