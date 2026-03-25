@@ -188,6 +188,7 @@ def test_promotion_activate_cli_blocks_unsafe_stage_to_prod_manifest(
     freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
     freeze_path.parent.mkdir(parents=True, exist_ok=True)
     freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    monkeypatch.delenv("environment_name", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
@@ -231,6 +232,37 @@ def test_promotion_manifest_must_be_json_object(tmp_path: Path) -> None:
         )
 
 
+def test_promotion_rejects_existing_promotion_id_directory(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    existing_root = profile.promotion_registry_root / "promotion_001"
+    existing_root.mkdir(parents=True, exist_ok=True)
+    (existing_root / "manifest.json").write_text("{}", encoding="utf-8")
+
+    manifest = _base_manifest(source_environment="dev", target_environment="stage")
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    with pytest.raises(PromotionError, match="already exists in promotion registry"):
+        activate_promotion_manifest(
+            manifest_path=manifest_path,
+            profile=profile,
+            activated_by="operator@example.test",
+            activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+        )
+
+
 def test_promotion_surfaces_invalid_manifest_json(tmp_path: Path) -> None:
     env = _profile_env(tmp_path, environment_name="stage")
     freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
@@ -249,6 +281,42 @@ def test_promotion_surfaces_invalid_manifest_json(tmp_path: Path) -> None:
             activated_by="operator@example.test",
             activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
         )
+
+
+def test_manifest_approvals_are_normalized_before_persist(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment="dev", target_environment="stage")
+    manifest["approvals"] = [
+        {
+            "approved_by": " owner@example.test ",
+            "approved_at_utc": "2026-03-25T01:00:00+00:00",
+            "approver_role": " release_operator ",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    result = activate_promotion_manifest(
+        manifest_path=manifest_path,
+        profile=profile,
+        activated_by="operator@example.test",
+        activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+    )
+    persisted_manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert persisted_manifest["approvals"] == [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    approval_log = json.loads(result.approval_log_path.read_text(encoding="utf-8"))
+    assert approval_log["approvals"] == persisted_manifest["approvals"]
 
 
 def test_manifest_requested_by_must_be_non_empty(tmp_path: Path) -> None:

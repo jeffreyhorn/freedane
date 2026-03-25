@@ -102,7 +102,11 @@ def activate_promotion_manifest(
     promotion_id = _validate_promotion_id(str(manifest["promotion_id"]).strip())
     registry_root = profile.promotion_registry_root
     promotion_root = registry_root / promotion_id
-    promotion_root.mkdir(parents=True, exist_ok=True)
+    if promotion_root.exists():
+        raise PromotionError(
+            f"promotion_id '{promotion_id}' already exists in promotion registry."
+        )
+    promotion_root.mkdir(parents=True, exist_ok=False)
 
     active_selector_path = registry_root / "active_selectors.json"
     rollback_reference = _read_json_if_exists(active_selector_path)
@@ -271,6 +275,7 @@ def _validate_approvals_for_activation(
     target_environment = str(manifest["target_environment"])
     requester = str(manifest["requested_by"])
 
+    normalized_approvals: list[dict[str, str]] = []
     valid_approvals: list[dict[str, str]] = []
     for approval in approvals:
         if not isinstance(approval, dict):
@@ -296,15 +301,17 @@ def _validate_approvals_for_activation(
             raise PromotionError(
                 "approved_at_utc must not be later than activation_started_at."
             )
+        normalized_approval = {
+            "approved_by": approved_by,
+            "approved_at_utc": _iso_utc(approved_at),
+            "approver_role": approver_role,
+        }
+        normalized_approvals.append(normalized_approval)
         if approved_at + timedelta(hours=24) <= activation_started_at:
             continue
-        valid_approvals.append(
-            {
-                "approved_by": approved_by,
-                "approved_at_utc": approved_at_raw,
-                "approver_role": approver_role,
-            }
-        )
+        valid_approvals.append(normalized_approval)
+
+    manifest["approvals"] = normalized_approvals
 
     if (source_environment, target_environment) == ("dev", "stage"):
         if len(valid_approvals) < 1:

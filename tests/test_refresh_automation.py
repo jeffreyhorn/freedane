@@ -992,6 +992,7 @@ def test_refresh_runner_cli_uses_environment_profile_defaults(
         return payload
 
     monkeypatch.setattr(cli, "run_scheduled_refresh", _fake_run_scheduled_refresh)
+    monkeypatch.delenv("environment_name", raising=False)
     monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
@@ -1081,6 +1082,7 @@ def test_refresh_runner_cli_explicit_options_override_environment_profile_defaul
         return payload
 
     monkeypatch.setattr(cli, "run_scheduled_refresh", _fake_run_scheduled_refresh)
+    monkeypatch.delenv("environment_name", raising=False)
     monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
@@ -1181,6 +1183,7 @@ def test_refresh_runner_cli_normalizes_relative_artifact_override(
         return payload
 
     monkeypatch.setattr(cli, "run_scheduled_refresh", _fake_run_scheduled_refresh)
+    monkeypatch.delenv("environment_name", raising=False)
     monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
