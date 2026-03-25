@@ -61,6 +61,10 @@ def _base_manifest(
         "approval_state": "approved",
         "approvals": [],
         "activation_state": "not_started",
+        "activation_started_at_utc": None,
+        "activated_by": None,
+        "activated_at_utc": None,
+        "rollback_reference": None,
         "freeze_override_note": None,
         "break_glass_used": False,
         "break_glass_incident_id": None,
@@ -254,3 +258,65 @@ def test_hard_freeze_break_glass_requires_override_approvers(tmp_path: Path) -> 
             activated_by="operator@example.test",
             activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
         )
+
+
+def test_manifest_missing_required_contract_field_fails(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment="dev", target_environment="stage")
+    manifest.pop("rollback_reference")
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    with pytest.raises(
+        PromotionError, match="missing required fields: rollback_reference"
+    ):
+        activate_promotion_manifest(
+            manifest_path=manifest_path,
+            profile=profile,
+            activated_by="operator@example.test",
+            activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_stage_prod_approval_role_whitespace_is_normalized(tmp_path: Path) -> None:
+    env = _profile_env(tmp_path, environment_name="prod")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    profile = load_environment_profile(environ=env)
+    assert profile is not None
+
+    manifest = _base_manifest(source_environment="stage", target_environment="prod")
+    manifest["approvals"] = [
+        {
+            "approved_by": "analyst@example.test",
+            "approved_at_utc": "2026-03-25T01:00:00Z",
+            "approver_role": "analyst_owner",
+        },
+        {
+            "approved_by": "engineer@example.test",
+            "approved_at_utc": "2026-03-25T01:10:00Z",
+            "approver_role": "engineering_owner ",
+        },
+    ]
+    manifest_path = _write_manifest(tmp_path, manifest)
+
+    result = activate_promotion_manifest(
+        manifest_path=manifest_path,
+        profile=profile,
+        activated_by="operator@example.test",
+        activation_started_at=datetime(2026, 3, 25, 2, 0, tzinfo=timezone.utc),
+    )
+    assert result.promotion_id == "promotion_001"

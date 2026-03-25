@@ -27,12 +27,20 @@ MANIFEST_REQUIRED_FIELDS: tuple[str, ...] = (
     "requested_by",
     "requested_at_utc",
     "source_run_id",
+    "target_run_id",
     "feature_version",
     "ruleset_version",
     "evidence_artifacts",
     "approval_state",
     "approvals",
     "activation_state",
+    "activation_started_at_utc",
+    "activated_by",
+    "activated_at_utc",
+    "rollback_reference",
+    "freeze_override_note",
+    "break_glass_used",
+    "break_glass_incident_id",
 )
 SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -173,6 +181,40 @@ def _validate_required_metadata(manifest: dict[str, Any]) -> None:
     if not isinstance(evidence, list) or not evidence:
         raise PromotionError("evidence_artifacts must be a non-empty list.")
 
+    target_run_id = manifest["target_run_id"]
+    if target_run_id is not None and not str(target_run_id).strip():
+        raise PromotionError("target_run_id must be null or a non-empty string.")
+
+    freeze_override_note = manifest["freeze_override_note"]
+    if freeze_override_note is not None and not str(freeze_override_note).strip():
+        raise PromotionError("freeze_override_note must be null or a non-empty string.")
+
+    break_glass_used = manifest["break_glass_used"]
+    if not isinstance(break_glass_used, bool):
+        raise PromotionError("break_glass_used must be a boolean.")
+    break_glass_incident_id = manifest["break_glass_incident_id"]
+    if break_glass_incident_id is not None and not str(break_glass_incident_id).strip():
+        raise PromotionError(
+            "break_glass_incident_id must be null or a non-empty string."
+        )
+    if break_glass_used and break_glass_incident_id is None:
+        raise PromotionError(
+            "break_glass_incident_id is required when break_glass_used is true."
+        )
+
+    for nullable_timestamp in ("activation_started_at_utc", "activated_at_utc"):
+        value = manifest[nullable_timestamp]
+        if value is not None:
+            _parse_iso_utc(str(value), field_name=nullable_timestamp)
+
+    activated_by = manifest["activated_by"]
+    if activated_by is not None and not str(activated_by).strip():
+        raise PromotionError("activated_by must be null or a non-empty string.")
+
+    rollback_reference = manifest["rollback_reference"]
+    if rollback_reference is not None and not isinstance(rollback_reference, dict):
+        raise PromotionError("rollback_reference must be null or an object.")
+
 
 def _validate_approvals_for_activation(
     *, manifest: dict[str, Any], activation_started_at: datetime
@@ -184,7 +226,7 @@ def _validate_approvals_for_activation(
     target_environment = str(manifest["target_environment"])
     requester = str(manifest["requested_by"])
 
-    valid_approvals: list[dict[str, Any]] = []
+    valid_approvals: list[dict[str, str]] = []
     for approval in approvals:
         if not isinstance(approval, dict):
             raise PromotionError("approval record must be an object.")
@@ -204,10 +246,16 @@ def _validate_approvals_for_activation(
             )
         if approved_by == requester:
             raise PromotionError("no self-approval is allowed.")
-        approved_at = _parse_iso_utc(approved_at_raw)
+        approved_at = _parse_iso_utc(approved_at_raw, field_name="approved_at_utc")
         if approved_at + timedelta(hours=24) <= activation_started_at:
             continue
-        valid_approvals.append(approval)
+        valid_approvals.append(
+            {
+                "approved_by": approved_by,
+                "approved_at_utc": approved_at_raw,
+                "approver_role": approver_role,
+            }
+        )
 
     if (source_environment, target_environment) == ("dev", "stage"):
         if len(valid_approvals) < 1:
@@ -217,16 +265,14 @@ def _validate_approvals_for_activation(
     if len(valid_approvals) < 2:
         raise PromotionError("stage->prod requires two valid approvals.")
 
-    valid_roles = {str(item.get("approver_role")) for item in valid_approvals}
+    valid_roles = {item["approver_role"] for item in valid_approvals}
     if "analyst_owner" not in valid_roles or "engineering_owner" not in valid_roles:
         raise PromotionError(
             "stage->prod approvals must include one analyst_owner and one "
             "engineering_owner."
         )
     distinct_approvers = {
-        str(item.get("approved_by")).strip()
-        for item in valid_approvals
-        if str(item.get("approved_by", "")).strip()
+        item["approved_by"] for item in valid_approvals if item["approved_by"]
     }
     if len(distinct_approvers) < 2:
         raise PromotionError(
@@ -292,8 +338,12 @@ def _enforce_freeze_policy(
             "hard freeze break-glass activation requires override_expires_at_utc in "
             "freeze file."
         )
-    override_expires_at = _parse_iso_utc(override_expires_at_utc.strip())
-    activation_started = _parse_iso_utc(activation_started_at_utc)
+    override_expires_at = _parse_iso_utc(
+        override_expires_at_utc.strip(), field_name="override_expires_at_utc"
+    )
+    activation_started = _parse_iso_utc(
+        activation_started_at_utc, field_name="activation_started_at_utc"
+    )
     if activation_started > override_expires_at:
         raise PromotionError("hard freeze break-glass override approvals have expired.")
 
@@ -331,11 +381,16 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             pass
 
 
-def _parse_iso_utc(value: str) -> datetime:
+def _parse_iso_utc(value: str, *, field_name: str = "timestamp") -> datetime:
     candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
-    parsed = datetime.fromisoformat(candidate)
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise PromotionError(
+            f"{field_name} must be a valid ISO-8601 timestamp."
+        ) from exc
     if parsed.tzinfo is None:
-        raise PromotionError("approved_at_utc must include timezone information.")
+        raise PromotionError(f"{field_name} must include timezone information.")
     return parsed.astimezone(timezone.utc)
 
 
