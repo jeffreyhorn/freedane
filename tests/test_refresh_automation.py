@@ -1046,6 +1046,107 @@ def test_refresh_runner_cli_uses_environment_profile_defaults(
     assert captured["artifact_base_dir"] == artifact_base_dir.resolve()
 
 
+def test_refresh_runner_cli_explicit_options_override_environment_profile_defaults(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output_path = tmp_path / "refresh_payload_explicit.json"
+    profile_artifact_base_dir = (
+        tmp_path / "data" / "environments" / "stage" / "refresh_runs"
+    )
+    explicit_artifact_base_dir = (
+        tmp_path / "data" / "environments" / "stage" / "refresh_runs_explicit"
+    )
+    captured: dict[str, object] = {}
+    payload = {
+        "run": {
+            "run_type": "refresh_automation",
+            "version_tag": "refresh_automation_v1",
+            "run_id": "run-3",
+            "profile_name": "daily_refresh",
+            "status": "succeeded",
+            "run_persisted": False,
+            "started_at": "2026-03-16T01:00:00Z",
+            "finished_at": "2026-03-16T01:00:01Z",
+        },
+        "request": {},
+        "summary": {},
+        "stages": [],
+        "artifacts": {},
+        "diagnostics": {},
+        "error": None,
+    }
+
+    def _fake_run_scheduled_refresh(**kwargs):
+        captured.update(kwargs)
+        return payload
+
+    monkeypatch.setattr(cli, "run_scheduled_refresh", _fake_run_scheduled_refresh)
+    monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
+    monkeypatch.setenv(
+        "ACCESSDANE_RAW_DIR", str(tmp_path / "data" / "environments" / "stage" / "raw")
+    )
+    monkeypatch.setenv("ACCESSDANE_USER_AGENT", "AccessDaneAudit/0.1")
+    monkeypatch.setenv("ACCESSDANE_TIMEOUT", "30")
+    monkeypatch.setenv("ACCESSDANE_RETRIES", "3")
+    monkeypatch.setenv("ACCESSDANE_BACKOFF", "1.5")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_PROFILE", "analysis_only")
+    monkeypatch.setenv("ACCESSDANE_FEATURE_VERSION", "feature_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_RULESET_VERSION", "rules_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_SALES_RATIO_BASE", "sales_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_TOP", "25")
+    monkeypatch.setenv("ACCESSDANE_ARTIFACT_BASE_DIR", str(profile_artifact_base_dir))
+    monkeypatch.setenv(
+        "ACCESSDANE_REFRESH_LOG_DIR",
+        str(profile_artifact_base_dir / "logs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_BENCHMARK_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "benchmark_packs"),
+    )
+    monkeypatch.setenv("ALERT_ROUTE_GROUP", "ops-alerts")
+    monkeypatch.setenv("PROMOTION_APPROVER_GROUP", "release-approvers")
+    monkeypatch.setenv(
+        "PROMOTION_FREEZE_FILE",
+        str(tmp_path / "data" / "environments" / "stage" / "promotion_freeze.json"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "refresh-runner",
+            "--profile-name",
+            "daily_refresh",
+            "--run-date",
+            "20260316",
+            "--run-id",
+            "run-3",
+            "--feature-version",
+            "feature_v1",
+            "--ruleset-version",
+            "scoring_rules_v1",
+            "--sales-ratio-base",
+            "sales_ratio_v1",
+            "--top",
+            "100",
+            "--artifact-base-dir",
+            str(explicit_artifact_base_dir),
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["profile_name"] == "daily_refresh"
+    assert captured["feature_version"] == "feature_v1"
+    assert captured["ruleset_version"] == "scoring_rules_v1"
+    assert captured["sales_ratio_base"] == "sales_ratio_v1"
+    assert captured["top"] == 100
+    assert captured["artifact_base_dir"] == explicit_artifact_base_dir.resolve()
+
+
 def test_annual_refresh_runner_cli_writes_json_output(
     tmp_path: Path, monkeypatch
 ) -> None:

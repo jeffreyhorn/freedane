@@ -102,6 +102,7 @@ def load_environment_profile(
         ("ACCESSDANE_ARTIFACT_BASE_DIR", artifact_base_dir),
         ("ACCESSDANE_REFRESH_LOG_DIR", refresh_log_dir),
         ("ACCESSDANE_BENCHMARK_BASE_DIR", benchmark_base_dir),
+        ("PROMOTION_FREEZE_FILE", freeze_file),
     ):
         _validate_environment_local_path(
             key=path_key, value=path_value, environment_name=resolved_env
@@ -115,20 +116,31 @@ def load_environment_profile(
             "ACCESSDANE_ARTIFACT_BASE_DIR."
         ) from exc
 
+    request_timeout = _parse_float_key(
+        values=values,
+        key="ACCESSDANE_TIMEOUT",
+    )
+    retries = _parse_int_key(values=values, key="ACCESSDANE_RETRIES")
+    backoff_seconds = _parse_float_key(
+        values=values,
+        key="ACCESSDANE_BACKOFF",
+    )
+    refresh_top = _parse_int_key(values=values, key="ACCESSDANE_REFRESH_TOP")
+
     return EnvironmentProfile(
         environment_name=resolved_env,
         database_url=values["DATABASE_URL"],
         base_url=values["ACCESSDANE_BASE_URL"],
         raw_dir=raw_dir,
         user_agent=values["ACCESSDANE_USER_AGENT"],
-        request_timeout=float(values["ACCESSDANE_TIMEOUT"]),
-        retries=int(values["ACCESSDANE_RETRIES"]),
-        backoff_seconds=float(values["ACCESSDANE_BACKOFF"]),
+        request_timeout=request_timeout,
+        retries=retries,
+        backoff_seconds=backoff_seconds,
         refresh_profile=values["ACCESSDANE_REFRESH_PROFILE"],
         feature_version=values["ACCESSDANE_FEATURE_VERSION"],
         ruleset_version=values["ACCESSDANE_RULESET_VERSION"],
         sales_ratio_base=values["ACCESSDANE_SALES_RATIO_BASE"],
-        refresh_top=int(values["ACCESSDANE_REFRESH_TOP"]),
+        refresh_top=refresh_top,
         artifact_base_dir=artifact_base_dir,
         refresh_log_dir=refresh_log_dir,
         benchmark_base_dir=benchmark_base_dir,
@@ -191,3 +203,21 @@ def _find_environments_segment(parts: list[str]) -> Optional[int]:
         if segment == "environments":
             return idx
     return None
+
+
+def _parse_float_key(*, values: Mapping[str, str], key: str) -> float:
+    try:
+        return float(values[key])
+    except (TypeError, ValueError) as exc:
+        raise EnvironmentProfileError(
+            f"{key} must be a numeric value; got {values.get(key)!r}."
+        ) from exc
+
+
+def _parse_int_key(*, values: Mapping[str, str], key: str) -> int:
+    try:
+        return int(values[key])
+    except (TypeError, ValueError) as exc:
+        raise EnvironmentProfileError(
+            f"{key} must be an integer value; got {values.get(key)!r}."
+        ) from exc

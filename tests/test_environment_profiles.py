@@ -77,3 +77,25 @@ def test_load_environment_profile_rejects_cross_environment_paths(
 
     with pytest.raises(EnvironmentProfileError, match="points to environment"):
         load_environment_profile(environ=env)
+
+
+def test_load_environment_profile_rejects_cross_environment_freeze_file(
+    tmp_path: Path,
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    env["PROMOTION_FREEZE_FILE"] = str(
+        tmp_path / "data" / "environments" / "prod" / "promotion_freeze.json"
+    )
+
+    with pytest.raises(EnvironmentProfileError, match="points to environment"):
+        load_environment_profile(environ=env)
+
+
+def test_load_environment_profile_rejects_invalid_numeric_fields(
+    tmp_path: Path,
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    env["ACCESSDANE_TIMEOUT"] = "not-a-number"
+
+    with pytest.raises(EnvironmentProfileError, match="ACCESSDANE_TIMEOUT"):
+        load_environment_profile(environ=env)
