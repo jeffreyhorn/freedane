@@ -32,6 +32,11 @@ from .case_review import (
 from .config import load_settings
 from .db import get_session_factory, session_scope
 from .db import init_db as init_db_schema
+from .environment_profiles import (
+    EnvironmentProfileError,
+    load_environment_profile,
+    validate_artifact_path_override,
+)
 from .extraction_signals import (
     LINEAGE_MODAL_BY_RELATIONSHIP_TYPE,
     is_placeholder_payment_row,
@@ -68,6 +73,7 @@ from .parser_drift import (
 )
 from .permits import PermitImportFileError, ingest_permits_csv
 from .profiling import build_data_profile
+from .promotion import PromotionError, activate_promotion_manifest
 from .quality import quality_report_to_dict, run_data_quality_checks
 from .refresh_automation import run_scheduled_refresh
 from .retr import (
@@ -1132,18 +1138,18 @@ def investigation_report_cmd(
 
 def _run_refresh_runner_command(
     *,
-    profile_name: str,
+    profile_name: Optional[str],
     run_date: Optional[str],
     run_id: Optional[str],
-    feature_version: str,
-    ruleset_version: str,
-    sales_ratio_base: str,
-    top: int,
+    feature_version: Optional[str],
+    ruleset_version: Optional[str],
+    sales_ratio_base: Optional[str],
+    top: Optional[int],
     retr_file: Optional[Path],
     assessment_manifest_file: Optional[Path],
     permits_file: Optional[Path],
     appeals_file: Optional[Path],
-    artifact_base_dir: Path,
+    artifact_base_dir: Optional[Path],
     accessdane_bin: str,
     attempt_count: int,
     retried_from_stage_id: Optional[str],
@@ -1154,6 +1160,61 @@ def _run_refresh_runner_command(
     correction_reason_code: Optional[str],
     out: Optional[Path],
 ) -> None:
+    try:
+        environment_profile = load_environment_profile()
+    except EnvironmentProfileError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        ) from exc
+
+    if profile_name is None:
+        profile_name = (
+            environment_profile.refresh_profile
+            if environment_profile is not None
+            else "daily_refresh"
+        )
+    if feature_version is None:
+        feature_version = (
+            environment_profile.feature_version
+            if environment_profile is not None
+            else "feature_v1"
+        )
+    if ruleset_version is None:
+        ruleset_version = (
+            environment_profile.ruleset_version
+            if environment_profile is not None
+            else "scoring_rules_v1"
+        )
+    if sales_ratio_base is None:
+        sales_ratio_base = (
+            environment_profile.sales_ratio_base
+            if environment_profile is not None
+            else "sales_ratio_v1"
+        )
+    if top is None:
+        top = (
+            environment_profile.refresh_top if environment_profile is not None else 100
+        )
+    if artifact_base_dir is None:
+        artifact_base_dir = (
+            environment_profile.artifact_base_dir
+            if environment_profile is not None
+            else Path("data/refresh_runs")
+        )
+
+    if environment_profile is not None:
+        try:
+            artifact_base_dir = validate_artifact_path_override(
+                profile=environment_profile,
+                artifact_base_dir=artifact_base_dir,
+            )
+        except EnvironmentProfileError as exc:
+            raise typer.BadParameter(
+                str(exc),
+                param_hint="--artifact-base-dir",
+            ) from exc
+
     now_utc = datetime.now(timezone.utc)
     resolved_run_date = run_date or now_utc.strftime("%Y%m%d")
     if not re.fullmatch(r"\d{8}", resolved_run_date):
@@ -1220,10 +1281,13 @@ def _run_refresh_runner_command(
 
 @app.command("refresh-runner")
 def refresh_runner_cmd(
-    profile_name: str = typer.Option(
-        "daily_refresh",
+    profile_name: Optional[str] = typer.Option(
+        None,
         "--profile-name",
-        help="Refresh profile (daily_refresh, annual_refresh, analysis_only)",
+        help=(
+            "Refresh profile (daily_refresh, annual_refresh, analysis_only). "
+            "Defaults from environment profile when configured, else daily_refresh."
+        ),
     ),
     run_date: Optional[str] = typer.Option(
         None,
@@ -1235,27 +1299,39 @@ def refresh_runner_cmd(
         "--run-id",
         help="Explicit run identifier (default generated from date/profile/versions)",
     ),
-    feature_version: str = typer.Option(
-        "feature_v1",
+    feature_version: Optional[str] = typer.Option(
+        None,
         "--feature-version",
-        help="Feature version for stage commands",
+        help=(
+            "Feature version for stage commands. "
+            "Defaults from environment profile when configured."
+        ),
     ),
-    ruleset_version: str = typer.Option(
-        "scoring_rules_v1",
+    ruleset_version: Optional[str] = typer.Option(
+        None,
         "--ruleset-version",
-        help="Ruleset version for stage commands",
+        help=(
+            "Ruleset version for stage commands. "
+            "Defaults from environment profile when configured."
+        ),
     ),
-    sales_ratio_base: str = typer.Option(
-        "sales_ratio_v1",
+    sales_ratio_base: Optional[str] = typer.Option(
+        None,
         "--sales-ratio-base",
-        help="Sales ratio base token used in sales-ratio-study version tag",
+        help=(
+            "Sales ratio base token used in sales-ratio-study version tag. "
+            "Defaults from environment profile when configured."
+        ),
     ),
-    top: int = typer.Option(
-        100,
+    top: Optional[int] = typer.Option(
+        None,
         "--top",
         min=1,
         max=1000,
-        help="Top-N selector passed to review-queue and investigation-report",
+        help=(
+            "Top-N selector passed to review-queue and investigation-report. "
+            "Defaults from environment profile when configured."
+        ),
     ),
     retr_file: Optional[Path] = typer.Option(
         None,
@@ -1296,10 +1372,13 @@ def refresh_runner_cmd(
         resolve_path=True,
         help="Optional appeals CSV source file",
     ),
-    artifact_base_dir: Path = typer.Option(
-        Path("data/refresh_runs"),
+    artifact_base_dir: Optional[Path] = typer.Option(
+        None,
         "--artifact-base-dir",
-        help="Base directory for refresh run artifact roots",
+        help=(
+            "Base directory for refresh run artifact roots. "
+            "Defaults from environment profile when configured."
+        ),
     ),
     accessdane_bin: str = typer.Option(
         ".venv/bin/accessdane",
@@ -1397,27 +1476,39 @@ def annual_refresh_runner_cmd(
         max=3000,
         help="Annual target year for cutover run",
     ),
-    feature_version: str = typer.Option(
-        "feature_v1",
+    feature_version: Optional[str] = typer.Option(
+        None,
         "--feature-version",
-        help="Feature version for stage commands",
+        help=(
+            "Feature version for stage commands. "
+            "Defaults from environment profile when configured."
+        ),
     ),
-    ruleset_version: str = typer.Option(
-        "scoring_rules_v1",
+    ruleset_version: Optional[str] = typer.Option(
+        None,
         "--ruleset-version",
-        help="Ruleset version for stage commands",
+        help=(
+            "Ruleset version for stage commands. "
+            "Defaults from environment profile when configured."
+        ),
     ),
-    sales_ratio_base: str = typer.Option(
-        "sales_ratio_v1",
+    sales_ratio_base: Optional[str] = typer.Option(
+        None,
         "--sales-ratio-base",
-        help="Sales ratio base token used in sales-ratio-study version tag",
+        help=(
+            "Sales ratio base token used in sales-ratio-study version tag. "
+            "Defaults from environment profile when configured."
+        ),
     ),
-    top: int = typer.Option(
-        100,
+    top: Optional[int] = typer.Option(
+        None,
         "--top",
         min=1,
         max=1000,
-        help="Top-N selector passed to review-queue and investigation-report",
+        help=(
+            "Top-N selector passed to review-queue and investigation-report. "
+            "Defaults from environment profile when configured."
+        ),
     ),
     assessment_manifest_file: Path = typer.Option(
         ...,
@@ -1470,10 +1561,13 @@ def annual_refresh_runner_cmd(
         "--correction-reason-code",
         help="Correction reason code for correction replay mode",
     ),
-    artifact_base_dir: Path = typer.Option(
-        Path("data/refresh_runs"),
+    artifact_base_dir: Optional[Path] = typer.Option(
+        None,
         "--artifact-base-dir",
-        help="Base directory for refresh run artifact roots",
+        help=(
+            "Base directory for refresh run artifact roots. "
+            "Defaults from environment profile when configured."
+        ),
     ),
     accessdane_bin: str = typer.Option(
         ".venv/bin/accessdane",
@@ -1525,6 +1619,68 @@ def annual_refresh_runner_cmd(
         resume_from_stage_id=resume_from_stage_id,
         out=out,
     )
+
+
+@app.command("promotion-activate")
+def promotion_activate_cmd(
+    manifest_file: Path = typer.Option(
+        ...,
+        "--manifest-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Promotion manifest JSON to validate and activate.",
+    ),
+    activated_by: str = typer.Option(
+        "system:auto",
+        "--activated-by",
+        help="Operator identifier for activation audit logging.",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        dir_okay=False,
+        help="Optional output JSON path for activation summary.",
+    ),
+) -> None:
+    try:
+        profile = load_environment_profile()
+    except EnvironmentProfileError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        ) from exc
+    if profile is None:
+        raise typer.BadParameter(
+            "promotion-activate requires ACCESSDANE_ENVIRONMENT and full environment "
+            "profile keys.",
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        )
+
+    try:
+        result = activate_promotion_manifest(
+            manifest_path=manifest_file,
+            profile=profile,
+            activated_by=activated_by,
+        )
+    except PromotionError as exc:
+        typer.echo(f"promotion activation blocked: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    payload = {
+        "promotion_id": result.promotion_id,
+        "manifest_path": str(result.manifest_path),
+        "approval_log_path": str(result.approval_log_path),
+        "activation_log_path": str(result.activation_log_path),
+        "active_selector_path": str(result.active_selector_path),
+        "rollback_reference_captured": result.rollback_reference is not None,
+    }
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
 
 
 @app.command("enumerate-trs")

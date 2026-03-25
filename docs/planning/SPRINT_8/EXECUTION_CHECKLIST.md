@@ -17,7 +17,7 @@ Source references:
   - Acceptance gate: baseline checks executed; migration head verified; go/no-go scaffolding executed with explicit status.
 - [x] Day 2: define environment and promotion contract (`ENVIRONMENT_PROMOTION_V1.md`)
   - Acceptance gate: dev/stage/prod boundaries, approval controls, and rollback semantics are explicit.
-- [ ] Day 3: implement environment profiles and promotion controls
+- [x] Day 3: implement environment profiles and promotion controls
   - Acceptance gate: profile resolution and promotion guardrails are implemented and test-covered.
 
 ### Startup Automation And Scheduler Reliability (Days 4-6)
