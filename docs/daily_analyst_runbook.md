@@ -11,8 +11,8 @@ Important framing:
 
 Start each analyst day with current artifacts:
 
-- `review_queue.json` / `review_queue.csv`
-- `investigation_report.html`
+- `data/daily_review_queue.json` / `data/daily_review_queue.csv`
+- `data/daily_investigation_report.html`
 - latest monitoring diagnostics (`load_monitor*.json`, parser drift/benchmark alerts if present)
 
 If monitoring shows unresolved `critical` issues, pause triage and route to operations first.
@@ -72,7 +72,7 @@ Create/update case records as you work:
 .venv/bin/accessdane case-review update \
   --id <case_review_id> \
   --status resolved \
-  --disposition <false_positive|needs_follow_up|confirmed_issue> \
+  --disposition <false_positive|inconclusive|needs_field_review|confirmed_issue> \
   --set-evidence-link "kind=dossier,ref=<dossier_ref>"
 ```
 
@@ -84,10 +84,10 @@ Use recurring patterns in reviewed cases to decide acquisition priorities.
 
 | Observed pattern in dossiers/reviews | Likely missing input | Action |
 | --- | --- | --- |
-| Large assessment change with no matching permit context | permits detail depth/coverage | Request updated permit export (scope by year/parcel class) |
-| Many valuations disputed in notes with sparse appeal context | appeals coverage | Request appeals export for affected years and parcel classes |
-| Frequent low-confidence or unresolved sales matches | transfer/deed quality | Request updated RETR export and/or clerk deed details |
-| Concentrated anomalies in one segment/neighborhood with weak comparables | segment-level comparables | Acquire supplemental market context or broaden sales window |
+| Large assessment change with no matching permit context | permits detail depth/coverage | Request updated permits export (scoped by year/parcel class). |
+| Many valuations disputed in notes with sparse appeal context | appeals coverage | Request appeals export for affected years and parcel classes. |
+| Frequent low-confidence or unresolved sales matches | transfer/deed quality | Request updated RETR export and/or clerk deed details. |
+| Concentrated anomalies in one segment/neighborhood with weak comparables | segment-level comparables | Acquire supplemental market context or broaden sales comparison window. |
 
 ## 5.2 Trigger Thresholds For Data Requests
 
