@@ -136,7 +136,12 @@ Benchmark run id format:
 Run-id rules:
 
 - use UTC timestamps.
+- `<run_date>` must be UTC calendar date in `YYYYMMDD`.
+- `<HHMMSS>` must be UTC wall-clock time in `HHMMSS`.
 - allow only `[A-Za-z0-9._-]`.
+- must be safe as a single path component:
+  - `run_id` must not be `.` or `..`
+  - `run_id` must not contain traversal substrings such as `..`, `./`, `../`, `/.`, or `\\`
 - include enough context to map each run to active feature/ruleset selectors.
 
 Promotion traceability requirement:
@@ -164,6 +169,8 @@ Required promotion manifest fields:
 - `target_environment`
 - `requested_by`
 - `requested_at_utc`
+- `source_run_id`
+- `target_run_id` (nullable before activation; required after activation starts)
 - `feature_version`
 - `ruleset_version`
 - `evidence_artifacts[]`
@@ -174,6 +181,37 @@ Required promotion manifest fields:
 - `activated_by`
 - `activated_at_utc`
 - `rollback_reference` (previous active selectors in target)
+
+## Manifest State Enums And Transitions
+
+`approval_state` allowed values:
+
+- `pending`
+- `approved`
+- `expired`
+- `invalidated`
+- `rejected`
+
+`activation_state` allowed values:
+
+- `not_started`
+- `in_progress`
+- `succeeded`
+- `failed`
+- `rolled_back`
+- `aborted`
+
+Required transition rules:
+
+- initial manifest state: `approval_state = pending`, `activation_state = not_started`
+- activation may start only from `approval_state = approved`
+- `activation_state` may transition:
+  - `not_started -> in_progress`
+  - `in_progress -> succeeded|failed|aborted`
+  - `succeeded -> rolled_back`
+- manifest edits after any recorded approval force:
+  - `approval_state = invalidated`
+  - `activation_state` remains unchanged until explicit re-approval and activation action
 
 ## Promotion Workflow v1
 
@@ -205,8 +243,10 @@ Approval policy matrix:
 Required approval behavior:
 
 - no self-approval.
-- approvals expire after 24h if activation has not occurred.
-- manifest edits after approval invalidate prior approvals.
+- each approval record must include `approved_at_utc`.
+- each approval expires 24h after its own `approved_at_utc`.
+- activation is allowed only when, at `activation_started_at_utc`, all required approvals are present and unexpired.
+- manifest edits after any approval invalidate all recorded approvals; fresh approvals must be collected against the edited manifest.
 
 ## Rollback Semantics
 
