@@ -171,6 +171,10 @@ if [[ -z "${STARTUP_ARTIFACT_ROOT}" || "${STARTUP_ARTIFACT_ROOT}" == "/" ]]; the
   echo "Invalid --startup-artifact-root '${STARTUP_ARTIFACT_ROOT}'; must be non-empty and not '/'." >&2
   exit 2
 fi
+if [[ "${STARTUP_ARTIFACT_ROOT}" == -* ]]; then
+  echo "Invalid --startup-artifact-root '${STARTUP_ARTIFACT_ROOT}'; must not start with '-'." >&2
+  exit 2
+fi
 
 if [[ -z "${RUN_ID}" ]]; then
   RUN_ID="startup_${RUN_DATE}_${PROFILE_NAME}_${FEATURE_VERSION}_${RULESET_VERSION}"
@@ -239,14 +243,14 @@ STEP_RESULTS_FILE="${RUN_DIR}/step_results.tsv"
 
 if [[ -e "${RUN_DIR}" ]]; then
   if [[ "${FORCE_OVERWRITE}" == "true" ]]; then
-    rm -rf "${RUN_DIR}"
+    rm -rf -- "${RUN_DIR}"
   else
     echo "Startup run directory already exists: '${RUN_DIR}'. Re-run with --force to overwrite." >&2
     exit 2
   fi
 fi
 
-mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
+mkdir -p -- "${OUTPUT_DIR}" "${LOG_DIR}"
 : > "${STEP_RESULTS_FILE}"
 
 SALES_RATIO_OUT="${OUTPUT_DIR}/startup_sales_ratio_study.json"
