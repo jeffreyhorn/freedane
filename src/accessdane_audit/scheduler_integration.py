@@ -157,6 +157,10 @@ def run_managed_scheduler_execution(
 
     random_source = rng or random.Random()
     created_dt = now_fn()
+    if scheduled_for_utc is not None and (
+        scheduled_for_utc.tzinfo is None or scheduled_for_utc.utcoffset() is None
+    ):
+        raise ValueError("scheduled_for_utc must be timezone-aware.")
     scheduled_dt = scheduled_for_utc or created_dt
     run_date = _derive_run_date(
         trigger_type=trigger_type, created_dt=created_dt, scheduled_for_utc=scheduled_dt
@@ -175,10 +179,16 @@ def run_managed_scheduler_execution(
         ruleset_version=ruleset_version,
         run_id=run_id,
     )
+    artifact_base_dir = artifact_base_dir.expanduser().resolve()
     log_dir = (
         refresh_log_dir
         if refresh_log_dir is not None
         else artifact_base_dir / "scheduler_logs"
+    )
+    log_dir = log_dir.expanduser().resolve()
+    _validate_log_dir_within_artifact_base_dir(
+        artifact_base_dir=artifact_base_dir,
+        log_dir=log_dir,
     )
     payload_path = log_dir / f"{run_id}.json"
 
@@ -278,6 +288,9 @@ def run_managed_scheduler_execution(
             return payload
 
         refresh_run_id = f"{run_id}_a{attempt_index:02d}"
+        payload["scheduler_run"]["refresh_run_id"] = refresh_run_id
+        _transition_state(payload=payload, state="running", now_fn=now_fn)
+        _persist_scheduler_payload(payload_path=payload_path, payload=payload)
         attempt_started_dt = now_fn()
         try:
             refresh_payload = dispatch(
@@ -660,8 +673,14 @@ def _transition_state(
 def _persist_scheduler_payload(
     *, payload_path: Path, payload: SchedulerPayload
 ) -> None:
-    payload_path.parent.mkdir(parents=True, exist_ok=True)
-    payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _write_json_atomic(payload_path, payload)
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _wait_for_backoff(
@@ -731,5 +750,16 @@ def _finalize_dead_letter(
         "resolved_at_utc": None,
     }
     _persist_scheduler_payload(payload_path=payload_path, payload=payload)
-    dead_letter_path.parent.mkdir(parents=True, exist_ok=True)
-    dead_letter_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _write_json_atomic(dead_letter_path, payload)
+
+
+def _validate_log_dir_within_artifact_base_dir(
+    *, artifact_base_dir: Path, log_dir: Path
+) -> None:
+    try:
+        log_dir.relative_to(artifact_base_dir)
+    except ValueError as exc:
+        raise ValueError(
+            "refresh_log_dir must be within artifact_base_dir "
+            f"(got {log_dir!s}, base {artifact_base_dir!s})"
+        ) from exc

@@ -254,9 +254,10 @@ def test_scheduler_integration_dispatch_error_attempt_records_timing(
             datetime(2026, 3, 26, 12, 0, 1, tzinfo=timezone.utc),
             datetime(2026, 3, 26, 12, 0, 2, tzinfo=timezone.utc),
             datetime(2026, 3, 26, 12, 0, 9, tzinfo=timezone.utc),
-            datetime(2026, 3, 26, 12, 0, 10, tzinfo=timezone.utc),
-            datetime(2026, 3, 26, 12, 0, 11, tzinfo=timezone.utc),
             datetime(2026, 3, 26, 12, 0, 12, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 13, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 14, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 15, tzinfo=timezone.utc),
         )
     )
 
@@ -289,9 +290,9 @@ def test_scheduler_integration_dispatch_error_attempt_records_timing(
     assert len(payload["attempts"]) == 1
     attempt = payload["attempts"][0]
     assert attempt["state"] == "dispatch_error"
-    assert attempt["started_at_utc"] == "2026-03-26T12:00:02Z"
-    assert attempt["finished_at_utc"] == "2026-03-26T12:00:09Z"
-    assert attempt["duration_seconds"] == 7
+    assert attempt["started_at_utc"] == "2026-03-26T12:00:09Z"
+    assert attempt["finished_at_utc"] == "2026-03-26T12:00:12Z"
+    assert attempt["duration_seconds"] == 3
 
 
 def test_scheduler_runner_cli_writes_output_and_uses_trigger_option(
@@ -439,3 +440,160 @@ def test_scheduler_runner_cli_expands_user_in_artifact_base_dir(
         captured["refresh_log_dir"]
         == (tmp_path / "refresh_runs" / "scheduler_logs").resolve()
     )
+
+
+def test_scheduler_integration_transitions_to_running_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+    observed: dict[str, str] = {}
+
+    def _runner(**kwargs):
+        payload_path = refresh_log_dir / "sched_running_state.json"
+        persisted = json.loads(payload_path.read_text(encoding="utf-8"))
+        observed["state"] = str(persisted["scheduler_run"]["state"])
+        observed["refresh_run_id"] = str(persisted["scheduler_run"]["refresh_run_id"])
+        run_id = str(kwargs["run_id"])
+        root_path = (
+            artifact_base_dir
+            / str(kwargs["run_date"])
+            / str(kwargs["profile_name"])
+            / run_id
+        )
+        return {
+            "run": {
+                "status": "succeeded",
+                "started_at": _iso(datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc)),
+                "finished_at": _iso(datetime(2026, 3, 26, 12, 1, tzinfo=timezone.utc)),
+            },
+            "error": None,
+            "artifacts": {"root_path": str(root_path)},
+        }
+
+    payload = run_managed_scheduler_execution(
+        trigger_type="scheduled",
+        profile_name="daily_refresh",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        refresh_log_dir=refresh_log_dir,
+        accessdane_bin="accessdane",
+        scheduler_run_id="sched_running_state",
+        max_attempts=1,
+        refresh_runner=_runner,
+    )
+
+    assert payload["scheduler_run"]["state"] == "succeeded"
+    assert observed["state"] == "running"
+    assert observed["refresh_run_id"] == "sched_running_state_a01"
+
+
+def test_scheduler_integration_rejects_naive_scheduled_for_utc(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        run_managed_scheduler_execution(
+            trigger_type="scheduled",
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            sales_ratio_base="sales_ratio_v1",
+            top=10,
+            retr_file=None,
+            permits_file=None,
+            appeals_file=None,
+            artifact_base_dir=artifact_base_dir,
+            refresh_log_dir=refresh_log_dir,
+            accessdane_bin="accessdane",
+            scheduler_run_id="sched_naive_time",
+            scheduled_for_utc=datetime(2026, 3, 26, 12, 0, 0),
+        )
+    assert not refresh_log_dir.exists()
+
+
+def test_scheduler_integration_rejects_refresh_log_dir_outside_artifact_base(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = tmp_path / "outside_logs"
+
+    with pytest.raises(
+        ValueError, match="refresh_log_dir must be within artifact_base_dir"
+    ):
+        run_managed_scheduler_execution(
+            trigger_type="scheduled",
+            profile_name="daily_refresh",
+            feature_version="feature_v1",
+            ruleset_version="scoring_rules_v1",
+            sales_ratio_base="sales_ratio_v1",
+            top=10,
+            retr_file=None,
+            permits_file=None,
+            appeals_file=None,
+            artifact_base_dir=artifact_base_dir,
+            refresh_log_dir=refresh_log_dir,
+            accessdane_bin="accessdane",
+            scheduler_run_id="sched_outside_logs",
+        )
+    assert not refresh_log_dir.exists()
+
+
+def test_scheduler_integration_atomic_json_writes_leave_no_tmp_files(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+
+    def _runner(**kwargs):
+        run_id = str(kwargs["run_id"])
+        root_path = (
+            artifact_base_dir
+            / str(kwargs["run_date"])
+            / str(kwargs["profile_name"])
+            / run_id
+        )
+        return {
+            "run": {
+                "status": "failed",
+                "started_at": _iso(datetime(2026, 3, 26, 12, 5, tzinfo=timezone.utc)),
+                "finished_at": _iso(datetime(2026, 3, 26, 12, 6, tzinfo=timezone.utc)),
+            },
+            "error": {
+                "code": "invalid_run_context",
+                "message": "invalid context",
+                "failed_stage_id": None,
+            },
+            "artifacts": {"root_path": str(root_path)},
+        }
+
+    payload = run_managed_scheduler_execution(
+        trigger_type="manual_retry",
+        profile_name="daily_refresh",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        refresh_log_dir=refresh_log_dir,
+        accessdane_bin="accessdane",
+        scheduler_run_id="sched_atomic_dead_letter",
+        max_attempts=1,
+        refresh_runner=_runner,
+    )
+
+    dead_letter_path = Path(payload["result"]["dead_letter_path"] or "")
+    assert dead_letter_path.exists()
+    assert not list(refresh_log_dir.glob("*.tmp"))
+    assert not list(dead_letter_path.parent.glob("*.tmp"))
