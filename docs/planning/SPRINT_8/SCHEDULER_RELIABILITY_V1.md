@@ -258,12 +258,32 @@ Required `scheduler_run` fields:
 | `scheduler_run_id` | Immutable execution-unit identifier. |
 | `state` | Current scheduler execution state. |
 | `profile_name` | Active refresh profile. |
-| `run_date` | Logical run date (`YYYYMMDD`). |
+| `run_date` | Logical run date (`YYYYMMDD`, UTC). See derivation rule below. |
 | `refresh_run_id` | Bound refresh-runner `run_id` (nullable until dispatch). |
 | `attempt_count` | Total attempts executed so far. |
 | `max_attempts` | Attempt budget for this execution unit. |
 | `created_at_utc` | Creation timestamp. |
 | `updated_at_utc` | Last state transition timestamp. |
+
+`run_date` derivation rule (must be applied consistently across scheduler payloads and artifact paths):
+
+- for `scheduled` and `catch_up` triggers: `run_date = format_utc_yyyymmdd(trigger.scheduled_for_utc)`
+- for `manual_retry` triggers: `run_date = format_utc_yyyymmdd(scheduler_run.created_at_utc)` using the first persisted creation timestamp
+- derived `run_date` is immutable for a given `scheduler_run` and must be used verbatim in dead-letter/artifact path segments that include run-date components
+
+Required `result` fields:
+
+| Field | Description |
+| --- | --- |
+| `status` | Terminal scheduler outcome (`succeeded|dead_lettered|cancelled`). |
+| `failure_class` | Nullable; required for non-success outcomes (`retryable|non_retryable|exhausted_retries`). |
+| `failure_code` | Nullable; required for non-success outcomes. |
+| `failure_message` | Nullable; required for non-success outcomes. |
+| `failed_stage_id` | Nullable; refresh failed stage id when available. |
+| `attempt_count` | Attempt count at terminal outcome. |
+| `max_attempts` | Attempt budget applied to this execution unit. |
+| `last_attempt_finished_at_utc` | Nullable; timestamp of last finished attempt. |
+| `dead_letter_path` | Nullable unless `status = dead_lettered`. |
 
 Required `attempts[]` fields:
 
@@ -278,16 +298,6 @@ Required `attempts[]` fields:
 | `failure_code` | Failure/error code if non-success. |
 | `failure_message` | Human-readable failure summary if non-success. |
 | `failed_stage_id` | Refresh failed stage id when available; else `null`. |
-
-Required failure metadata for any non-success terminal outcome:
-
-- `failure_class` (`retryable|non_retryable|exhausted_retries`)
-- `failure_code`
-- `failure_message`
-- `attempt_count`
-- `max_attempts`
-- `last_attempt_finished_at_utc`
-- `dead_letter_path` (nullable unless dead-lettered)
 
 ## SLA/SLO Contract v1
 
