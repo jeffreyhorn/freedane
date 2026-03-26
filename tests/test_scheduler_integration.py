@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
@@ -140,6 +141,10 @@ def test_scheduler_integration_overlap_exhaustion_routes_to_dead_letter(
         "overlap_blocked",
         "overlap_blocked",
     ]
+    for attempt in payload["attempts"]:
+        assert attempt["started_at_utc"] is not None
+        assert attempt["finished_at_utc"] is not None
+        assert attempt["duration_seconds"] == 0
     dead_letter_path = Path(payload["result"]["dead_letter_path"] or "")
     assert dead_letter_path.exists()
 
@@ -196,6 +201,97 @@ def test_scheduler_integration_non_retryable_failure_dead_letters_without_retry(
     assert payload["result"]["failure_class"] == "non_retryable"
     assert len(payload["attempts"]) == 1
     assert payload["attempts"][0]["state"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("scheduler_run_id", "../unsafe_run"),
+        ("profile_name", "daily/refresh"),
+        ("feature_version", "feature/v1"),
+        ("ruleset_version", "ruleset/v1"),
+    ],
+)
+def test_scheduler_integration_rejects_unsafe_path_segments(
+    tmp_path: Path,
+    field_name: str,
+    value: str,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+
+    kwargs: dict[str, object] = {
+        "trigger_type": "scheduled",
+        "profile_name": "daily_refresh",
+        "feature_version": "feature_v1",
+        "ruleset_version": "scoring_rules_v1",
+        "sales_ratio_base": "sales_ratio_v1",
+        "top": 10,
+        "retr_file": None,
+        "permits_file": None,
+        "appeals_file": None,
+        "artifact_base_dir": artifact_base_dir,
+        "refresh_log_dir": refresh_log_dir,
+        "accessdane_bin": "accessdane",
+        "scheduler_run_id": "sched_safe",
+    }
+    kwargs[field_name] = value
+
+    with pytest.raises(ValueError, match=field_name):
+        run_managed_scheduler_execution(**kwargs)
+    assert not refresh_log_dir.exists()
+
+
+def test_scheduler_integration_dispatch_error_attempt_records_timing(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+
+    timeline = iter(
+        (
+            datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 1, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 2, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 9, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 10, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 11, tzinfo=timezone.utc),
+            datetime(2026, 3, 26, 12, 0, 12, tzinfo=timezone.utc),
+        )
+    )
+
+    def _now() -> datetime:
+        return next(timeline)
+
+    def _runner(**kwargs):
+        raise RuntimeError("boom")
+
+    payload = run_managed_scheduler_execution(
+        trigger_type="scheduled",
+        profile_name="daily_refresh",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        refresh_log_dir=refresh_log_dir,
+        accessdane_bin="accessdane",
+        scheduler_run_id="sched_dispatch_error",
+        max_attempts=1,
+        now_fn=_now,
+        refresh_runner=_runner,
+    )
+
+    assert payload["result"]["status"] == "dead_lettered"
+    assert len(payload["attempts"]) == 1
+    attempt = payload["attempts"][0]
+    assert attempt["state"] == "dispatch_error"
+    assert attempt["started_at_utc"] == "2026-03-26T12:00:02Z"
+    assert attempt["finished_at_utc"] == "2026-03-26T12:00:09Z"
+    assert attempt["duration_seconds"] == 7
 
 
 def test_scheduler_runner_cli_writes_output_and_uses_trigger_option(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,6 +114,8 @@ _NON_RETRYABLE_ERROR_CODES = {
     "annual_preflight_failed",
 }
 
+_SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
 RefreshRunner = Callable[..., Mapping[str, Any]]
 
 
@@ -165,6 +168,12 @@ def run_managed_scheduler_execution(
         ruleset_version=ruleset_version,
         created_dt=created_dt,
         rng=random_source,
+    )
+    _validate_scheduler_path_segments(
+        profile_name=profile_name,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+        run_id=run_id,
     )
     log_dir = (
         refresh_log_dir
@@ -228,15 +237,20 @@ def run_managed_scheduler_execution(
 
         lock_path = artifact_base_dir / "locks" / f"{profile_name}.lock"
         if lock_path.exists():
+            overlap_dt = now_fn()
             attempt = _build_overlap_attempt(
                 attempt_index=attempt_index,
+                started_at=overlap_dt,
+                finished_at=overlap_dt,
                 message=(
                     "Another refresh run is already active for this profile "
                     f"(lock: {lock_path})."
                 ),
             )
             payload["attempts"].append(attempt)
-            payload["result"]["last_attempt_finished_at_utc"] = _iso_utc(now_fn())
+            payload["result"]["last_attempt_finished_at_utc"] = attempt[
+                "finished_at_utc"
+            ]
             if attempt_index < max_attempts:
                 _transition_state(payload=payload, state="retry_pending", now_fn=now_fn)
                 _persist_scheduler_payload(payload_path=payload_path, payload=payload)
@@ -516,6 +530,8 @@ def _build_attempt_from_refresh_payload(
     if code == "overlapping_run":
         return _build_overlap_attempt(
             attempt_index=attempt_index,
+            started_at=run_started,
+            finished_at=run_finished,
             message=message,
         )
     return {
@@ -532,14 +548,20 @@ def _build_attempt_from_refresh_payload(
     }
 
 
-def _build_overlap_attempt(*, attempt_index: int, message: str) -> SchedulerAttempt:
+def _build_overlap_attempt(
+    *,
+    attempt_index: int,
+    started_at: datetime,
+    finished_at: datetime,
+    message: str,
+) -> SchedulerAttempt:
     return {
         "attempt_index": attempt_index,
         "refresh_run_id": None,
         "state": "overlap_blocked",
-        "started_at_utc": None,
-        "finished_at_utc": None,
-        "duration_seconds": None,
+        "started_at_utc": _iso_utc(started_at),
+        "finished_at_utc": _iso_utc(finished_at),
+        "duration_seconds": _duration_seconds(started_at, finished_at),
         "refresh_payload_path": None,
         "failure_code": "overlapping_run",
         "failure_message": message,
@@ -558,14 +580,39 @@ def _build_dispatch_error_attempt(
         "attempt_index": attempt_index,
         "refresh_run_id": None,
         "state": "dispatch_error",
-        "started_at_utc": None,
-        "finished_at_utc": None,
-        "duration_seconds": None,
+        "started_at_utc": _iso_utc(started_at),
+        "finished_at_utc": _iso_utc(finished_at),
+        "duration_seconds": _duration_seconds(started_at, finished_at),
         "refresh_payload_path": None,
         "failure_code": "dispatch_error",
         "failure_message": message,
         "failed_stage_id": None,
     }
+
+
+def _validate_scheduler_path_segments(
+    *,
+    profile_name: str,
+    feature_version: str,
+    ruleset_version: str,
+    run_id: str,
+) -> None:
+    _validate_path_segment(name="profile_name", value=profile_name)
+    _validate_path_segment(name="feature_version", value=feature_version)
+    _validate_path_segment(name="ruleset_version", value=ruleset_version)
+    _validate_path_segment(name="scheduler_run_id", value=run_id)
+
+
+def _validate_path_segment(*, name: str, value: str) -> None:
+    if ".." in value:
+        raise ValueError(
+            f"Invalid {name} '{value}': path traversal sequence '..' is not allowed."
+        )
+    if not _SAFE_PATH_SEGMENT_RE.fullmatch(value):
+        raise ValueError(
+            f"Invalid {name} '{value}': only letters, digits, '.', '_' and '-' "
+            "are allowed."
+        )
 
 
 def _classify_failure_class(
