@@ -187,6 +187,7 @@ Allowed scheduler execution states:
 - `running -> succeeded|retry_pending|failed_pending_dead_letter`
 - `retry_pending -> dispatched|dead_lettered`
 - `failed_pending_dead_letter -> dead_lettered`
+- `queued|dispatched|running|retry_pending -> cancelled` (operator-initiated cancellation path)
 - terminal states: `succeeded`, `dead_lettered`, `cancelled`
 
 Transition invariants:
@@ -196,6 +197,7 @@ Transition invariants:
 - `started_at_utc` and `finished_at_utc` must be set for each execution attempt (each time the run enters `running`).
 - `failed_pending_dead_letter` is non-terminal and must transition to `dead_lettered` before execution is considered terminal.
 - terminal transitions must set required failure metadata (`failure_class`, `failure_code`, and `failure_message` when applicable).
+- cancellation transitions do not increment `attempt_count`; `attempt_count` remains the count of already-dispatched attempts at cancellation time.
 
 ## Incident State Contract
 
@@ -214,7 +216,7 @@ Allowed incident states:
 Open incident when any of these occur:
 
 - scheduler execution enters `dead_lettered`
-- same profile has two consecutive executions ending in a non-success terminal state
+- same profile has two consecutive executions ending in `dead_lettered` (operator-initiated `cancelled` executions do not count)
 - overlap retries for a scheduled window exhaust attempt budget
 
 ### Incident Transition Rules
@@ -251,6 +253,12 @@ Required top-level keys:
 4. `result`
 5. `incident`
 
+`incident` key presence rule:
+
+- `incident` must always be present as a top-level key.
+- value must be `null` when no incident is associated with the scheduler run.
+- value must be a non-null incident object conforming to the Incident State Contract when an incident is associated with the run.
+
 Required `scheduler_run` fields:
 
 | Field | Description |
@@ -276,9 +284,9 @@ Required `result` fields:
 | Field | Description |
 | --- | --- |
 | `status` | Terminal scheduler outcome (`succeeded|dead_lettered|cancelled`). |
-| `failure_class` | Nullable; required for non-success outcomes (`retryable|non_retryable|exhausted_retries`). |
-| `failure_code` | Nullable; required for non-success outcomes. |
-| `failure_message` | Nullable; required for non-success outcomes. |
+| `failure_class` | Nullable; required when `status = dead_lettered` (`retryable|non_retryable|exhausted_retries`), `null` for `succeeded|cancelled`. |
+| `failure_code` | Nullable; required when `status = dead_lettered`, `null` for `succeeded|cancelled`. |
+| `failure_message` | Nullable; required when `status = dead_lettered`, `null` for `succeeded|cancelled`. |
 | `failed_stage_id` | Nullable; refresh failed stage id when available. |
 | `attempt_count` | Attempt count at terminal outcome. |
 | `max_attempts` | Attempt budget applied to this execution unit. |
@@ -291,13 +299,13 @@ Required `attempts[]` fields:
 | --- | --- |
 | `attempt_index` | 1-based attempt number. |
 | `state` | Attempt terminal state (`succeeded|failed|overlap_blocked|dispatch_error`). |
-| `started_at_utc` | Attempt start timestamp. |
-| `finished_at_utc` | Attempt finish timestamp. |
-| `duration_seconds` | Attempt wall-clock duration. |
-| `refresh_payload_path` | Path to refresh payload if written; else `null`. |
-| `failure_code` | Failure/error code if non-success. |
-| `failure_message` | Human-readable failure summary if non-success. |
-| `failed_stage_id` | Refresh failed stage id when available; else `null`. |
+| `started_at_utc` | Nullable; attempt start timestamp when the attempt entered `running`; `null` for attempts that never entered `running` (for example `overlap_blocked`, `dispatch_error`). |
+| `finished_at_utc` | Nullable; attempt finish timestamp when the attempt entered `running`; `null` for attempts that never entered `running`. |
+| `duration_seconds` | Nullable; attempt wall-clock duration (`finished_at_utc - started_at_utc`) for attempts that entered `running`; else `null`. |
+| `refresh_payload_path` | Nullable; path to refresh payload if written; else `null`. |
+| `failure_code` | Nullable; failure/error code on non-success attempts; `null` on `succeeded` attempts. |
+| `failure_message` | Nullable; human-readable failure summary on non-success attempts; `null` on `succeeded` attempts. |
+| `failed_stage_id` | Nullable; refresh failed stage id on non-success attempts when available; else `null`. |
 
 ## SLA/SLO Contract v1
 
@@ -310,6 +318,8 @@ Measurement window:
 Definition:
 
 - `schedule_start_delay_seconds = first_running_started_at_utc - scheduled_for_utc`
+- `first_running_started_at_utc` is defined as the earliest non-null `attempts[].started_at_utc` among attempts that entered `running`.
+- if no attempt entered `running` for a scheduler execution unit, that unit is excluded from this SLI numerator/denominator and evaluated via completion/dead-letter SLIs.
 
 SLO target:
 
@@ -320,7 +330,7 @@ SLO target:
 
 Definition:
 
-- ratio of scheduled executions ending in `succeeded` within attempt budget.
+- ratio of scheduled executions ending in `succeeded` within attempt budget (excluding operator-initiated `cancelled` executions from numerator and denominator).
 
 SLO target:
 
