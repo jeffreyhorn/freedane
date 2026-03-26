@@ -138,7 +138,7 @@ Dead-letter artifact root (environment-local):
 
 Dead-letter payload must include:
 
-- final scheduler run `state = dead_lettered` (`scheduler_run.state`)
+- final `scheduler_run.state = dead_lettered`
 - terminal failure class and reason
 - all attempt summaries (attempt index, start/end, exit/error)
 - pointers to any produced refresh payload artifacts
@@ -176,23 +176,24 @@ Allowed scheduler execution states:
 - `running`
 - `retry_pending`
 - `succeeded`
-- `failed_terminal`
+- `failed_pending_dead_letter`
 - `dead_lettered`
 - `cancelled`
 
 ### Required Transitions
 
 - `queued -> dispatched`
-- `dispatched -> running|retry_pending|failed_terminal`
-- `running -> succeeded|retry_pending|failed_terminal`
+- `dispatched -> running|retry_pending|failed_pending_dead_letter`
+- `running -> succeeded|retry_pending|failed_pending_dead_letter`
 - `retry_pending -> dispatched|dead_lettered`
-- `failed_terminal -> dead_lettered` (optional routing step when dead-letter artifact is written)
+- `failed_pending_dead_letter -> dead_lettered`
 - terminal states: `succeeded`, `dead_lettered`, `cancelled`
 
 Transition invariants:
 
-- `attempt_count` increments only on transition to `running`.
-- `started_at_utc` and `finished_at_utc` must be set for each attempt.
+- in this contract, an attempt is a scheduler dispatch attempt (a transition into `dispatched`), regardless of whether execution later reaches `running`.
+- `attempt_count` increments on each transition to `dispatched`, so dispatch-time outcomes (for example overlap or dispatch errors) consume attempt budget.
+- `started_at_utc` and `finished_at_utc` must be set for each execution attempt (each time the run enters `running`).
 - terminal transition must set `terminal_reason`.
 
 ## Incident State Contract
@@ -212,7 +213,7 @@ Allowed incident states:
 Open incident when any of these occur:
 
 - scheduler execution enters `dead_lettered`
-- same profile has two consecutive `failed_terminal` executions
+- same profile has two consecutive executions ending in a non-success terminal state
 - overlap retries for a scheduled window exhaust attempt budget
 
 ### Incident Transition Rules
