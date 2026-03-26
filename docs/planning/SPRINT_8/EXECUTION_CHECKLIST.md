@@ -24,7 +24,7 @@ Source references:
 
 - [x] Day 4: automate `todo_immediately` startup sequence end-to-end (`DAY_4_STARTUP_AUTOMATION.md`)
   - Acceptance gate: one command/workflow runs migrations, core loads, analysis artifacts, and emits deterministic go/no-go outputs.
-- [ ] Day 5: define scheduler resiliency contract (`SCHEDULER_RELIABILITY_V1.md`)
+- [x] Day 5: define scheduler resiliency contract (`SCHEDULER_RELIABILITY_V1.md`)
   - Acceptance gate: retries, dead-letter behavior, overlap policy, and incident state transitions are explicit.
 - [ ] Day 6: implement resilient scheduler integration
   - Acceptance gate: retry/dead-letter/overlap controls are implemented and validated by tests.
