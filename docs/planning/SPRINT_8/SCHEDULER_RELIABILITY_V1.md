@@ -196,7 +196,7 @@ Transition invariants:
 - `attempt_count` increments on each transition to `dispatched`, so dispatch-time outcomes (for example overlap or dispatch errors) consume attempt budget.
 - `started_at_utc` and `finished_at_utc` must be set for each execution attempt (each time the run enters `running`).
 - `failed_pending_dead_letter` is non-terminal and must transition to `dead_lettered` before execution is considered terminal.
-- terminal transitions must set required failure metadata (`failure_class`, `failure_code`, and `failure_message` when applicable).
+- terminal transitions must set required failure metadata on `result` (`result.failure_class`, `result.failure_code`, and `result.failure_message` when applicable).
 - cancellation transitions do not increment `attempt_count`; `attempt_count` remains the count of already-dispatched attempts at cancellation time.
 
 ## Incident State Contract
@@ -298,14 +298,19 @@ Required `attempts[]` fields:
 | Field | Description |
 | --- | --- |
 | `attempt_index` | 1-based attempt number. |
-| `state` | Attempt terminal state (`succeeded|failed|overlap_blocked|dispatch_error`). |
-| `started_at_utc` | Nullable; attempt start timestamp when the attempt entered `running`; `null` for attempts that never entered `running` (for example `overlap_blocked`, `dispatch_error`). |
-| `finished_at_utc` | Nullable; attempt finish timestamp when the attempt exited `running` and reached its terminal attempt state; `null` for attempts that never entered `running`. |
-| `duration_seconds` | Nullable; attempt wall-clock duration (`finished_at_utc - started_at_utc`) for attempts that entered `running`; else `null`. |
+| `state` | Attempt terminal state (`succeeded|failed|cancelled|overlap_blocked|dispatch_error`). |
+| `started_at_utc` | Nullable; attempt start timestamp when the attempt entered `running`; `null` for attempts that never entered `running` (for example `overlap_blocked`, `dispatch_error`). For `cancelled` attempts that had entered `running`, this is when the attempt first entered `running`. |
+| `finished_at_utc` | Nullable; attempt finish timestamp when the attempt exited `running` and reached its terminal attempt state; `null` for attempts that never entered `running`. For `cancelled` attempts that had entered `running`, this is when cancellation took effect and the attempt stopped running. |
+| `duration_seconds` | Nullable; attempt wall-clock duration (`finished_at_utc - started_at_utc`) for attempts that entered `running` (including attempts ending in `cancelled`); else `null`. |
 | `refresh_payload_path` | Nullable; path to refresh payload if written; else `null`. |
-| `failure_code` | Nullable; failure/error code on non-success attempts; `null` on `succeeded` attempts. |
-| `failure_message` | Nullable; human-readable failure summary on non-success attempts; `null` on `succeeded` attempts. |
+| `failure_code` | Nullable; failure/error code on non-success attempts; `null` on `succeeded` and `cancelled` attempts. |
+| `failure_message` | Nullable; human-readable failure summary on non-success attempts; `null` on `succeeded` and `cancelled` attempts. |
 | `failed_stage_id` | Nullable; refresh failed stage id on non-success attempts when available; else `null`. |
+
+When `result.status = cancelled`:
+
+- if cancellation occurs while an attempt is `running`, the last attempt must record `state = cancelled` with `started_at_utc` set when the attempt entered `running`, `finished_at_utc` set when cancellation completed, and `duration_seconds = finished_at_utc - started_at_utc`.
+- run-level metadata remains per run-level contract (`result.failure_class`, `result.failure_code`, and `result.failure_message` are `null` for `cancelled`).
 
 ## SLA/SLO Contract v1
 
