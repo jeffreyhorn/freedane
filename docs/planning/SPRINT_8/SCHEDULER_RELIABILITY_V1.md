@@ -194,7 +194,8 @@ Transition invariants:
 - in this contract, an attempt is a scheduler dispatch attempt (a transition into `dispatched`), regardless of whether execution later reaches `running`.
 - `attempt_count` increments on each transition to `dispatched`, so dispatch-time outcomes (for example overlap or dispatch errors) consume attempt budget.
 - `started_at_utc` and `finished_at_utc` must be set for each execution attempt (each time the run enters `running`).
-- terminal transition must set `terminal_reason`.
+- `failed_pending_dead_letter` is non-terminal and must transition to `dead_lettered` before execution is considered terminal.
+- terminal transitions must set required failure metadata (`failure_class`, `failure_code`, and `failure_message` when applicable).
 
 ## Incident State Contract
 
@@ -240,7 +241,7 @@ Required incident metadata:
 
 Scheduler run payload path:
 
-- `<ACCESSDANE_ARTIFACT_BASE_DIR>/scheduler_logs/<scheduler_run_id>.json`
+- `<ACCESSDANE_REFRESH_LOG_DIR>/<scheduler_run_id>.json` (`ACCESSDANE_REFRESH_LOG_DIR` defaults to `<ACCESSDANE_ARTIFACT_BASE_DIR>/scheduler_logs`)
 
 Required top-level keys:
 
