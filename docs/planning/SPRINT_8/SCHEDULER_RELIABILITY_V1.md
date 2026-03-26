@@ -139,7 +139,7 @@ Dead-letter artifact root (environment-local):
 Dead-letter payload must include:
 
 - final `scheduler_run.state = dead_lettered`
-- terminal failure class and reason
+- terminal failure metadata (`result.failure_class`, `result.failure_code`, `result.failure_message`)
 - all attempt summaries (attempt index, start/end, exit/error)
 - pointers to any produced refresh payload artifacts
 - recommended operator action summary
@@ -300,7 +300,7 @@ Required `attempts[]` fields:
 | `attempt_index` | 1-based attempt number. |
 | `state` | Attempt terminal state (`succeeded|failed|overlap_blocked|dispatch_error`). |
 | `started_at_utc` | Nullable; attempt start timestamp when the attempt entered `running`; `null` for attempts that never entered `running` (for example `overlap_blocked`, `dispatch_error`). |
-| `finished_at_utc` | Nullable; attempt finish timestamp when the attempt entered `running`; `null` for attempts that never entered `running`. |
+| `finished_at_utc` | Nullable; attempt finish timestamp when the attempt exited `running` and reached its terminal attempt state; `null` for attempts that never entered `running`. |
 | `duration_seconds` | Nullable; attempt wall-clock duration (`finished_at_utc - started_at_utc`) for attempts that entered `running`; else `null`. |
 | `refresh_payload_path` | Nullable; path to refresh payload if written; else `null`. |
 | `failure_code` | Nullable; failure/error code on non-success attempts; `null` on `succeeded` attempts. |
