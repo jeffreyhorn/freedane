@@ -85,10 +85,16 @@ Required trigger fields:
 | `trigger_id` | Unique immutable trigger identifier. |
 | `trigger_type` | `scheduled|manual_retry|catch_up`. |
 | `profile_name` | Refresh profile (`daily_refresh`, `analysis_only`, etc.). |
-| `scheduled_for_utc` | Intended schedule window timestamp in UTC. |
+| `scheduled_for_utc` | Intended logical schedule window timestamp in UTC (required, never `null`). For `scheduled`/`catch_up`, this is the schedule window start. For `manual_retry` linked to an existing `scheduled`/`catch_up` trigger, this must equal that original trigger `scheduled_for_utc`; for ad-hoc `manual_retry`, this must equal `created_at_utc`. |
 | `created_at_utc` | Trigger creation timestamp. |
 | `requested_by` | `system` for scheduled/catch-up; actor id for manual retry. |
 | `run_context` | Requested feature/ruleset/version/file context for execution. |
+
+`scheduled_for_utc` semantics by `trigger_type` (used for `run_date` and schedule-adherence SLIs):
+
+- `scheduled`: planned schedule window timestamp.
+- `catch_up`: original missed/deferred schedule window timestamp.
+- `manual_retry`: original window timestamp when linked to prior scheduled/catch-up trigger; otherwise equal to `created_at_utc` for ad-hoc manual retries.
 
 ## Retry, Backoff, And Dead-Letter Contract
 
@@ -215,9 +221,11 @@ Allowed incident states:
 
 Open incident when any of these occur:
 
-- scheduler execution enters `dead_lettered`
-- same profile has two consecutive executions ending in `dead_lettered` (operator-initiated `cancelled` executions do not count)
-- overlap retries for a scheduled window exhaust attempt budget
+- scheduler execution enters `dead_lettered` (including overlap-exhaustion cases)
+
+Escalate incident severity when this occurs:
+
+- same profile has two consecutive executions ending in `dead_lettered` (operator-initiated `cancelled` executions do not count); if an incident is already open for that profile, escalate to `critical`, otherwise open a new `critical` incident.
 
 ### Incident Transition Rules
 
