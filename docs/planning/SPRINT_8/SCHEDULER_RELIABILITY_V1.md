@@ -44,7 +44,7 @@ Out of scope for v1:
 - `refresh-runner` contract remains authoritative for stage semantics and payload shape:
   - [Sprint 7 refresh automation contract](../SPRINT_7/REFRESH_AUTOMATION_V1.md)
 - Existing lock behavior remains the overlap safety primitive:
-  - per-profile lock under `data/.../locks/<profile>.lock`
+  - per-profile lock under `<ACCESSDANE_ARTIFACT_BASE_DIR>/locks/<profile>.lock` (with `data/...` as the default artifact base dir)
 - Environment boundary rules from Sprint 8 remain in force:
   - [environment and promotion contract](ENVIRONMENT_PROMOTION_V1.md)
 
@@ -106,7 +106,7 @@ Attempt 1 is the initial dispatch; retries consume remaining attempt budget.
 
 Backoff delay before each retry attempt:
 
-- `delay_seconds = min(300 * 2^(attempt_index - 2), 3600) + jitter_seconds`
+- `delay_seconds = min(300 * 2**(attempt_index - 2), 3600) + jitter_seconds`
 - `jitter_seconds` uniform in `[0, 60]`
 - attempt indices are 1-based; backoff applies starting at attempt 2
 
@@ -138,7 +138,7 @@ Dead-letter artifact root (environment-local):
 
 Dead-letter payload must include:
 
-- final `scheduler_state = dead_lettered`
+- final scheduler run `state = dead_lettered` (`scheduler_run.state`)
 - terminal failure class and reason
 - all attempt summaries (attempt index, start/end, exit/error)
 - pointers to any produced refresh payload artifacts
@@ -358,4 +358,3 @@ On dead-letter or critical scheduler incident:
 - dynamic priority preemption between profiles
 - arbitrary long-lived trigger queues and historical replay orchestration
 - cross-environment failover scheduler handoff
-
