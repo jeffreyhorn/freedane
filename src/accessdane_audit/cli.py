@@ -1837,9 +1837,10 @@ def scheduler_runner_cmd(
                 param_hint="--artifact-base-dir",
             ) from exc
 
+    artifact_base_dir = artifact_base_dir.expanduser().resolve()
     refresh_log_dir = refresh_log_dir.expanduser().resolve()
     try:
-        refresh_log_dir.relative_to(artifact_base_dir.resolve())
+        refresh_log_dir.relative_to(artifact_base_dir)
     except ValueError as exc:
         raise typer.BadParameter(
             "--refresh-log-dir must be nested under --artifact-base-dir.",

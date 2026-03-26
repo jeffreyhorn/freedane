@@ -364,3 +364,78 @@ def test_scheduler_runner_cli_writes_output_and_uses_trigger_option(
     persisted = json.loads(output_path.read_text(encoding="utf-8"))
     assert persisted["scheduler_run"]["scheduler_run_id"] == "sched_cli"
     assert captured["trigger_type"] == "catch_up"
+
+
+def test_scheduler_runner_cli_expands_user_in_artifact_base_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output_path = tmp_path / "scheduler_payload_tilde.json"
+    captured: dict[str, object] = {}
+
+    payload = {
+        "scheduler_run": {
+            "scheduler_run_id": "sched_tilde",
+            "state": "succeeded",
+            "profile_name": "daily_refresh",
+            "run_date": "20260326",
+            "refresh_run_id": "sched_tilde_a01",
+            "attempt_count": 1,
+            "max_attempts": 3,
+            "created_at_utc": "2026-03-26T12:00:00Z",
+            "updated_at_utc": "2026-03-26T12:00:01Z",
+        },
+        "trigger": {
+            "trigger_id": "trigger_sched_tilde",
+            "trigger_type": "scheduled",
+            "profile_name": "daily_refresh",
+            "scheduled_for_utc": "2026-03-26T12:00:00Z",
+            "created_at_utc": "2026-03-26T12:00:00Z",
+            "requested_by": "system",
+            "run_context": {},
+        },
+        "attempts": [],
+        "result": {
+            "status": "succeeded",
+            "failure_class": None,
+            "failure_code": None,
+            "failure_message": None,
+            "failed_stage_id": None,
+            "attempt_count": 1,
+            "max_attempts": 3,
+            "last_attempt_finished_at_utc": "2026-03-26T12:00:01Z",
+            "dead_letter_path": None,
+            "recommended_operator_action_summary": None,
+        },
+        "incident": None,
+    }
+
+    def _fake_scheduler(**kwargs):
+        captured.update(kwargs)
+        return payload
+
+    monkeypatch.setattr(cli, "run_managed_scheduler_execution", _fake_scheduler)
+    monkeypatch.delenv("ACCESSDANE_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("environment_name", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "scheduler-runner",
+            "--artifact-base-dir",
+            "~/refresh_runs",
+            "--refresh-log-dir",
+            "~/refresh_runs/scheduler_logs",
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert output_path.exists()
+    assert captured["artifact_base_dir"] == (tmp_path / "refresh_runs").resolve()
+    assert (
+        captured["refresh_log_dir"]
+        == (tmp_path / "refresh_runs" / "scheduler_logs").resolve()
+    )
