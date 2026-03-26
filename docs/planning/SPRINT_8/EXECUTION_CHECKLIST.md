@@ -22,7 +22,7 @@ Source references:
 
 ### Startup Automation And Scheduler Reliability (Days 4-6)
 
-- [ ] Day 4: automate `todo_immediately` startup sequence end-to-end
+- [x] Day 4: automate `todo_immediately` startup sequence end-to-end (`DAY_4_STARTUP_AUTOMATION.md`)
   - Acceptance gate: one command/workflow runs migrations, core loads, analysis artifacts, and emits deterministic go/no-go outputs.
 - [ ] Day 5: define scheduler resiliency contract (`SCHEDULER_RELIABILITY_V1.md`)
   - Acceptance gate: retries, dead-letter behavior, overlap policy, and incident state transitions are explicit.
@@ -53,7 +53,7 @@ Source references:
 
 ## Sprint 8 Acceptance Criteria Tracking
 
-- [ ] Analysts can run the startup workflow and receive an objective go/no-go decision.
+- [x] Analysts can run the startup workflow and receive an objective go/no-go decision.
 - [ ] Scheduler, alerting, and observability paths are productionized beyond script-only operation.
 - [ ] Data quality/replay and promotion governance are pipeline-enforced and auditable.
 - [ ] Daily analyst workflow is executable with owned incident routing for critical failures.
