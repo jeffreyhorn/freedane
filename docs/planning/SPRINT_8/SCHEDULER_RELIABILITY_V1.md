@@ -356,7 +356,7 @@ Definition:
 SLO target:
 
 - 99% of scheduled executions start within 10 minutes (`<= 600s`).
-- 100% start within 30 minutes (`<= 1800s`) unless marked dead-lettered due to sustained overlap.
+- 100% start within 30 minutes (`<= 1800s`).
 
 ### SLI 2: Run Completion Reliability
 
