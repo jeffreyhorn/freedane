@@ -90,11 +90,13 @@ Required trigger fields:
 | `requested_by` | `system` for scheduled/catch-up; actor id for manual retry. |
 | `run_context` | Requested feature/ruleset/version/file context for execution. |
 
-`scheduled_for_utc` semantics by `trigger_type` (used for `run_date` and schedule-adherence SLIs):
+`scheduled_for_utc` semantics by `trigger_type` (used for schedule-adherence SLIs; `run_date` derivation is defined separately below):
 
 - `scheduled`: planned schedule window timestamp.
 - `catch_up`: original missed/deferred schedule window timestamp.
 - `manual_retry`: original window timestamp when linked to prior scheduled/catch-up trigger; otherwise equal to `created_at_utc` for ad-hoc manual retries.
+
+Note: for `manual_retry` triggers, `run_date` is derived from `scheduler_run.created_at_utc` even when `scheduled_for_utc` points to a linked original schedule window.
 
 ## Retry, Backoff, And Dead-Letter Contract
 
@@ -337,6 +339,11 @@ When `result.status = cancelled`:
 Measurement window:
 
 - rolling 28-day window per environment/profile pair.
+
+Scheduled-execution population for SLIs/SLOs:
+
+- include scheduler runs where `trigger.trigger_type in {scheduled, catch_up}`.
+- exclude `manual_retry` runs from SLI/SLO numerators and denominators, including linked manual retries that reference a prior scheduled window.
 
 ### SLI 1: Schedule Adherence
 
