@@ -250,17 +250,13 @@ def run_managed_scheduler_execution(
             overlap_dt = now_fn()
             attempt = _build_overlap_attempt(
                 attempt_index=attempt_index,
-                started_at=overlap_dt,
-                finished_at=overlap_dt,
                 message=(
                     "Another refresh run is already active for this profile "
                     f"(lock: {lock_path})."
                 ),
             )
             payload["attempts"].append(attempt)
-            payload["result"]["last_attempt_finished_at_utc"] = attempt[
-                "finished_at_utc"
-            ]
+            payload["result"]["last_attempt_finished_at_utc"] = _iso_utc(overlap_dt)
             if attempt_index < max_attempts:
                 _transition_state(payload=payload, state="retry_pending", now_fn=now_fn)
                 _persist_scheduler_payload(payload_path=payload_path, payload=payload)
@@ -288,7 +284,6 @@ def run_managed_scheduler_execution(
             return payload
 
         refresh_run_id = f"{run_id}_a{attempt_index:02d}"
-        payload["scheduler_run"]["refresh_run_id"] = refresh_run_id
         _transition_state(payload=payload, state="running", now_fn=now_fn)
         _persist_scheduler_payload(payload_path=payload_path, payload=payload)
         attempt_started_dt = now_fn()
@@ -311,11 +306,12 @@ def run_managed_scheduler_execution(
             attempt_finished_dt = now_fn()
             attempt = _build_dispatch_error_attempt(
                 attempt_index=attempt_index,
-                started_at=attempt_started_dt,
-                finished_at=attempt_finished_dt,
                 message=f"Dispatch failure while invoking refresh-runner: {exc}",
             )
             payload["attempts"].append(attempt)
+            payload["scheduler_run"]["refresh_run_id"] = (
+                _latest_non_null_refresh_run_id(payload["attempts"])
+            )
             payload["result"]["last_attempt_finished_at_utc"] = _iso_utc(
                 attempt_finished_dt
             )
@@ -543,8 +539,6 @@ def _build_attempt_from_refresh_payload(
     if code == "overlapping_run":
         return _build_overlap_attempt(
             attempt_index=attempt_index,
-            started_at=run_started,
-            finished_at=run_finished,
             message=message,
         )
     return {
@@ -564,17 +558,15 @@ def _build_attempt_from_refresh_payload(
 def _build_overlap_attempt(
     *,
     attempt_index: int,
-    started_at: datetime,
-    finished_at: datetime,
     message: str,
 ) -> SchedulerAttempt:
     return {
         "attempt_index": attempt_index,
         "refresh_run_id": None,
         "state": "overlap_blocked",
-        "started_at_utc": _iso_utc(started_at),
-        "finished_at_utc": _iso_utc(finished_at),
-        "duration_seconds": _duration_seconds(started_at, finished_at),
+        "started_at_utc": None,
+        "finished_at_utc": None,
+        "duration_seconds": None,
         "refresh_payload_path": None,
         "failure_code": "overlapping_run",
         "failure_message": message,
@@ -585,22 +577,28 @@ def _build_overlap_attempt(
 def _build_dispatch_error_attempt(
     *,
     attempt_index: int,
-    started_at: datetime,
-    finished_at: datetime,
     message: str,
 ) -> SchedulerAttempt:
     return {
         "attempt_index": attempt_index,
         "refresh_run_id": None,
         "state": "dispatch_error",
-        "started_at_utc": _iso_utc(started_at),
-        "finished_at_utc": _iso_utc(finished_at),
-        "duration_seconds": _duration_seconds(started_at, finished_at),
+        "started_at_utc": None,
+        "finished_at_utc": None,
+        "duration_seconds": None,
         "refresh_payload_path": None,
         "failure_code": "dispatch_error",
         "failure_message": message,
         "failed_stage_id": None,
     }
+
+
+def _latest_non_null_refresh_run_id(attempts: list[SchedulerAttempt]) -> Optional[str]:
+    for attempt in reversed(attempts):
+        refresh_run_id = attempt.get("refresh_run_id")
+        if refresh_run_id is not None:
+            return refresh_run_id
+    return None
 
 
 def _validate_scheduler_path_segments(
@@ -715,6 +713,7 @@ def _finalize_dead_letter(
     _transition_state(
         payload=payload, state="failed_pending_dead_letter", now_fn=now_fn
     )
+    _persist_scheduler_payload(payload_path=payload_path, payload=payload)
     _transition_state(payload=payload, state="dead_lettered", now_fn=now_fn)
     dead_letter_path = (
         artifact_base_dir
@@ -741,7 +740,7 @@ def _finalize_dead_letter(
     payload["incident"] = {
         "incident_id": f"inc_{payload['scheduler_run']['scheduler_run_id']}",
         "opened_at_utc": _iso_utc(now_fn()),
-        "severity": "critical",
+        "severity": "warn",
         "scheduler_run_id": payload["scheduler_run"]["scheduler_run_id"],
         "profile_name": payload["scheduler_run"]["profile_name"],
         "failure_class": failure_class,

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from accessdane_audit import cli
+from accessdane_audit import cli, scheduler_integration
 from accessdane_audit.scheduler_integration import run_managed_scheduler_execution
 
 
@@ -142,9 +142,9 @@ def test_scheduler_integration_overlap_exhaustion_routes_to_dead_letter(
         "overlap_blocked",
     ]
     for attempt in payload["attempts"]:
-        assert attempt["started_at_utc"] is not None
-        assert attempt["finished_at_utc"] is not None
-        assert attempt["duration_seconds"] == 0
+        assert attempt["started_at_utc"] is None
+        assert attempt["finished_at_utc"] is None
+        assert attempt["duration_seconds"] is None
     dead_letter_path = Path(payload["result"]["dead_letter_path"] or "")
     assert dead_letter_path.exists()
 
@@ -201,6 +201,7 @@ def test_scheduler_integration_non_retryable_failure_dead_letters_without_retry(
     assert payload["result"]["failure_class"] == "non_retryable"
     assert len(payload["attempts"]) == 1
     assert payload["attempts"][0]["state"] == "failed"
+    assert payload["incident"]["severity"] == "warn"
 
 
 @pytest.mark.parametrize(
@@ -290,9 +291,11 @@ def test_scheduler_integration_dispatch_error_attempt_records_timing(
     assert len(payload["attempts"]) == 1
     attempt = payload["attempts"][0]
     assert attempt["state"] == "dispatch_error"
-    assert attempt["started_at_utc"] == "2026-03-26T12:00:09Z"
-    assert attempt["finished_at_utc"] == "2026-03-26T12:00:12Z"
-    assert attempt["duration_seconds"] == 3
+    assert attempt["started_at_utc"] is None
+    assert attempt["finished_at_utc"] is None
+    assert attempt["duration_seconds"] is None
+    assert payload["scheduler_run"]["refresh_run_id"] is None
+    assert payload["result"]["last_attempt_finished_at_utc"] == "2026-03-26T12:00:12Z"
 
 
 def test_scheduler_runner_cli_writes_output_and_uses_trigger_option(
@@ -491,7 +494,7 @@ def test_scheduler_integration_transitions_to_running_before_dispatch(
 
     assert payload["scheduler_run"]["state"] == "succeeded"
     assert observed["state"] == "running"
-    assert observed["refresh_run_id"] == "sched_running_state_a01"
+    assert observed["refresh_run_id"] == "None"
 
 
 def test_scheduler_integration_rejects_naive_scheduled_for_utc(
@@ -597,3 +600,78 @@ def test_scheduler_integration_atomic_json_writes_leave_no_tmp_files(
     assert dead_letter_path.exists()
     assert not list(refresh_log_dir.glob("*.tmp"))
     assert not list(dead_letter_path.parent.glob("*.tmp"))
+
+
+def test_scheduler_integration_persists_failed_pending_dead_letter_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+    payload_path = refresh_log_dir / "sched_failed_pending_snapshot.json"
+    persisted_states: list[tuple[str, str]] = []
+
+    original_write_json_atomic = scheduler_integration._write_json_atomic
+
+    def _capturing_write(path: Path, payload: object) -> None:
+        if path == payload_path:
+            run_payload = payload
+            assert isinstance(run_payload, dict)
+            scheduler_run = run_payload.get("scheduler_run", {})
+            result = run_payload.get("result", {})
+            if isinstance(scheduler_run, dict) and isinstance(result, dict):
+                state = scheduler_run.get("state")
+                status = result.get("status")
+                if isinstance(state, str) and isinstance(status, str):
+                    persisted_states.append((state, status))
+        original_write_json_atomic(path, payload)
+
+    monkeypatch.setattr(scheduler_integration, "_write_json_atomic", _capturing_write)
+
+    def _runner(**kwargs):
+        run_id = str(kwargs["run_id"])
+        root_path = (
+            artifact_base_dir
+            / str(kwargs["run_date"])
+            / str(kwargs["profile_name"])
+            / run_id
+        )
+        return {
+            "run": {
+                "status": "failed",
+                "started_at": _iso(datetime(2026, 3, 26, 12, 5, tzinfo=timezone.utc)),
+                "finished_at": _iso(datetime(2026, 3, 26, 12, 6, tzinfo=timezone.utc)),
+            },
+            "error": {
+                "code": "invalid_run_context",
+                "message": "invalid context",
+                "failed_stage_id": None,
+            },
+            "artifacts": {"root_path": str(root_path)},
+        }
+
+    payload = run_managed_scheduler_execution(
+        trigger_type="manual_retry",
+        profile_name="daily_refresh",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        refresh_log_dir=refresh_log_dir,
+        accessdane_bin="accessdane",
+        scheduler_run_id="sched_failed_pending_snapshot",
+        max_attempts=1,
+        refresh_runner=_runner,
+    )
+
+    assert payload["scheduler_run"]["state"] == "dead_lettered"
+    assert ("failed_pending_dead_letter", "pending") in persisted_states
+    assert ("dead_lettered", "dead_lettered") in persisted_states
+    failed_pending_index = persisted_states.index(
+        ("failed_pending_dead_letter", "pending")
+    )
+    dead_lettered_index = persisted_states.index(("dead_lettered", "dead_lettered"))
+    assert failed_pending_index < dead_lettered_index
