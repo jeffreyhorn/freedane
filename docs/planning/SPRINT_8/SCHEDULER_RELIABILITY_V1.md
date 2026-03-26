@@ -144,11 +144,12 @@ Dead-letter artifact root (environment-local):
 
 Dead-letter payload must include:
 
+- the same top-level schema as the scheduler run payload (`scheduler_run`, `trigger`, `attempts`, `result`, `incident`)
 - final `scheduler_run.state = dead_lettered`
 - terminal failure metadata (`result.failure_class`, `result.failure_code`, `result.failure_message`)
 - all attempt summaries (attempt index, start/end, exit/error)
 - pointers to any produced refresh payload artifacts
-- recommended operator action summary
+- `result.recommended_operator_action_summary` with concise operator next steps
 
 ## Overlap Policy v1
 
@@ -275,7 +276,7 @@ Required `scheduler_run` fields:
 | `state` | Current scheduler execution state. |
 | `profile_name` | Active refresh profile. |
 | `run_date` | Logical run date (`YYYYMMDD`, UTC). See derivation rule below. |
-| `refresh_run_id` | Bound refresh-runner `run_id` (nullable until dispatch). |
+| `refresh_run_id` | Most recently bound refresh-runner `run_id` for this scheduler execution unit (nullable until first dispatch that creates a refresh run). |
 | `attempt_count` | Total attempts executed so far. |
 | `max_attempts` | Attempt budget for this execution unit. |
 | `created_at_utc` | Creation timestamp. |
@@ -287,25 +288,36 @@ Required `scheduler_run` fields:
 - for `manual_retry` triggers: `run_date = format_utc_yyyymmdd(scheduler_run.created_at_utc)` using the first persisted creation timestamp
 - derived `run_date` is immutable for a given `scheduler_run` and must be used verbatim in dead-letter/artifact path segments that include run-date components
 
-Required `result` fields:
+`refresh_run_id` lifecycle rule:
+
+- each dispatch attempt that starts refresh-runner execution must mint a new refresh-runner `run_id`.
+- per-attempt `run_id` is recorded in `attempts[].refresh_run_id`; it is `null` for attempts that never started refresh-runner (for example `overlap_blocked` or pre-launch `dispatch_error`).
+- `scheduler_run.refresh_run_id` mirrors the latest non-null `attempts[].refresh_run_id`.
+
+Required `result` fields (for every persisted scheduler payload snapshot):
+
+- for non-terminal scheduler states, `result.status` must be `pending`.
+- terminal values (`succeeded|dead_lettered|cancelled`) must only be set after the scheduler run reaches a terminal state.
 
 | Field | Description |
 | --- | --- |
-| `status` | Terminal scheduler outcome (`succeeded|dead_lettered|cancelled`). |
-| `failure_class` | Nullable; required when `status = dead_lettered` (`retryable|non_retryable|exhausted_retries`), `null` for `succeeded|cancelled`. |
-| `failure_code` | Nullable; required when `status = dead_lettered`, `null` for `succeeded|cancelled`. |
-| `failure_message` | Nullable; required when `status = dead_lettered`, `null` for `succeeded|cancelled`. |
+| `status` | Scheduler outcome/status (`pending|succeeded|dead_lettered|cancelled`). |
+| `failure_class` | Nullable; required when `status = dead_lettered` (`retryable|non_retryable|exhausted_retries`), `null` for `pending|succeeded|cancelled`. |
+| `failure_code` | Nullable; required when `status = dead_lettered`, `null` for `pending|succeeded|cancelled`. |
+| `failure_message` | Nullable; required when `status = dead_lettered`, `null` for `pending|succeeded|cancelled`. |
 | `failed_stage_id` | Nullable; refresh failed stage id when available. |
-| `attempt_count` | Attempt count at terminal outcome. |
+| `attempt_count` | Attempt count at the time of this payload snapshot. |
 | `max_attempts` | Attempt budget applied to this execution unit. |
 | `last_attempt_finished_at_utc` | Nullable; timestamp of last finished attempt. |
-| `dead_letter_path` | Nullable unless `status = dead_lettered`. |
+| `dead_letter_path` | Nullable unless `status = dead_lettered`; must be `null` for `pending|succeeded|cancelled`. |
+| `recommended_operator_action_summary` | Nullable; required when `status = dead_lettered`, `null` for `pending|succeeded|cancelled`. |
 
 Required `attempts[]` fields:
 
 | Field | Description |
 | --- | --- |
 | `attempt_index` | 1-based attempt number. |
+| `refresh_run_id` | Nullable; refresh-runner `run_id` for this attempt when refresh-runner execution started; `null` for attempts that never started refresh-runner. |
 | `state` | Attempt terminal state (`succeeded|failed|cancelled|overlap_blocked|dispatch_error`). |
 | `started_at_utc` | Nullable; attempt start timestamp when the attempt entered `running`; `null` for attempts that never entered `running` (for example `overlap_blocked`, `dispatch_error`). For `cancelled` attempts that had entered `running`, this is when the attempt first entered `running`. |
 | `finished_at_utc` | Nullable; attempt finish timestamp when the attempt exited `running` and reached its terminal attempt state; `null` for attempts that never entered `running`. For `cancelled` attempts that had entered `running`, this is when cancellation took effect and the attempt stopped running. |
