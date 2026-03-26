@@ -418,7 +418,10 @@ run_step \
   "--trend-out" "${BENCHMARK_TREND_OUT}" \
   "--alert-out" "${BENCHMARK_ALERT_OUT}"
 
-"${PYTHON_BIN}" - \
+run_step \
+  "generate_startup_summary" \
+  "true" \
+  "${PYTHON_BIN}" - \
   "${STEP_RESULTS_FILE}" \
   "${GO_NO_GO_OUT}" \
   "${SUMMARY_OUT}" \
@@ -769,6 +772,125 @@ summary_payload = {
 }
 Path(summary_path).write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 PY
+
+GENERATOR_STATUS="$(awk -F '\t' '$1=="generate_startup_summary"{step_status=$3} END{print step_status}' "${STEP_RESULTS_FILE}")"
+GENERATOR_EXIT_CODE="$(awk -F '\t' '$1=="generate_startup_summary"{step_code=$4} END{print step_code}' "${STEP_RESULTS_FILE}")"
+GENERATOR_LOG_PATH="$(awk -F '\t' '$1=="generate_startup_summary"{step_log_path=$5} END{print step_log_path}' "${STEP_RESULTS_FILE}")"
+
+if [[ "${GENERATOR_STATUS}" != "succeeded" || ! -s "${GO_NO_GO_OUT}" || ! -s "${SUMMARY_OUT}" ]]; then
+  "${PYTHON_BIN}" - \
+    "${STEP_RESULTS_FILE}" \
+    "${GO_NO_GO_OUT}" \
+    "${SUMMARY_OUT}" \
+    "${RUN_ID}" \
+    "${RUN_DATE}" \
+    "${PROFILE_NAME}" \
+    "${FEATURE_VERSION}" \
+    "${RULESET_VERSION}" \
+    "${SALES_RATIO_BASE}" \
+    "${TOP_N}" \
+    "${RETR_FILE}" \
+    "${PERMITS_FILE}" \
+    "${APPEALS_FILE}" \
+    "${GENERATOR_EXIT_CODE}" \
+    "${GENERATOR_LOG_PATH}" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+(
+    step_results_path,
+    go_no_go_path,
+    summary_path,
+    run_id,
+    run_date,
+    profile_name,
+    feature_version,
+    ruleset_version,
+    sales_ratio_base,
+    top_n,
+    retr_file,
+    permits_file,
+    appeals_file,
+    generator_exit_code,
+    generator_log_path,
+) = sys.argv[1:]
+
+steps: list[dict[str, object]] = []
+path = Path(step_results_path)
+if path.is_file():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 4)
+        if len(parts) != 5:
+            continue
+        step_id, required, status, exit_code, log_path = parts
+        try:
+            parsed_exit_code = int(exit_code)
+        except ValueError:
+            parsed_exit_code = -1
+        steps.append(
+            {
+                "step_id": step_id,
+                "required": required == "true",
+                "status": status,
+                "exit_code": parsed_exit_code,
+                "log_path": log_path,
+            }
+        )
+
+reason = (
+    "generate_startup_summary failed"
+    f" (exit {generator_exit_code or 'unknown'})"
+    + (f"; see log {generator_log_path}" if generator_log_path else "")
+)
+go_no_go_payload = {
+    "run_id": run_id,
+    "run_date": run_date,
+    "decision": "NO_GO",
+    "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    "checks": [
+        {
+            "check_id": "generate_startup_summary_succeeded",
+            "passed": False,
+            "details": reason,
+        }
+    ],
+    "blocking_reasons": [reason],
+}
+Path(go_no_go_path).write_text(json.dumps(go_no_go_payload, indent=2), encoding="utf-8")
+
+summary_payload = {
+    "run": {
+        "run_id": run_id,
+        "run_date": run_date,
+        "profile_name": profile_name,
+        "feature_version": feature_version,
+        "ruleset_version": ruleset_version,
+        "sales_ratio_base": sales_ratio_base,
+        "top_n": int(top_n),
+        "status": "failed",
+    },
+    "inputs": {
+        "retr_file": retr_file or None,
+        "permits_file": permits_file or None,
+        "appeals_file": appeals_file or None,
+    },
+    "steps": steps,
+    "artifacts": {
+        "go_no_go": go_no_go_path,
+    },
+    "go_no_go": go_no_go_payload,
+}
+Path(summary_path).write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+PY
+  echo "STARTUP NO-GO: startup summary generation failed; fallback artifacts were emitted." >&2
+  echo "go/no-go artifact: ${GO_NO_GO_OUT}" >&2
+  echo "startup summary: ${SUMMARY_OUT}" >&2
+  exit 1
+fi
 
 DECISION="$("${PYTHON_BIN}" - <<'PY' "${GO_NO_GO_OUT}"
 import json
