@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
-from typing import Iterable, Mapping, Optional, Sequence, TypedDict
+from typing import Any, Iterable, Mapping, Optional, Sequence, TypedDict
 
 import typer
 from bs4 import BeautifulSoup
@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 
 from .alert_transport import (
     SimulatedDeliveryAdapter,
+    TransportError,
     load_canonical_alerts,
     load_route_config,
     run_alert_transport,
@@ -3760,29 +3761,41 @@ def alert_transport_cmd(
         transport_run_id or f"alert_transport_{run_dt.strftime('%Y%m%d_%H%M%S')}"
     )
 
-    alerts = load_canonical_alerts(
-        alert_files=alert_file,
-        scheduler_files=scheduler_file,
-    )
-    route_policy_config = load_route_config(
-        route_group=resolved_route_group,
-        config_path=route_config,
-    )
-    payload = run_alert_transport(
-        route_group=resolved_route_group,
-        config=route_policy_config,
-        alerts=alerts,
-        adapter=SimulatedDeliveryAdapter(),
-        artifact_base_dir=artifact_base_dir.expanduser().resolve(),
-        environment_name=environment_name,
-        transport_run_id=resolved_run_id,
-    )
+    parse_warnings: list[str] = []
+    try:
+        alerts = load_canonical_alerts(
+            alert_files=alert_file,
+            scheduler_files=scheduler_file,
+            parse_warnings=parse_warnings,
+        )
+        route_policy_config = load_route_config(
+            route_group=resolved_route_group,
+            config_path=route_config,
+        )
+        payload = run_alert_transport(
+            route_group=resolved_route_group,
+            config=route_policy_config,
+            alerts=alerts,
+            adapter=SimulatedDeliveryAdapter(),
+            artifact_base_dir=artifact_base_dir.expanduser().resolve(),
+            environment_name=environment_name,
+            transport_run_id=resolved_run_id,
+        )
+    except TransportError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="alert-transport",
+        ) from exc
+
+    output_payload: dict[str, Any] = dict(payload)
+    if parse_warnings:
+        output_payload["warnings"] = parse_warnings
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        out.write_text(json.dumps(output_payload, indent=2), encoding="utf-8")
     else:
-        typer.echo(json.dumps(payload, indent=2))
+        typer.echo(json.dumps(output_payload, indent=2))
 
     if payload["run"]["status"] != "succeeded":
         raise typer.Exit(code=1)

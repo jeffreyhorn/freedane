@@ -4,13 +4,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
 from accessdane_audit.alert_transport import (
     SimulatedDeliveryAdapter,
+    TransportError,
     default_route_config,
     load_canonical_alerts,
+    load_route_config,
     run_alert_transport,
 )
 
@@ -307,3 +310,92 @@ def test_alert_transport_cli_runs_end_to_end_with_alert_file(tmp_path: Path) -> 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["run"]["status"] == "succeeded"
     assert payload["summary"]["event_count"] == 1
+
+
+def test_load_canonical_alerts_skips_malformed_json_and_records_warning(
+    tmp_path: Path,
+) -> None:
+    valid_alert_path = tmp_path / "valid_alert.json"
+    valid_alert_path.write_text(
+        json.dumps(_parser_alert_payload(), indent=2),
+        encoding="utf-8",
+    )
+    malformed_path = tmp_path / "malformed.json"
+    malformed_path.write_text("{not-json", encoding="utf-8")
+
+    warnings: list[str] = []
+    alerts = load_canonical_alerts(
+        alert_files=[valid_alert_path, malformed_path],
+        scheduler_files=[],
+        parse_warnings=warnings,
+        now_fn=_fixed_now,
+    )
+
+    assert len(alerts) == 1
+    assert len(warnings) == 1
+    assert "Skipped malformed JSON file" in warnings[0]
+
+
+def test_load_route_config_rejects_route_group_mismatch(tmp_path: Path) -> None:
+    config_path = tmp_path / "route_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "alert_route_config_v1",
+                "route_group": "prod-alerts",
+                "routes": {},
+                "destinations": {},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TransportError, match="route_group mismatch"):
+        load_route_config(route_group="ops-alerts", config_path=config_path)
+
+
+def test_alert_transport_rejects_non_null_ack_timeout_when_not_required(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+    config["routes"]["ops-alerts.parser_drift.info"] = {
+        "primary_destinations": ["slack.ops-info"],
+        "escalation_destinations": [],
+        "ack_required": False,
+        "ack_timeout_seconds": "invalid-non-null",
+        "escalation_schedule_seconds": [],
+    }
+
+    alert = {
+        "event_id": "evt_info_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.info",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "info",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "info",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.info",
+    }
+
+    with pytest.raises(
+        TransportError,
+        match="must set ack_timeout_seconds to null when ack_required=false",
+    ):
+        run_alert_transport(
+            route_group="ops-alerts",
+            config=config,
+            alerts=[alert],
+            adapter=SimulatedDeliveryAdapter(),
+            artifact_base_dir=tmp_path / "alerts",
+            environment_name="dev",
+            transport_run_id="bad_ack_timeout_001",
+            now_fn=_fixed_now,
+        )

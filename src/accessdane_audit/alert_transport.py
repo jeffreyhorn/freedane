@@ -158,14 +158,35 @@ def _parse_utc_timestamp(value: Optional[str], *, fallback_now: datetime) -> dat
 
 
 def _portable_source_path(path: Path) -> str:
-    try:
-        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
+    resolved = path.resolve()
+    lowered_parts = [part.lower() for part in resolved.parts]
+    if "data" in lowered_parts:
+        data_index = lowered_parts.index("data")
+        return Path(*resolved.parts[data_index:]).as_posix()
+    return Path(path.name).as_posix()
 
 
 def _sha256_bytes(payload_bytes: bytes) -> str:
     return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _validate_path_component(*, label: str, value: str) -> str:
+    text = value.strip()
+    if not text:
+        raise TransportError(f"{label} must be non-empty.")
+    if not _SAFE_PATH_SEGMENT_RE.fullmatch(text):
+        raise TransportError(
+            f"{label} contains unsupported characters; allowed: letters, "
+            "digits, '.', '_' and '-'."
+        )
+    return text
 
 
 def _build_event_id(
@@ -421,12 +442,24 @@ def load_canonical_alerts(
     *,
     alert_files: Sequence[Path],
     scheduler_files: Sequence[Path],
+    parse_warnings: Optional[list[str]] = None,
     now_fn: Callable[[], datetime] = _now_utc,
 ) -> list[CanonicalAlertInstance]:
     results: list[CanonicalAlertInstance] = []
     for source_path in [*alert_files, *scheduler_files]:
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(source_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            if parse_warnings is not None:
+                parse_warnings.append(
+                    f"Skipped malformed JSON file: {source_path.as_posix()}"
+                )
+            continue
         if not isinstance(payload, dict):
+            if parse_warnings is not None:
+                parse_warnings.append(
+                    f"Skipped non-object JSON payload: {source_path.as_posix()}"
+                )
             continue
         source_payload_hash = _sha256_bytes(source_path.read_bytes())
         now_dt = now_fn()
@@ -522,9 +555,15 @@ def default_route_config(route_group: str) -> RouteConfig:
 
 
 def load_route_config(*, route_group: str, config_path: Optional[Path]) -> RouteConfig:
+    resolved_route_group = _validate_route_group(route_group)
     if config_path is None:
-        return default_route_config(route_group)
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
+        return default_route_config(resolved_route_group)
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise TransportError(
+            f"Route config JSON is invalid: {config_path.as_posix()}"
+        ) from exc
     if not isinstance(payload, dict):
         raise TransportError("route config must be a JSON object")
     routes = payload.get("routes")
@@ -533,11 +572,16 @@ def load_route_config(*, route_group: str, config_path: Optional[Path]) -> Route
         raise TransportError(
             "route config requires object keys: routes and destinations"
         )
+    config_route_group = _as_str(payload.get("route_group")) or resolved_route_group
+    if config_route_group != resolved_route_group:
+        raise TransportError(
+            "route_group mismatch between CLI/environment and route config file."
+        )
     return {
         "contract_version": str(
             payload.get("contract_version") or "alert_route_config_v1"
         ),
-        "route_group": str(payload.get("route_group") or route_group),
+        "route_group": config_route_group,
         "routes": routes,
         "destinations": destinations,
     }
@@ -589,19 +633,19 @@ def _validate_route_policy(
             f"Routing policy {policy_key} has no primary_destinations."
         )
     ack_required = bool(policy.get("ack_required"))
-    ack_timeout = _as_int(policy.get("ack_timeout_seconds"))
+    raw_ack_timeout = policy.get("ack_timeout_seconds")
+    ack_timeout = _as_int(raw_ack_timeout)
     if ack_required and ack_timeout is None:
         raise TransportError(
             "Routing policy "
             f"{policy_key} requires ack_timeout_seconds when ack_required=true."
         )
-    if not ack_required and policy.get("ack_timeout_seconds") is not None:
-        if ack_timeout is not None:
-            raise TransportError(
-                "Routing policy "
-                f"{policy_key} must set ack_timeout_seconds to null when "
-                "ack_required=false."
-            )
+    if not ack_required and raw_ack_timeout is not None:
+        raise TransportError(
+            "Routing policy "
+            f"{policy_key} must set ack_timeout_seconds to null when "
+            "ack_required=false."
+        )
     schedule = [
         seconds
         for seconds in (
@@ -708,7 +752,10 @@ class _IdempotencyIndex:
     def _load(self) -> dict[str, str]:
         if not self.path.exists():
             return {}
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
         if not isinstance(payload, dict):
             return {}
         result: dict[str, str] = {}
@@ -724,20 +771,11 @@ class _IdempotencyIndex:
         self._values[key] = event_id
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._values, indent=2), encoding="utf-8")
+        _write_json_atomic(self.path, self._values)
 
 
 def _validate_route_group(route_group: str) -> str:
-    text = route_group.strip()
-    if not text:
-        raise TransportError("route_group must be non-empty")
-    if not _SAFE_PATH_SEGMENT_RE.fullmatch(text):
-        raise TransportError(
-            "route_group contains unsupported characters; allowed: letters, "
-            "digits, '.', '_' and '-'."
-        )
-    return text
+    return _validate_path_component(label="route_group", value=route_group)
 
 
 def _idempotency_key(
@@ -795,6 +833,168 @@ def _delivery_overall_status(statuses: Sequence[DeliveryStatus]) -> DeliveryStat
     return "pending"
 
 
+def _retry_delay_seconds(
+    *, next_attempt_index: int, event_id: str, destination_id: str
+) -> int:
+    if next_attempt_index < 2:
+        return 0
+    base_seconds = min(30 * (2 ** (next_attempt_index - 2)), 900)
+    jitter_seed = hashlib.sha256(
+        f"{event_id}|{destination_id}|{next_attempt_index}".encode("utf-8")
+    ).hexdigest()
+    jitter_seconds = int(jitter_seed[:8], 16) % 31
+    return base_seconds + jitter_seconds
+
+
+def _build_transport_envelope_stub(
+    *,
+    event_id: str,
+    transport_run_id: str,
+    emitted_at_utc: str,
+    run_date: str,
+    environment_name: str,
+    route_group: str,
+    alert: Mapping[str, Any],
+    canonical_routing_key: str,
+    policy_id: str,
+    policy_version: Optional[str],
+) -> dict[str, Any]:
+    return {
+        "envelope": {
+            "contract_version": "alert_transport_v1",
+            "event_id": event_id,
+            "transport_run_id": transport_run_id,
+            "emitted_at_utc": emitted_at_utc,
+            "run_date": run_date,
+            "environment": environment_name,
+            "alert_route_group": route_group,
+        },
+        "alert": alert,
+        "route": {
+            "canonical_routing_key": canonical_routing_key,
+            "source_routing_key": alert.get("source_routing_key"),
+            "policy_id": policy_id,
+            "policy_version": policy_version,
+        },
+    }
+
+
+def _attempt_destination_delivery(
+    *,
+    alert: CanonicalAlertInstance,
+    destination_id: str,
+    destination: DestinationConfig,
+    canonical_routing_key: str,
+    max_attempts: int,
+    envelope_stub: Mapping[str, Any],
+    adapter: DeliveryAdapter,
+    idempotency_index: "_IdempotencyIndex",
+    start_dt: datetime,
+) -> tuple[dict[str, Any], list[dict[str, Any]], Optional[datetime]]:
+    idempotency_key = _idempotency_key(
+        event_id=alert["event_id"],
+        destination_id=destination_id,
+        canonical_routing_key=canonical_routing_key,
+        severity=alert["severity"],
+    )
+    if idempotency_index.contains(idempotency_key):
+        return (
+            {
+                "destination_id": destination_id,
+                "status": "suppressed_duplicate",
+                "attempt_count": 0,
+                "max_attempts": max_attempts,
+                "last_attempt_at_utc": None,
+                "next_attempt_at_utc": None,
+            },
+            [
+                {
+                    "destination_id": destination_id,
+                    "status": "suppressed_duplicate",
+                    "idempotency_key": idempotency_key,
+                }
+            ],
+            None,
+        )
+
+    attempt_dt = start_dt
+    receipts: list[dict[str, Any]] = []
+    last_attempt_at_utc: Optional[str] = None
+
+    for attempt_index in range(1, max_attempts + 1):
+        last_attempt_at_utc = _iso_utc(attempt_dt)
+        outcome = adapter.deliver(
+            destination_id=destination_id,
+            destination=destination,
+            envelope=envelope_stub,
+            attempt_index=attempt_index,
+        )
+        receipt = dict(outcome.receipt)
+        receipt["attempt_index"] = attempt_index
+        receipt["destination_id"] = destination_id
+        receipt["at_utc"] = last_attempt_at_utc
+
+        if outcome.delivered:
+            idempotency_index.add(idempotency_key, alert["event_id"])
+            idempotency_index.save()
+            receipts.append(receipt)
+            return (
+                {
+                    "destination_id": destination_id,
+                    "status": "delivered",
+                    "attempt_count": attempt_index,
+                    "max_attempts": max_attempts,
+                    "last_attempt_at_utc": last_attempt_at_utc,
+                    "next_attempt_at_utc": None,
+                },
+                receipts,
+                attempt_dt,
+            )
+
+        if outcome.retryable and attempt_index < max_attempts:
+            delay_seconds = _retry_delay_seconds(
+                next_attempt_index=attempt_index + 1,
+                event_id=alert["event_id"],
+                destination_id=destination_id,
+            )
+            next_attempt_dt = attempt_dt + timedelta(seconds=delay_seconds)
+            receipt["next_attempt_at_utc"] = _iso_utc(next_attempt_dt)
+            receipt["backoff_seconds"] = delay_seconds
+            receipts.append(receipt)
+            attempt_dt = next_attempt_dt
+            continue
+
+        receipts.append(receipt)
+        final_status: DeliveryStatus = (
+            "failed_retryable" if outcome.retryable else "failed_terminal"
+        )
+        return (
+            {
+                "destination_id": destination_id,
+                "status": final_status,
+                "attempt_count": attempt_index,
+                "max_attempts": max_attempts,
+                "last_attempt_at_utc": last_attempt_at_utc,
+                "next_attempt_at_utc": None,
+            },
+            receipts,
+            None,
+        )
+
+    return (
+        {
+            "destination_id": destination_id,
+            "status": "failed_terminal",
+            "attempt_count": max_attempts,
+            "max_attempts": max_attempts,
+            "last_attempt_at_utc": last_attempt_at_utc,
+            "next_attempt_at_utc": None,
+        },
+        receipts,
+        None,
+    )
+
+
 def run_alert_transport(
     *,
     route_group: str,
@@ -807,10 +1007,17 @@ def run_alert_transport(
     now_fn: Callable[[], datetime] = _now_utc,
 ) -> TransportRunPayload:
     resolved_group = _validate_route_group(route_group)
+    config_route_group = _as_str(config.get("route_group"))
+    if config_route_group is not None and config_route_group != resolved_group:
+        raise TransportError(
+            "route_group mismatch between runtime and loaded route configuration."
+        )
+    _validate_path_component(label="transport_run_id", value=transport_run_id)
+
     run_started = now_fn()
     emitted_at = _iso_utc(run_started)
     run_date = run_started.strftime("%Y%m%d")
-    run_root = artifact_base_dir / run_date / transport_run_id
+    run_root = artifact_base_dir / run_date
     run_root.mkdir(parents=True, exist_ok=True)
 
     idempotency_index = _IdempotencyIndex(
@@ -829,20 +1036,72 @@ def run_alert_transport(
             config=config,
         )
 
+        safe_event_id = _validate_path_component(
+            label="event_id",
+            value=alert["event_id"],
+        )
+        if safe_event_id != alert["event_id"]:
+            raise TransportError("event_id cannot contain leading/trailing whitespace.")
+
+        all_destination_ids = (
+            policy["primary_destinations"] + policy["escalation_destinations"]
+        )
+        destination_configs = {
+            destination_id: _destination_config_or_default(
+                destination_id=destination_id,
+                config=config,
+            )
+            for destination_id in all_destination_ids
+        }
+
         destination_records: list[dict[str, Any]] = []
         delivery_receipts: list[dict[str, Any]] = []
         status_values: list[DeliveryStatus] = []
         first_delivery_dt: Optional[datetime] = None
+        current_dt = run_started
 
-        for destination_id in (
-            policy["primary_destinations"] + policy["escalation_destinations"]
-        ):
-            is_primary = destination_id in policy["primary_destinations"]
-            destination = _destination_config_or_default(
+        envelope_stub = _build_transport_envelope_stub(
+            event_id=alert["event_id"],
+            transport_run_id=transport_run_id,
+            emitted_at_utc=emitted_at,
+            run_date=run_date,
+            environment_name=environment_name,
+            route_group=resolved_group,
+            alert=alert,
+            canonical_routing_key=canonical_routing_key,
+            policy_id=policy_id,
+            policy_version=config.get("contract_version"),
+        )
+
+        for destination_id in policy["primary_destinations"]:
+            destination = destination_configs[destination_id]
+            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]]
+            destination_record, receipts, delivered_at = _attempt_destination_delivery(
+                alert=alert,
                 destination_id=destination_id,
-                config=config,
+                destination=destination,
+                canonical_routing_key=canonical_routing_key,
+                max_attempts=max_attempts,
+                envelope_stub=envelope_stub,
+                adapter=adapter,
+                idempotency_index=idempotency_index,
+                start_dt=current_dt,
             )
-            if not is_primary:
+            destination_records.append(destination_record)
+            delivery_receipts.extend(receipts)
+            status_values.append(destination_record["status"])
+            if delivered_at is not None and first_delivery_dt is None:
+                first_delivery_dt = delivered_at
+            if destination_record["last_attempt_at_utc"]:
+                current_dt = _parse_utc_timestamp(
+                    destination_record["last_attempt_at_utc"],
+                    fallback_now=current_dt,
+                )
+
+        for destination_id in policy["escalation_destinations"]:
+            destination = destination_configs[destination_id]
+            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]]
+            if first_delivery_dt is None or not policy["ack_required"]:
                 destination_records.append(
                     {
                         "destination_id": destination_id,
@@ -856,97 +1115,54 @@ def run_alert_transport(
                 status_values.append("pending")
                 continue
 
-            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]]
-            idempotency_key = _idempotency_key(
-                event_id=alert["event_id"],
-                destination_id=destination_id,
-                canonical_routing_key=canonical_routing_key,
-                severity=alert["severity"],
-            )
-            if idempotency_index.contains(idempotency_key):
+            escalation_offsets = policy["escalation_schedule_seconds"]
+            due_offsets = [
+                offset
+                for offset in escalation_offsets
+                if now_fn() >= first_delivery_dt + timedelta(seconds=offset)
+            ]
+            if not due_offsets:
+                next_due_utc: Optional[str] = None
+                if escalation_offsets:
+                    next_due_dt = first_delivery_dt + timedelta(
+                        seconds=min(escalation_offsets)
+                    )
+                    next_due_utc = _iso_utc(next_due_dt)
                 destination_records.append(
                     {
                         "destination_id": destination_id,
-                        "status": "suppressed_duplicate",
+                        "status": "pending",
                         "attempt_count": 0,
                         "max_attempts": max_attempts,
                         "last_attempt_at_utc": None,
-                        "next_attempt_at_utc": None,
+                        "next_attempt_at_utc": next_due_utc,
                     }
                 )
-                status_values.append("suppressed_duplicate")
-                delivery_receipts.append(
-                    {
-                        "destination_id": destination_id,
-                        "status": "suppressed_duplicate",
-                        "idempotency_key": idempotency_key,
-                    }
-                )
+                status_values.append("pending")
                 continue
 
-            final_status: DeliveryStatus = "failed_terminal"
-            last_attempt_at_utc: Optional[str] = None
-            attempt_count = 0
-            for attempt_index in range(1, max_attempts + 1):
-                attempt_count = attempt_index
-                attempt_dt = now_fn()
-                last_attempt_at_utc = _iso_utc(attempt_dt)
-                envelope = {
-                    "envelope": {
-                        "contract_version": "alert_transport_v1",
-                        "event_id": alert["event_id"],
-                        "transport_run_id": transport_run_id,
-                        "emitted_at_utc": emitted_at,
-                        "run_date": run_date,
-                        "environment": environment_name,
-                        "alert_route_group": resolved_group,
-                    },
-                    "alert": alert,
-                    "route": {
-                        "canonical_routing_key": canonical_routing_key,
-                        "source_routing_key": alert["source_routing_key"],
-                        "policy_id": policy_id,
-                        "policy_version": config.get("contract_version"),
-                    },
-                }
-                outcome = adapter.deliver(
-                    destination_id=destination_id,
-                    destination=destination,
-                    envelope=envelope,
-                    attempt_index=attempt_index,
-                )
-                receipt = dict(outcome.receipt)
-                receipt["attempt_index"] = attempt_index
-                receipt["destination_id"] = destination_id
-                receipt["at_utc"] = last_attempt_at_utc
-                delivery_receipts.append(receipt)
-
-                if outcome.delivered:
-                    final_status = "delivered"
-                    idempotency_index.add(idempotency_key, alert["event_id"])
-                    if first_delivery_dt is None:
-                        first_delivery_dt = attempt_dt
-                    break
-                if outcome.retryable and attempt_index < max_attempts:
-                    final_status = "failed_retryable"
-                    continue
-                if outcome.retryable:
-                    final_status = "failed_retryable"
-                else:
-                    final_status = "failed_terminal"
-                break
-
-            destination_records.append(
-                {
-                    "destination_id": destination_id,
-                    "status": final_status,
-                    "attempt_count": attempt_count,
-                    "max_attempts": max_attempts,
-                    "last_attempt_at_utc": last_attempt_at_utc,
-                    "next_attempt_at_utc": None,
-                }
+            destination_record, receipts, _ = _attempt_destination_delivery(
+                alert=alert,
+                destination_id=destination_id,
+                destination=destination,
+                canonical_routing_key=canonical_routing_key,
+                max_attempts=max_attempts,
+                envelope_stub=envelope_stub,
+                adapter=adapter,
+                idempotency_index=idempotency_index,
+                start_dt=max(
+                    now_fn(),
+                    first_delivery_dt + timedelta(seconds=min(due_offsets)),
+                ),
             )
-            status_values.append(final_status)
+            destination_records.append(destination_record)
+            delivery_receipts.extend(receipts)
+            status_values.append(destination_record["status"])
+            if destination_record["last_attempt_at_utc"]:
+                current_dt = _parse_utc_timestamp(
+                    destination_record["last_attempt_at_utc"],
+                    fallback_now=current_dt,
+                )
 
         overall_status = _delivery_overall_status(status_values)
         ack_required = policy["ack_required"]
@@ -987,20 +1203,15 @@ def run_alert_transport(
             "destinations": [
                 {
                     "destination_id": destination_id,
-                    "channel_type": _destination_config_or_default(
-                        destination_id=destination_id,
-                        config=config,
-                    )["channel_type"],
-                    "channel_target": _destination_config_or_default(
-                        destination_id=destination_id,
-                        config=config,
-                    )["channel_target"],
+                    "channel_type": destination_configs[destination_id]["channel_type"],
+                    "channel_target": destination_configs[destination_id][
+                        "channel_target"
+                    ],
                     "is_primary": destination_id in policy["primary_destinations"],
                     "is_escalation": destination_id
                     in policy["escalation_destinations"],
                 }
-                for destination_id in policy["primary_destinations"]
-                + policy["escalation_destinations"]
+                for destination_id in all_destination_ids
             ],
             "delivery": {
                 "overall_status": overall_status,
@@ -1024,26 +1235,23 @@ def run_alert_transport(
         }
         events.append(event_payload)
 
-        event_root = run_root / alert["event_id"]
+        event_root = run_root / safe_event_id
         event_root.mkdir(parents=True, exist_ok=True)
-        (event_root / "alert_transport_envelope.json").write_text(
-            json.dumps(event_payload, indent=2),
-            encoding="utf-8",
+        _write_json_atomic(
+            event_root / "alert_transport_envelope.json",
+            event_payload,
         )
         attempts_path = event_root / "delivery_attempts.jsonl"
         with attempts_path.open("a", encoding="utf-8") as handle:
             for receipt in delivery_receipts:
                 handle.write(json.dumps(receipt) + "\n")
-        (event_root / "delivery_status.json").write_text(
-            json.dumps(
-                {
-                    "event_id": alert["event_id"],
-                    "overall_status": overall_status,
-                    "delivery_count": len(destination_records),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        _write_json_atomic(
+            event_root / "delivery_status.json",
+            {
+                "event_id": alert["event_id"],
+                "overall_status": overall_status,
+                "delivery_count": len(destination_records),
+            },
         )
 
     idempotency_index.save()
