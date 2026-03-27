@@ -447,9 +447,11 @@ def load_canonical_alerts(
 ) -> list[CanonicalAlertInstance]:
     results: list[CanonicalAlertInstance] = []
     for source_path in [*alert_files, *scheduler_files]:
+        source_bytes = source_path.read_bytes()
+        source_payload_hash = _sha256_bytes(source_bytes)
         try:
-            payload = json.loads(source_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            payload = json.loads(source_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError):
             if parse_warnings is not None:
                 parse_warnings.append(
                     f"Skipped malformed JSON file: {source_path.as_posix()}"
@@ -461,7 +463,6 @@ def load_canonical_alerts(
                     f"Skipped non-object JSON payload: {source_path.as_posix()}"
                 )
             continue
-        source_payload_hash = _sha256_bytes(source_path.read_bytes())
         now_dt = now_fn()
         results.extend(
             _normalize_single_alert_payload(

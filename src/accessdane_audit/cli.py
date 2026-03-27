@@ -3685,7 +3685,7 @@ def alert_transport_cmd(
         readable=True,
         resolve_path=True,
         help=(
-            "Alert payload JSON file (repeatable; parser_drift/load_monitor/"
+            "Alert payload JSON file (repeatable; parser_drift/load_monitoring/"
             "benchmark alert shapes)."
         ),
     ),
