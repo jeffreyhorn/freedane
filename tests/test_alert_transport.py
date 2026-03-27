@@ -223,6 +223,66 @@ def test_alert_transport_retries_retryable_delivery_and_then_succeeds(
     assert delivery["deliveries"][0]["attempt_count"] == 2
 
 
+def test_alert_transport_records_delivery_errors_in_receipts_and_status(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+    config["routes"]["ops-alerts.parser_drift.warn"] = {
+        "primary_destinations": ["slack.ops-warn"],
+        "escalation_destinations": [],
+        "ack_required": True,
+        "ack_timeout_seconds": 60,
+        "escalation_schedule_seconds": [60],
+    }
+    config["destinations"]["slack.ops-warn"] = {
+        "channel_type": "slack",
+        "channel_target": "ops-warn",
+        "simulate_outcomes": ["failed_terminal"],
+    }
+
+    alert = {
+        "event_id": "evt_error_recording_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    payload = run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="error_recording_001",
+        now_fn=_fixed_now,
+    )
+
+    delivery = payload["events"][0]["delivery"]
+    assert delivery["overall_status"] == "failed_terminal"
+    assert delivery["deliveries"][0]["last_error_code"] == "simulated_terminal"
+    assert (
+        delivery["deliveries"][0]["last_error_message"]
+        == "simulated terminal delivery failure"
+    )
+    assert delivery["delivery_receipts"][0]["error_code"] == "simulated_terminal"
+    assert (
+        delivery["delivery_receipts"][0]["error_message"]
+        == "simulated terminal delivery failure"
+    )
+
+
 def test_alert_transport_suppresses_duplicate_delivery_by_idempotency_key(
     tmp_path: Path,
 ) -> None:
@@ -349,6 +409,68 @@ def test_alert_transport_cli_rejects_out_directory(
     stderr = getattr(result, "stderr", "")
     combined_output = f"{result.output}{stderr}"
     assert "Invalid value for '--out'" in combined_output
+
+
+def test_alert_transport_cli_validates_artifact_base_dir_against_environment_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("environment_name", raising=False)
+    monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
+    monkeypatch.setenv(
+        "ACCESSDANE_RAW_DIR", str(tmp_path / "data" / "environments" / "stage" / "raw")
+    )
+    monkeypatch.setenv("ACCESSDANE_USER_AGENT", "AccessDaneAudit/0.1")
+    monkeypatch.setenv("ACCESSDANE_TIMEOUT", "30")
+    monkeypatch.setenv("ACCESSDANE_RETRIES", "3")
+    monkeypatch.setenv("ACCESSDANE_BACKOFF", "1.5")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_PROFILE", "analysis_only")
+    monkeypatch.setenv("ACCESSDANE_FEATURE_VERSION", "feature_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_RULESET_VERSION", "rules_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_SALES_RATIO_BASE", "sales_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_TOP", "25")
+    monkeypatch.setenv(
+        "ACCESSDANE_ARTIFACT_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "refresh_runs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_REFRESH_LOG_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "refresh_runs" / "logs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_BENCHMARK_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "benchmark_packs"),
+    )
+    monkeypatch.setenv("ALERT_ROUTE_GROUP", "ops-alerts")
+    monkeypatch.setenv("PROMOTION_APPROVER_GROUP", "release-approvers")
+    monkeypatch.setenv(
+        "PROMOTION_FREEZE_FILE",
+        str(tmp_path / "data" / "environments" / "stage" / "promotion_freeze.json"),
+    )
+
+    alert_path = tmp_path / "parser_alert.json"
+    alert_path.write_text(
+        json.dumps(_parser_alert_payload(), indent=2),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "alert-transport",
+            "--alert-file",
+            str(alert_path),
+            "--artifact-base-dir",
+            str(tmp_path / "data" / "environments" / "prod" / "alerts"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid value for --artifact-base-dir" in result.output
+    assert "environment 'prod'" in result.output
+    assert "expected 'stage'" in result.output
 
 
 def test_load_canonical_alerts_skips_malformed_json_and_records_warning(

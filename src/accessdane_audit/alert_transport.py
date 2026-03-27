@@ -936,6 +936,8 @@ def _attempt_destination_delivery(
     attempt_dt = start_dt
     receipts: list[dict[str, Any]] = []
     last_attempt_at_utc: Optional[str] = None
+    last_error_code: Optional[str] = None
+    last_error_message: Optional[str] = None
 
     for attempt_index in range(1, max_attempts + 1):
         last_attempt_at_utc = _iso_utc(attempt_dt)
@@ -949,6 +951,10 @@ def _attempt_destination_delivery(
         receipt["attempt_index"] = attempt_index
         receipt["destination_id"] = destination_id
         receipt["at_utc"] = last_attempt_at_utc
+        if outcome.error_code is not None:
+            receipt["error_code"] = outcome.error_code
+        if outcome.error_message is not None:
+            receipt["error_message"] = outcome.error_message
 
         if outcome.delivered:
             idempotency_index.add(idempotency_key, alert["event_id"])
@@ -962,11 +968,15 @@ def _attempt_destination_delivery(
                     "max_attempts": max_attempts,
                     "last_attempt_at_utc": last_attempt_at_utc,
                     "next_attempt_at_utc": None,
+                    "last_error_code": None,
+                    "last_error_message": None,
                 },
                 receipts,
                 attempt_dt,
             )
 
+        last_error_code = outcome.error_code
+        last_error_message = outcome.error_message
         if outcome.retryable and attempt_index < max_attempts:
             delay_seconds = _retry_delay_seconds(
                 next_attempt_index=attempt_index + 1,
@@ -992,6 +1002,8 @@ def _attempt_destination_delivery(
                 "max_attempts": max_attempts,
                 "last_attempt_at_utc": last_attempt_at_utc,
                 "next_attempt_at_utc": None,
+                "last_error_code": last_error_code,
+                "last_error_message": last_error_message,
             },
             receipts,
             None,
@@ -1005,6 +1017,8 @@ def _attempt_destination_delivery(
             "max_attempts": max_attempts,
             "last_attempt_at_utc": last_attempt_at_utc,
             "next_attempt_at_utc": None,
+            "last_error_code": last_error_code,
+            "last_error_message": last_error_message,
         },
         receipts,
         None,
@@ -1276,8 +1290,6 @@ def run_alert_transport(
                 "delivery_count": len(destination_records),
             },
         )
-
-    idempotency_index.save()
 
     delivered_count = sum(
         1 for event in events if event["delivery"]["overall_status"] == "delivered"

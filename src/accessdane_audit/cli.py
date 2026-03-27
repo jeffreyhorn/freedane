@@ -3753,6 +3753,18 @@ def alert_transport_cmd(
     if resolved_route_group is None:
         resolved_route_group = "ops-alerts"
 
+    if environment_profile is not None:
+        try:
+            artifact_base_dir = validate_artifact_path_override(
+                profile=environment_profile,
+                artifact_base_dir=artifact_base_dir,
+            )
+        except EnvironmentProfileError as exc:
+            raise typer.BadParameter(
+                str(exc),
+                param_hint="--artifact-base-dir",
+            ) from exc
+
     environment_name = (
         environment_profile.environment_name
         if environment_profile is not None
