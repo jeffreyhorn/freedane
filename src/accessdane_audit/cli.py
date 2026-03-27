@@ -89,6 +89,7 @@ from .review_queue import (
     write_review_queue_csv,
 )
 from .sales_ratio_study import build_sales_ratio_study
+from .scheduler_integration import run_managed_scheduler_execution
 from .score_fraud import SUPPORTED_RULESET_VERSIONS, score_fraud
 from .scrape import fetch_page
 from .search import search_trs
@@ -118,6 +119,12 @@ class _CaseReviewDisposition(str, Enum):
 class _ReviewQueueReviewState(str, Enum):
     reviewed = "reviewed"
     unreviewed = "unreviewed"
+
+
+class _SchedulerTriggerType(str, Enum):
+    scheduled = "scheduled"
+    manual_retry = "manual_retry"
+    catch_up = "catch_up"
 
 
 @dataclass(frozen=True)
@@ -1619,6 +1626,276 @@ def annual_refresh_runner_cmd(
         resume_from_stage_id=resume_from_stage_id,
         out=out,
     )
+
+
+@app.command("scheduler-runner")
+def scheduler_runner_cmd(
+    trigger_type: _SchedulerTriggerType = typer.Option(
+        _SchedulerTriggerType.scheduled,
+        "--trigger-type",
+        help="Scheduler trigger type",
+    ),
+    profile_name: Optional[str] = typer.Option(
+        None,
+        "--profile-name",
+        help=(
+            "Refresh profile (daily_refresh, annual_refresh, analysis_only). "
+            "Defaults from environment profile when configured, else daily_refresh."
+        ),
+    ),
+    scheduled_for_utc: Optional[str] = typer.Option(
+        None,
+        "--scheduled-for-utc",
+        help="Logical schedule timestamp in ISO-8601 UTC (default: now)",
+    ),
+    requested_by: str = typer.Option(
+        "system",
+        "--requested-by",
+        help="Requester identity for trigger metadata",
+    ),
+    scheduler_run_id: Optional[str] = typer.Option(
+        None,
+        "--scheduler-run-id",
+        help="Explicit scheduler_run_id (default generated)",
+    ),
+    feature_version: Optional[str] = typer.Option(
+        None,
+        "--feature-version",
+        help=(
+            "Feature version for stage commands. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    ruleset_version: Optional[str] = typer.Option(
+        None,
+        "--ruleset-version",
+        help=(
+            "Ruleset version for stage commands. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    sales_ratio_base: Optional[str] = typer.Option(
+        None,
+        "--sales-ratio-base",
+        help=(
+            "Sales ratio base token used in sales-ratio-study version tag. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    top: Optional[int] = typer.Option(
+        None,
+        "--top",
+        min=1,
+        max=1000,
+        help=(
+            "Top-N selector passed to review-queue and investigation-report. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    retr_file: Optional[Path] = typer.Option(
+        None,
+        "--retr-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional RETR CSV source file",
+    ),
+    permits_file: Optional[Path] = typer.Option(
+        None,
+        "--permits-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional permits CSV source file",
+    ),
+    appeals_file: Optional[Path] = typer.Option(
+        None,
+        "--appeals-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional appeals CSV source file",
+    ),
+    artifact_base_dir: Optional[Path] = typer.Option(
+        None,
+        "--artifact-base-dir",
+        help=(
+            "Base directory for refresh run artifact roots. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    refresh_log_dir: Optional[Path] = typer.Option(
+        None,
+        "--refresh-log-dir",
+        help=(
+            "Scheduler payload log directory. "
+            "Defaults from environment profile when configured, else "
+            "<artifact-base-dir>/scheduler_logs."
+        ),
+    ),
+    accessdane_bin: str = typer.Option(
+        ".venv/bin/accessdane",
+        "--accessdane-bin",
+        help="Executable used for chained accessdane commands",
+    ),
+    max_attempts: Optional[int] = typer.Option(
+        None,
+        "--max-attempts",
+        min=1,
+        help="Override scheduler attempt budget",
+    ),
+    backoff_base_seconds: int = typer.Option(
+        300,
+        "--backoff-base-seconds",
+        min=0,
+        help="Retry backoff base in seconds",
+    ),
+    backoff_cap_seconds: int = typer.Option(
+        3600,
+        "--backoff-cap-seconds",
+        min=0,
+        help="Retry backoff cap in seconds",
+    ),
+    backoff_jitter_seconds: int = typer.Option(
+        60,
+        "--backoff-jitter-seconds",
+        min=0,
+        help="Retry backoff jitter window in seconds",
+    ),
+    sleep_between_attempts: bool = typer.Option(
+        False,
+        "--sleep-between-attempts/--no-sleep-between-attempts",
+        help="Sleep for computed backoff between retry attempts",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path for scheduler payload",
+    ),
+) -> None:
+    try:
+        environment_profile = load_environment_profile()
+    except EnvironmentProfileError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        ) from exc
+
+    if profile_name is None:
+        profile_name = (
+            environment_profile.refresh_profile
+            if environment_profile is not None
+            else "daily_refresh"
+        )
+    if feature_version is None:
+        feature_version = (
+            environment_profile.feature_version
+            if environment_profile is not None
+            else "feature_v1"
+        )
+    if ruleset_version is None:
+        ruleset_version = (
+            environment_profile.ruleset_version
+            if environment_profile is not None
+            else "scoring_rules_v1"
+        )
+    if sales_ratio_base is None:
+        sales_ratio_base = (
+            environment_profile.sales_ratio_base
+            if environment_profile is not None
+            else "sales_ratio_v1"
+        )
+    if top is None:
+        top = (
+            environment_profile.refresh_top if environment_profile is not None else 100
+        )
+    if artifact_base_dir is None:
+        artifact_base_dir = (
+            environment_profile.artifact_base_dir
+            if environment_profile is not None
+            else Path("data/refresh_runs")
+        )
+    if refresh_log_dir is None:
+        refresh_log_dir = (
+            environment_profile.refresh_log_dir
+            if environment_profile is not None
+            else artifact_base_dir / "scheduler_logs"
+        )
+
+    if environment_profile is not None:
+        try:
+            artifact_base_dir = validate_artifact_path_override(
+                profile=environment_profile,
+                artifact_base_dir=artifact_base_dir,
+            )
+        except EnvironmentProfileError as exc:
+            raise typer.BadParameter(
+                str(exc),
+                param_hint="--artifact-base-dir",
+            ) from exc
+
+    artifact_base_dir = artifact_base_dir.expanduser().resolve()
+    refresh_log_dir = refresh_log_dir.expanduser().resolve()
+    try:
+        refresh_log_dir.relative_to(artifact_base_dir)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "--refresh-log-dir must be nested under --artifact-base-dir.",
+            param_hint="--refresh-log-dir",
+        ) from exc
+
+    resolved_scheduled_for_utc: Optional[datetime] = None
+    if scheduled_for_utc is not None:
+        parsed = scheduled_for_utc.replace("Z", "+00:00")
+        try:
+            parsed_dt = datetime.fromisoformat(parsed)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                "--scheduled-for-utc must be a valid ISO-8601 timestamp.",
+                param_hint="--scheduled-for-utc",
+            ) from exc
+        if parsed_dt.tzinfo is None:
+            raise typer.BadParameter(
+                "--scheduled-for-utc must include an explicit UTC offset or "
+                "'Z' designator.",
+                param_hint="--scheduled-for-utc",
+            )
+        resolved_scheduled_for_utc = parsed_dt.astimezone(timezone.utc)
+
+    payload = run_managed_scheduler_execution(
+        trigger_type=trigger_type.value,
+        profile_name=profile_name,
+        feature_version=feature_version,
+        ruleset_version=ruleset_version,
+        sales_ratio_base=sales_ratio_base,
+        top=top,
+        retr_file=retr_file,
+        permits_file=permits_file,
+        appeals_file=appeals_file,
+        artifact_base_dir=artifact_base_dir,
+        refresh_log_dir=refresh_log_dir,
+        accessdane_bin=accessdane_bin,
+        requested_by=requested_by,
+        scheduled_for_utc=resolved_scheduled_for_utc,
+        scheduler_run_id=scheduler_run_id,
+        max_attempts=max_attempts,
+        backoff_base_seconds=backoff_base_seconds,
+        backoff_cap_seconds=backoff_cap_seconds,
+        backoff_jitter_seconds=backoff_jitter_seconds,
+        sleep_between_attempts=sleep_between_attempts,
+    )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    if payload["result"]["status"] != "succeeded":
+        raise typer.Exit(code=1)
 
 
 @app.command("promotion-activate")
