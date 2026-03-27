@@ -285,12 +285,6 @@ def run_managed_scheduler_execution(
 
         refresh_run_id = f"{run_id}_a{attempt_index:02d}"
         attempt_started_dt = now_fn()
-        _transition_state(
-            payload=payload,
-            state="running",
-            now_fn=lambda: attempt_started_dt,
-        )
-        _persist_scheduler_payload(payload_path=payload_path, payload=payload)
         try:
             refresh_payload = dispatch(
                 profile_name=profile_name,
@@ -310,8 +304,6 @@ def run_managed_scheduler_execution(
             attempt_finished_dt = now_fn()
             attempt = _build_dispatch_error_attempt(
                 attempt_index=attempt_index,
-                started_at=attempt_started_dt,
-                finished_at=attempt_finished_dt,
                 message=f"Dispatch failure while invoking refresh-runner: {exc}",
             )
             payload["attempts"].append(attempt)
@@ -346,6 +338,19 @@ def run_managed_scheduler_execution(
                 now_fn=now_fn,
             )
             return payload
+
+        run = refresh_payload.get("run")
+        run_started_dt = None
+        if isinstance(run, dict):
+            run_started_dt = _parse_optional_iso(run.get("started_at"))
+        if run_started_dt is None:
+            run_started_dt = attempt_started_dt
+        _transition_state(
+            payload=payload,
+            state="running",
+            now_fn=lambda: run_started_dt,
+        )
+        _persist_scheduler_payload(payload_path=payload_path, payload=payload)
 
         attempt = _build_attempt_from_refresh_payload(
             attempt_index=attempt_index,
@@ -578,17 +583,15 @@ def _build_overlap_attempt(
 def _build_dispatch_error_attempt(
     *,
     attempt_index: int,
-    started_at: datetime,
-    finished_at: datetime,
     message: str,
 ) -> SchedulerAttempt:
     return {
         "attempt_index": attempt_index,
         "refresh_run_id": None,
         "state": "dispatch_error",
-        "started_at_utc": _iso_utc(started_at),
-        "finished_at_utc": _iso_utc(finished_at),
-        "duration_seconds": _duration_seconds(started_at, finished_at),
+        "started_at_utc": None,
+        "finished_at_utc": None,
+        "duration_seconds": None,
         "refresh_payload_path": None,
         "failure_code": "dispatch_error",
         "failure_message": message,

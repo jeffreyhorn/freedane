@@ -301,7 +301,7 @@ def test_scheduler_integration_rejects_unsafe_path_segments(
     assert not refresh_log_dir.exists()
 
 
-def test_scheduler_integration_dispatch_error_attempt_records_running_timing(
+def test_scheduler_integration_dispatch_error_attempt_keeps_prelaunch_timing_null(
     tmp_path: Path, monkeypatch
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"
@@ -363,12 +363,12 @@ def test_scheduler_integration_dispatch_error_attempt_records_running_timing(
     assert len(payload["attempts"]) == 1
     attempt = payload["attempts"][0]
     assert attempt["state"] == "dispatch_error"
-    assert attempt["started_at_utc"] == "2026-03-26T12:00:02Z"
-    assert attempt["finished_at_utc"] == "2026-03-26T12:00:09Z"
-    assert attempt["duration_seconds"] == 7
+    assert attempt["started_at_utc"] is None
+    assert attempt["finished_at_utc"] is None
+    assert attempt["duration_seconds"] is None
     assert payload["scheduler_run"]["refresh_run_id"] is None
     assert payload["result"]["last_attempt_finished_at_utc"] == "2026-03-26T12:00:09Z"
-    assert "running" in persisted_states
+    assert "running" not in persisted_states
     assert persisted_states[-1] == "dead_lettered"
 
 
@@ -545,7 +545,7 @@ def test_scheduler_runner_cli_expands_user_in_artifact_base_dir(
     )
 
 
-def test_scheduler_integration_transitions_to_running_before_dispatch(
+def test_scheduler_integration_keeps_dispatched_state_before_dispatch(
     tmp_path: Path,
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"
@@ -593,7 +593,7 @@ def test_scheduler_integration_transitions_to_running_before_dispatch(
     )
 
     assert payload["scheduler_run"]["state"] == "succeeded"
-    assert observed["state"] == "running"
+    assert observed["state"] == "dispatched"
     assert observed["refresh_run_id"] is None
 
 
