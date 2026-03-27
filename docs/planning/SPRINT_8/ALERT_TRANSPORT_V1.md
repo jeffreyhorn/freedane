@@ -129,14 +129,23 @@ Each resolved route policy must declare:
 - `escalation_destinations[]`
 - `ack_required`
 - `ack_timeout_seconds`
+- `escalation_schedule_seconds[]`
+
+Route-policy timing semantics:
+
+- `ack_timeout_seconds` is the required acknowledgment timeout from first successful delivery (`delivery.first_delivery_at_utc`).
+- `escalation_schedule_seconds[]` is a sorted list of relative offsets from `delivery.first_delivery_at_utc` when escalation fan-out must be attempted while acknowledgment remains pending.
+- `ack_deadline_utc` is derived, not independently configured:
+  - when `ack_required = true`: `ack_deadline_utc = first_delivery_at_utc + ack_timeout_seconds`
+  - when `ack_required = false`: `ack_deadline_utc = null`
 
 ### Default v1 Policy
 
-| Canonical severity | Primary destinations | Escalation policy |
-| --- | --- | --- |
-| `critical` | Slack ops-critical, PagerDuty primary service, oncall email | escalate at 15m and 30m until ack or retry budget exhaustion |
-| `warn` | Slack ops-warn, team email | escalate at 4h if unacknowledged |
-| `info` | Slack ops-info (or equivalent low-noise channel) | no timed escalation |
+| Canonical severity | Primary destinations | `ack_required` / `ack_timeout_seconds` | `escalation_schedule_seconds[]` |
+| --- | --- | --- | --- |
+| `critical` | Slack ops-critical, PagerDuty primary service, oncall email | `true` / `900` | `[900, 1800]` |
+| `warn` | Slack ops-warn, team email | `true` / `14400` | `[14400]` |
+| `info` | Slack ops-info (or equivalent low-noise channel) | `false` / `null` | `[]` |
 
 ## Transport Envelope Contract (v1)
 
@@ -156,6 +165,7 @@ Top-level keys (canonical order):
 - `event_id`
 - `transport_run_id` (id for a transport execution batch)
 - `emitted_at_utc`
+- `run_date` (`YYYYMMDD`, derived from `emitted_at_utc` in UTC)
 - `environment`
 - `alert_route_group`
 
@@ -185,6 +195,7 @@ Top-level keys (canonical order):
 - `status` (`pending|delivered|failed_retryable|failed_terminal|suppressed_duplicate`)
 - `attempt_count`
 - `max_attempts`
+- `first_delivery_at_utc` (nullable; set to timestamp of first successful primary delivery attempt)
 - `last_attempt_at_utc` (nullable)
 - `next_attempt_at_utc` (nullable)
 - `delivery_receipts` (array of per-channel receipt summaries)
@@ -238,6 +249,14 @@ Per destination idempotency key must be:
 
 - `sha256("<event_id>|<destination_id>|<canonical_routing_key>|<severity>")`
 
+Canonicalization and encoding rules:
+
+- build the preimage string exactly in this order with literal `|` separators and no extra whitespace trimming:
+  - `<event_id>|<destination_id>|<canonical_routing_key>|<severity>`
+- encode preimage bytes as UTF-8.
+- compute SHA-256 digest over those UTF-8 bytes.
+- persist/emit idempotency key as lowercase hexadecimal (`64` chars).
+
 Idempotency invariants:
 
 - duplicate attempts with same idempotency key must not create duplicate operator-visible messages when destination supports dedupe keys
@@ -254,22 +273,30 @@ Acknowledgment policy:
 
 Acknowledgment deadlines:
 
-- `critical`: `ack_deadline_utc = first_delivery_at_utc + 15 minutes`
-- `warn`: `ack_deadline_utc = first_delivery_at_utc + 4 hours`
-- `info`: `ack_deadline_utc = null`
+- when `ack_required = true`, `ack_deadline_utc` must be derived from route policy timeout:
+  - `ack_deadline_utc = first_delivery_at_utc + ack_timeout_seconds`
+- when `ack_required = false`, `ack_deadline_utc = null`
+- `first_delivery_at_utc` comes from `delivery.first_delivery_at_utc` and must be set on first successful primary delivery.
 
 Escalation behavior:
 
-- if `ack_required` and `ack_state = pending` after deadline:
-  - enqueue escalation destinations defined by route policy
-  - set/retain `incident_id` for operator tracking
-  - update delivery receipts with escalation-attempt metadata
+- escalation scheduling is driven by route-policy `escalation_schedule_seconds[]` from `delivery.first_delivery_at_utc`.
+- for each schedule offset `t` in `escalation_schedule_seconds[]`:
+  - if `ack_required = true`, `ack_state = pending`, and `now_utc >= first_delivery_at_utc + t`, enqueue escalation destinations for that step (exactly once per step).
+  - record escalation attempt metadata in `delivery.delivery_receipts`.
+- set/retain `incident_id` for acknowledged/escalated critical and warn alerts.
+- if `ack_required = true` and no acknowledgment is received by the final configured escalation step, transition `ack_state` to `expired`.
 
 ## Artifact And Audit Contract
 
 Transport artifact root:
 
 - `<ACCESSDANE_ARTIFACT_BASE_DIR>/alerts/<run_date>/<event_id>/`
+
+`run_date` derivation rule:
+
+- `run_date` must be UTC `YYYYMMDD` derived from `envelope.emitted_at_utc`.
+- this derived `run_date` must be used consistently in artifact paths and envelope metadata.
 
 Required artifacts:
 
