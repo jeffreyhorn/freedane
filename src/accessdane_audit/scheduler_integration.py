@@ -284,8 +284,6 @@ def run_managed_scheduler_execution(
             return payload
 
         refresh_run_id = f"{run_id}_a{attempt_index:02d}"
-        _transition_state(payload=payload, state="running", now_fn=now_fn)
-        _persist_scheduler_payload(payload_path=payload_path, payload=payload)
         attempt_started_dt = now_fn()
         try:
             refresh_payload = dispatch(
@@ -340,6 +338,19 @@ def run_managed_scheduler_execution(
                 now_fn=now_fn,
             )
             return payload
+
+        run = refresh_payload.get("run")
+        run_started_dt = None
+        if isinstance(run, dict):
+            run_started_dt = _parse_optional_iso(run.get("started_at"))
+        if run_started_dt is None:
+            run_started_dt = attempt_started_dt
+        _transition_state(
+            payload=payload,
+            state="running",
+            now_fn=lambda: run_started_dt,
+        )
+        _persist_scheduler_payload(payload_path=payload_path, payload=payload)
 
         attempt = _build_attempt_from_refresh_payload(
             attempt_index=attempt_index,

@@ -301,11 +301,25 @@ def test_scheduler_integration_rejects_unsafe_path_segments(
     assert not refresh_log_dir.exists()
 
 
-def test_scheduler_integration_dispatch_error_attempt_uses_run_level_timing(
-    tmp_path: Path,
+def test_scheduler_integration_dispatch_error_attempt_has_prelaunch_timing(
+    tmp_path: Path, monkeypatch
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"
     refresh_log_dir = artifact_base_dir / "scheduler_logs"
+    persisted_states: list[str] = []
+
+    original_write_json_atomic = scheduler_integration._write_json_atomic
+
+    def _capturing_write(path: Path, payload: object) -> None:
+        if isinstance(payload, dict):
+            scheduler_run = payload.get("scheduler_run")
+            if isinstance(scheduler_run, dict):
+                state = scheduler_run.get("state")
+                if isinstance(state, str):
+                    persisted_states.append(state)
+        original_write_json_atomic(path, payload)
+
+    monkeypatch.setattr(scheduler_integration, "_write_json_atomic", _capturing_write)
 
     timeline = iter(
         (
@@ -353,7 +367,8 @@ def test_scheduler_integration_dispatch_error_attempt_uses_run_level_timing(
     assert attempt["finished_at_utc"] is None
     assert attempt["duration_seconds"] is None
     assert payload["scheduler_run"]["refresh_run_id"] is None
-    assert payload["result"]["last_attempt_finished_at_utc"] == "2026-03-26T12:00:12Z"
+    assert payload["result"]["last_attempt_finished_at_utc"] == "2026-03-26T12:00:09Z"
+    assert "running" not in persisted_states
 
 
 def test_scheduler_runner_cli_writes_output_and_uses_trigger_option(
@@ -529,7 +544,7 @@ def test_scheduler_runner_cli_expands_user_in_artifact_base_dir(
     )
 
 
-def test_scheduler_integration_transitions_to_running_before_dispatch(
+def test_scheduler_integration_keeps_dispatched_state_before_dispatch(
     tmp_path: Path,
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"
@@ -577,7 +592,7 @@ def test_scheduler_integration_transitions_to_running_before_dispatch(
     )
 
     assert payload["scheduler_run"]["state"] == "succeeded"
-    assert observed["state"] == "running"
+    assert observed["state"] == "dispatched"
     assert observed["refresh_run_id"] is None
 
 
