@@ -301,7 +301,7 @@ def test_scheduler_integration_rejects_unsafe_path_segments(
     assert not refresh_log_dir.exists()
 
 
-def test_scheduler_integration_dispatch_error_attempt_records_timing(
+def test_scheduler_integration_dispatch_error_attempt_uses_run_level_timing(
     tmp_path: Path,
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"
@@ -428,6 +428,32 @@ def test_scheduler_runner_cli_writes_output_and_uses_trigger_option(
     assert captured["trigger_type"] == "catch_up"
 
 
+def test_scheduler_runner_cli_rejects_naive_scheduled_for_utc(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ACCESSDANE_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("environment_name", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "scheduler-runner",
+            "--scheduled-for-utc",
+            "2026-03-26T12:00:00",
+        ],
+    )
+
+    assert result.exit_code != 0
+    exception_text = str(result.exception) if result.exception is not None else ""
+    output_text = result.stdout if result.stdout else result.output
+    assert (
+        "--scheduled-for-utc must include an explicit UTC offset or 'Z' designator."
+        in exception_text
+        or "--scheduled-for-utc" in output_text
+    )
+
+
 def test_scheduler_runner_cli_expands_user_in_artifact_base_dir(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -508,13 +534,13 @@ def test_scheduler_integration_transitions_to_running_before_dispatch(
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"
     refresh_log_dir = artifact_base_dir / "scheduler_logs"
-    observed: dict[str, str] = {}
+    observed: dict[str, object] = {}
 
     def _runner(**kwargs):
         payload_path = refresh_log_dir / "sched_running_state.json"
         persisted = json.loads(payload_path.read_text(encoding="utf-8"))
-        observed["state"] = str(persisted["scheduler_run"]["state"])
-        observed["refresh_run_id"] = str(persisted["scheduler_run"]["refresh_run_id"])
+        observed["state"] = persisted["scheduler_run"]["state"]
+        observed["refresh_run_id"] = persisted["scheduler_run"]["refresh_run_id"]
         run_id = str(kwargs["run_id"])
         root_path = (
             artifact_base_dir
@@ -552,7 +578,7 @@ def test_scheduler_integration_transitions_to_running_before_dispatch(
 
     assert payload["scheduler_run"]["state"] == "succeeded"
     assert observed["state"] == "running"
-    assert observed["refresh_run_id"] == "None"
+    assert observed["refresh_run_id"] is None
 
 
 def test_scheduler_integration_rejects_naive_scheduled_for_utc(

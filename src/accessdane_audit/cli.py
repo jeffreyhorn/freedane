@@ -1858,7 +1858,11 @@ def scheduler_runner_cmd(
                 param_hint="--scheduled-for-utc",
             ) from exc
         if parsed_dt.tzinfo is None:
-            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+            raise typer.BadParameter(
+                "--scheduled-for-utc must include an explicit UTC offset or "
+                "'Z' designator.",
+                param_hint="--scheduled-for-utc",
+            )
         resolved_scheduled_for_utc = parsed_dt.astimezone(timezone.utc)
 
     payload = run_managed_scheduler_execution(
