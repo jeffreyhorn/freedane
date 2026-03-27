@@ -310,6 +310,8 @@ def run_managed_scheduler_execution(
             attempt_finished_dt = now_fn()
             attempt = _build_dispatch_error_attempt(
                 attempt_index=attempt_index,
+                started_at=attempt_started_dt,
+                finished_at=attempt_finished_dt,
                 message=f"Dispatch failure while invoking refresh-runner: {exc}",
             )
             payload["attempts"].append(attempt)
@@ -576,15 +578,17 @@ def _build_overlap_attempt(
 def _build_dispatch_error_attempt(
     *,
     attempt_index: int,
+    started_at: datetime,
+    finished_at: datetime,
     message: str,
 ) -> SchedulerAttempt:
     return {
         "attempt_index": attempt_index,
         "refresh_run_id": None,
         "state": "dispatch_error",
-        "started_at_utc": None,
-        "finished_at_utc": None,
-        "duration_seconds": None,
+        "started_at_utc": _iso_utc(started_at),
+        "finished_at_utc": _iso_utc(finished_at),
+        "duration_seconds": _duration_seconds(started_at, finished_at),
         "refresh_payload_path": None,
         "failure_code": "dispatch_error",
         "failure_message": message,
