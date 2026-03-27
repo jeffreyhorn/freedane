@@ -633,7 +633,18 @@ def _validate_route_policy(
         raise TransportError(
             f"Routing policy {policy_key} has no primary_destinations."
         )
-    ack_required = bool(policy.get("ack_required"))
+    if "ack_required" not in policy:
+        raise TransportError(f"Routing policy {policy_key} must include ack_required.")
+    ack_required_value = policy.get("ack_required")
+    if not isinstance(ack_required_value, bool):
+        raise TransportError(
+            f"Routing policy {policy_key} must set ack_required to a boolean."
+        )
+    ack_required = ack_required_value
+    if "ack_timeout_seconds" not in policy:
+        raise TransportError(
+            f"Routing policy {policy_key} must include ack_timeout_seconds."
+        )
     raw_ack_timeout = policy.get("ack_timeout_seconds")
     ack_timeout = _as_int(raw_ack_timeout)
     if ack_required and ack_timeout is None:
@@ -785,10 +796,12 @@ def _idempotency_key(
     destination_id: str,
     canonical_routing_key: str,
     severity: Severity,
+    scope: Optional[str] = None,
 ) -> str:
-    preimage = f"{event_id}|{destination_id}|{canonical_routing_key}|{severity}".encode(
-        "utf-8"
-    )
+    preimage = (
+        f"{event_id}|{destination_id}|{canonical_routing_key}|{severity}|"
+        f"{scope or 'default'}"
+    ).encode("utf-8")
     return hashlib.sha256(preimage).hexdigest()
 
 
@@ -891,12 +904,14 @@ def _attempt_destination_delivery(
     adapter: DeliveryAdapter,
     idempotency_index: "_IdempotencyIndex",
     start_dt: datetime,
+    idempotency_scope: Optional[str] = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Optional[datetime]]:
     idempotency_key = _idempotency_key(
         event_id=alert["event_id"],
         destination_id=destination_id,
         canonical_routing_key=canonical_routing_key,
         severity=alert["severity"],
+        scope=idempotency_scope,
     )
     if idempotency_index.contains(idempotency_key):
         return (
@@ -1099,10 +1114,29 @@ def run_alert_transport(
                     fallback_now=current_dt,
                 )
 
+        ack_required = policy["ack_required"]
+        ack_reference_now = now_fn()
+        ack_deadline_utc: Optional[str] = None
+        ack_state: str
+        if not ack_required:
+            ack_state = "not_required"
+        else:
+            ack_state = "pending"
+            if (
+                first_delivery_dt is not None
+                and policy["ack_timeout_seconds"] is not None
+            ):
+                ack_deadline_dt = first_delivery_dt + timedelta(
+                    seconds=policy["ack_timeout_seconds"]
+                )
+                ack_deadline_utc = _iso_utc(ack_deadline_dt)
+                if ack_reference_now >= ack_deadline_dt:
+                    ack_state = "expired"
+
         for destination_id in policy["escalation_destinations"]:
             destination = destination_configs[destination_id]
             max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]]
-            if first_delivery_dt is None or not policy["ack_required"]:
+            if first_delivery_dt is None or ack_state != "pending":
                 destination_records.append(
                     {
                         "destination_id": destination_id,
@@ -1120,7 +1154,7 @@ def run_alert_transport(
             due_offsets = [
                 offset
                 for offset in escalation_offsets
-                if now_fn() >= first_delivery_dt + timedelta(seconds=offset)
+                if ack_reference_now >= first_delivery_dt + timedelta(seconds=offset)
             ]
             if not due_offsets:
                 next_due_utc: Optional[str] = None
@@ -1142,47 +1176,35 @@ def run_alert_transport(
                 status_values.append("pending")
                 continue
 
-            destination_record, receipts, _ = _attempt_destination_delivery(
-                alert=alert,
-                destination_id=destination_id,
-                destination=destination,
-                canonical_routing_key=canonical_routing_key,
-                max_attempts=max_attempts,
-                envelope_stub=envelope_stub,
-                adapter=adapter,
-                idempotency_index=idempotency_index,
-                start_dt=max(
-                    now_fn(),
-                    first_delivery_dt + timedelta(seconds=min(due_offsets)),
-                ),
-            )
-            destination_records.append(destination_record)
-            delivery_receipts.extend(receipts)
-            status_values.append(destination_record["status"])
-            if destination_record["last_attempt_at_utc"]:
-                current_dt = _parse_utc_timestamp(
-                    destination_record["last_attempt_at_utc"],
-                    fallback_now=current_dt,
+            for due_offset in due_offsets:
+                destination_record, receipts, _ = _attempt_destination_delivery(
+                    alert=alert,
+                    destination_id=destination_id,
+                    destination=destination,
+                    canonical_routing_key=canonical_routing_key,
+                    max_attempts=max_attempts,
+                    envelope_stub=envelope_stub,
+                    adapter=adapter,
+                    idempotency_index=idempotency_index,
+                    start_dt=max(
+                        ack_reference_now,
+                        first_delivery_dt + timedelta(seconds=due_offset),
+                    ),
+                    idempotency_scope=f"escalation_offset_{due_offset}",
                 )
+                destination_record["escalation_offset_seconds"] = due_offset
+                for receipt in receipts:
+                    receipt["escalation_offset_seconds"] = due_offset
+                destination_records.append(destination_record)
+                delivery_receipts.extend(receipts)
+                status_values.append(destination_record["status"])
+                if destination_record["last_attempt_at_utc"]:
+                    current_dt = _parse_utc_timestamp(
+                        destination_record["last_attempt_at_utc"],
+                        fallback_now=current_dt,
+                    )
 
         overall_status = _delivery_overall_status(status_values)
-        ack_required = policy["ack_required"]
-        ack_deadline_utc: Optional[str] = None
-        ack_state: str
-        if not ack_required:
-            ack_state = "not_required"
-        else:
-            ack_state = "pending"
-            if (
-                first_delivery_dt is not None
-                and policy["ack_timeout_seconds"] is not None
-            ):
-                ack_deadline_dt = first_delivery_dt + timedelta(
-                    seconds=policy["ack_timeout_seconds"]
-                )
-                ack_deadline_utc = _iso_utc(ack_deadline_dt)
-                if now_fn() >= ack_deadline_dt:
-                    ack_state = "expired"
 
         event_payload = {
             "envelope": {

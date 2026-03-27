@@ -3728,6 +3728,8 @@ def alert_transport_cmd(
     out: Optional[Path] = typer.Option(
         None,
         "--out",
+        dir_okay=False,
+        resolve_path=True,
         help="Optional output JSON path for transport payload.",
     ),
 ) -> None:
@@ -3792,6 +3794,7 @@ def alert_transport_cmd(
         output_payload["warnings"] = parse_warnings
 
     if out:
+        _ensure_output_file_path(out, param_hint="--out")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(output_payload, indent=2), encoding="utf-8")
     else:
