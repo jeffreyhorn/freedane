@@ -33,7 +33,7 @@ Source references:
 
 - [x] Day 7: define alert transport contract (`ALERT_TRANSPORT_V1.md`)
   - Acceptance gate: transport-neutral envelope, routing, retry/idempotency, and acknowledgment policy are explicit.
-- [ ] Day 8: implement alert delivery integrations
+- [x] Day 8: implement alert delivery integrations
   - Acceptance gate: alert routing is implemented with duplicate suppression and retry coverage.
 - [ ] Day 9: define observability + SLO contract (`OBSERVABILITY_SLO_V1.md`)
   - Acceptance gate: refresh/drift/load/benchmark operational metrics and burn thresholds are explicit.

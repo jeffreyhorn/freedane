@@ -14,6 +14,7 @@ Start each analyst day with current artifacts:
 - `data/daily_review_queue.json` / `data/daily_review_queue.csv`
 - `data/daily_investigation_report.html`
 - latest monitoring diagnostics (`load_monitor*.json`, parser drift/benchmark alerts if present)
+- latest alert transport output (`data/startup_alert_transport.json` or run-specific alert artifact under `data/alerts/`)
 
 If monitoring shows unresolved `critical` issues, pause triage and route to operations first.
 

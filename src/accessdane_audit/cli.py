@@ -15,6 +15,12 @@ import typer
 from bs4 import BeautifulSoup
 from sqlalchemy import delete, select
 
+from .alert_transport import (
+    SimulatedDeliveryAdapter,
+    load_canonical_alerts,
+    load_route_config,
+    run_alert_transport,
+)
 from .anomaly import detect_anomalies
 from .appeals import AppealImportFileError, ingest_appeals_csv
 from .benchmark_pack import (
@@ -3665,6 +3671,120 @@ def benchmark_pack_cmd(
         typer.echo(json.dumps(payload, indent=2))
 
     if run_status == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("alert-transport")
+def alert_transport_cmd(
+    alert_file: list[Path] = typer.Option(
+        [],
+        "--alert-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Alert payload JSON file (repeatable; parser_drift/load_monitor/"
+            "benchmark alert shapes)."
+        ),
+    ),
+    scheduler_file: list[Path] = typer.Option(
+        [],
+        "--scheduler-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Scheduler payload JSON file with optional incident block (repeatable).",
+    ),
+    route_config: Optional[Path] = typer.Option(
+        None,
+        "--route-config",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Optional route policy configuration JSON.",
+    ),
+    route_group: Optional[str] = typer.Option(
+        None,
+        "--route-group",
+        help=(
+            "Alert route group for canonical routing key construction. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    artifact_base_dir: Path = typer.Option(
+        Path("data/alerts"),
+        "--artifact-base-dir",
+        help="Base directory for alert transport artifacts.",
+    ),
+    transport_run_id: Optional[str] = typer.Option(
+        None,
+        "--transport-run-id",
+        help="Optional explicit transport run id (default generated).",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Optional output JSON path for transport payload.",
+    ),
+) -> None:
+    if not alert_file and not scheduler_file:
+        raise typer.BadParameter(
+            "Provide at least one --alert-file or --scheduler-file input.",
+            param_hint="--alert-file/--scheduler-file",
+        )
+
+    try:
+        environment_profile = load_environment_profile()
+    except EnvironmentProfileError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        ) from exc
+
+    resolved_route_group = route_group
+    if resolved_route_group is None and environment_profile is not None:
+        resolved_route_group = environment_profile.alert_route_group
+    if resolved_route_group is None:
+        resolved_route_group = "ops-alerts"
+
+    environment_name = (
+        environment_profile.environment_name
+        if environment_profile is not None
+        else "local"
+    )
+    run_dt = datetime.now(timezone.utc)
+    resolved_run_id = (
+        transport_run_id or f"alert_transport_{run_dt.strftime('%Y%m%d_%H%M%S')}"
+    )
+
+    alerts = load_canonical_alerts(
+        alert_files=alert_file,
+        scheduler_files=scheduler_file,
+    )
+    route_policy_config = load_route_config(
+        route_group=resolved_route_group,
+        config_path=route_config,
+    )
+    payload = run_alert_transport(
+        route_group=resolved_route_group,
+        config=route_policy_config,
+        alerts=alerts,
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=artifact_base_dir.expanduser().resolve(),
+        environment_name=environment_name,
+        transport_run_id=resolved_run_id,
+    )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    if payload["run"]["status"] != "succeeded":
         raise typer.Exit(code=1)
 
 

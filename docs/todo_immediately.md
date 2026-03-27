@@ -144,6 +144,13 @@ Run after startup pipeline so operations health is visible:
   --out data/startup_benchmark_pack.json \
   --trend-out data/startup_benchmark_pack_trend.json \
   --alert-out data/startup_benchmark_pack_alert.json
+
+.venv/bin/accessdane alert-transport \
+  --alert-file data/startup_load_monitor_alert.json \
+  --alert-file data/startup_benchmark_pack_alert.json \
+  --route-config docs/templates/alert_route_config_v1.template.json \
+  --artifact-base-dir data/alerts \
+  --out data/startup_alert_transport.json
 ```
 
 ## 6. Go/No-Go Before Analyst Triage
