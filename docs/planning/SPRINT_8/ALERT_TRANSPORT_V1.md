@@ -74,7 +74,7 @@ Each canonical alert instance must include:
 | `source_system` | `parser_drift|load_monitoring|benchmark_pack|scheduler`. |
 | `source_payload_type` | Producer payload type name/version. |
 | `source_payload_path` | Portable artifact-root-relative path (POSIX-style separators) to source artifact used for transport. |
-| `source_payload_hash` | SHA-256 hash of source payload bytes. |
+| `source_payload_hash` | SHA-256 hash of source payload file bytes, emitted as lowercase hexadecimal (`64` chars). |
 | `source_run_id` | Producer run id (or scheduler run id). |
 | `alert_id` | Producer-stable alert id. |
 | `alert_type` | Canonical transport alert type (`parser_drift|load_monitoring|benchmark_pack|scheduler`) used for routing policy lookup. |
@@ -94,6 +94,12 @@ Canonical severity normalization:
 - `benchmark_pack.warn -> warn`
 - `benchmark_pack.critical -> critical`
 - `scheduler.incident.severity` maps directly (`info|warn|critical`)
+
+Source payload hash encoding rule:
+
+- read bytes directly from `source_payload_path` with no normalization or newline conversion.
+- compute SHA-256 over those bytes.
+- persist/emit `source_payload_hash` as lowercase hexadecimal (`64` chars).
 
 ## Routing Contract (v1)
 
@@ -130,7 +136,7 @@ Each resolved route policy must declare:
 - `primary_destinations[]`
 - `escalation_destinations[]`
 - `ack_required`
-- `ack_timeout_seconds`
+- `ack_timeout_seconds` (required key; nullable only when `ack_required = false`)
 - `escalation_schedule_seconds[]`
 
 Route-policy timing semantics:
@@ -151,7 +157,7 @@ Route-policy timing semantics:
 
 ## Transport Envelope Contract (v1)
 
-Top-level keys (canonical order):
+Top-level keys (canonical order for examples/artifacts; not a semantic requirement for JSON object parsing):
 
 1. `envelope`
 2. `alert`
