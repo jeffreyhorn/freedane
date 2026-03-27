@@ -204,6 +204,64 @@ def test_scheduler_integration_non_retryable_failure_dead_letters_without_retry(
     assert payload["incident"]["severity"] == "warn"
 
 
+def test_scheduler_integration_refresh_overlap_failure_keeps_traceability(
+    tmp_path: Path,
+) -> None:
+    artifact_base_dir = tmp_path / "refresh_runs"
+    refresh_log_dir = artifact_base_dir / "scheduler_logs"
+
+    def _runner(**kwargs):
+        run_id = str(kwargs["run_id"])
+        root_path = (
+            artifact_base_dir
+            / str(kwargs["run_date"])
+            / str(kwargs["profile_name"])
+            / run_id
+        )
+        return {
+            "run": {
+                "status": "failed",
+                "started_at": _iso(datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc)),
+                "finished_at": _iso(datetime(2026, 3, 26, 12, 1, tzinfo=timezone.utc)),
+            },
+            "error": {
+                "code": "overlapping_run",
+                "message": "lock overlap reported by refresh-runner",
+                "failed_stage_id": None,
+            },
+            "artifacts": {"root_path": str(root_path)},
+        }
+
+    payload = run_managed_scheduler_execution(
+        trigger_type="scheduled",
+        profile_name="daily_refresh",
+        feature_version="feature_v1",
+        ruleset_version="scoring_rules_v1",
+        sales_ratio_base="sales_ratio_v1",
+        top=10,
+        retr_file=None,
+        permits_file=None,
+        appeals_file=None,
+        artifact_base_dir=artifact_base_dir,
+        refresh_log_dir=refresh_log_dir,
+        accessdane_bin="accessdane",
+        scheduler_run_id="sched_refresh_overlap",
+        max_attempts=1,
+        refresh_runner=_runner,
+    )
+
+    assert payload["result"]["status"] == "dead_lettered"
+    assert payload["result"]["failure_code"] == "overlapping_run"
+    assert len(payload["attempts"]) == 1
+    attempt = payload["attempts"][0]
+    assert attempt["state"] == "failed"
+    assert attempt["refresh_run_id"] == "sched_refresh_overlap_a01"
+    assert attempt["started_at_utc"] == "2026-03-26T12:00:00Z"
+    assert attempt["finished_at_utc"] == "2026-03-26T12:01:00Z"
+    assert attempt["duration_seconds"] == 60
+    assert payload["scheduler_run"]["refresh_run_id"] == "sched_refresh_overlap_a01"
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [

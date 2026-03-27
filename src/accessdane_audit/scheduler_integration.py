@@ -536,11 +536,6 @@ def _build_attempt_from_refresh_payload(
             message = error["message"]
         if isinstance(error.get("failed_stage_id"), str):
             failed_stage_id = error["failed_stage_id"]
-    if code == "overlapping_run":
-        return _build_overlap_attempt(
-            attempt_index=attempt_index,
-            message=message,
-        )
     return {
         "attempt_index": attempt_index,
         "refresh_run_id": refresh_run_id,
