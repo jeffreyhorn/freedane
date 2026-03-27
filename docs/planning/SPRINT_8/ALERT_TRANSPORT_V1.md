@@ -77,12 +77,13 @@ Each canonical alert instance must include:
 | `source_payload_hash` | SHA-256 hash of source payload bytes. |
 | `source_run_id` | Producer run id (or scheduler run id). |
 | `alert_id` | Producer-stable alert id. |
-| `alert_type` | Producer alert type. |
+| `alert_type` | Canonical transport alert type (`parser_drift|load_monitoring|benchmark_pack|scheduler`) used for routing policy lookup. |
+| `source_alert_type` | Producer-native alert type value from source payload (nullable when not present). |
 | `severity` | Canonical severity `info|warn|critical`. |
 | `generated_at_utc` | Source alert generation timestamp (UTC). |
 | `summary` | Human summary used by transport adapters. |
 | `reason_codes` | Sorted unique reason codes. |
-| `routing_key` | Canonical route key used for destination selection. |
+| `routing_key` | Compatibility alias of `route.canonical_routing_key`; when present, must exactly equal `route.canonical_routing_key`. |
 | `operator_actions` | Producer operator actions (normalized list, possibly empty). |
 
 Canonical severity normalization:
@@ -113,6 +114,8 @@ If producer payload already includes `routing_key`:
 
 - preserve original value as `route.source_routing_key`
 - still compute canonical route key for policy lookup
+- `route.canonical_routing_key` is the single source of truth for transport routing decisions.
+- `alert.routing_key` is compatibility-only and must exactly equal `route.canonical_routing_key` when emitted.
 
 ### Destination Mapping
 
@@ -192,13 +195,17 @@ Top-level keys (canonical order):
 
 ### `delivery` fields
 
-- `status` (`pending|delivered|failed_retryable|failed_terminal|suppressed_duplicate`)
-- `attempt_count`
-- `max_attempts`
-- `first_delivery_at_utc` (nullable; set to timestamp of first successful primary delivery attempt)
-- `last_attempt_at_utc` (nullable)
-- `next_attempt_at_utc` (nullable)
-- `delivery_receipts` (array of per-channel receipt summaries)
+- aggregate delivery fields:
+  - `overall_status` (`pending|delivered|failed_retryable|failed_terminal|suppressed_duplicate`)
+  - `first_delivery_at_utc` (nullable; set to timestamp of first successful primary delivery attempt across all primary destinations)
+  - `delivery_receipts` (array of per-channel receipt summaries)
+- per-destination delivery fields under `deliveries[]` (required, one item per destination):
+  - `destination_id`
+  - `status` (`pending|delivered|failed_retryable|failed_terminal|suppressed_duplicate`)
+  - `attempt_count`
+  - `max_attempts`
+  - `last_attempt_at_utc` (nullable)
+  - `next_attempt_at_utc` (nullable)
 
 ### `acknowledgment` fields
 
@@ -261,7 +268,8 @@ Idempotency invariants:
 
 - duplicate attempts with same idempotency key must not create duplicate operator-visible messages when destination supports dedupe keys
 - when destination lacks native dedupe, transport must suppress duplicates via local delivery state
-- duplicate-suppressed events must set `delivery.status = suppressed_duplicate`
+- duplicate-suppressed destination attempts must set `delivery.deliveries[i].status = suppressed_duplicate`
+- when all destinations are duplicate-suppressed for an event, set `delivery.overall_status = suppressed_duplicate`
 
 ## Acknowledgment And Escalation Contract
 
