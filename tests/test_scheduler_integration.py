@@ -301,7 +301,7 @@ def test_scheduler_integration_rejects_unsafe_path_segments(
     assert not refresh_log_dir.exists()
 
 
-def test_scheduler_integration_dispatch_error_attempt_has_prelaunch_timing(
+def test_scheduler_integration_dispatch_error_attempt_keeps_prelaunch_timing_null(
     tmp_path: Path, monkeypatch
 ) -> None:
     artifact_base_dir = tmp_path / "refresh_runs"

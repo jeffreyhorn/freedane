@@ -29,7 +29,9 @@ Key behavior:
   - `catch_up`: 3
   - `manual_retry`: 2
 - classifies retryable vs terminal failure classes and transitions:
-  - `queued -> dispatched -> retry_pending|succeeded|dead_lettered`
+  - `queued -> dispatched -> running`
+  - `running -> retry_pending|succeeded|failed_pending_dead_letter`
+  - `failed_pending_dead_letter -> dead_lettered`
 - writes dead-letter payload copy to:
   - `<ACCESSDANE_ARTIFACT_BASE_DIR>/dead_letter/<profile_name>/<run_date>/<scheduler_run_id>.json`
 
