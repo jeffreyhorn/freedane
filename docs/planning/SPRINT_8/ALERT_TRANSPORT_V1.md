@@ -73,7 +73,7 @@ Each canonical alert instance must include:
 | `event_id` | Stable transport event id for this alert instance. |
 | `source_system` | `parser_drift|load_monitoring|benchmark_pack|scheduler`. |
 | `source_payload_type` | Producer payload type name/version. |
-| `source_payload_path` | Absolute/portable path to source artifact used for transport. |
+| `source_payload_path` | Portable artifact-root-relative path (POSIX-style separators) to source artifact used for transport. |
 | `source_payload_hash` | SHA-256 hash of source payload bytes. |
 | `source_run_id` | Producer run id (or scheduler run id). |
 | `alert_id` | Producer-stable alert id. |
@@ -83,7 +83,6 @@ Each canonical alert instance must include:
 | `generated_at_utc` | Source alert generation timestamp (UTC). |
 | `summary` | Human summary used by transport adapters. |
 | `reason_codes` | Sorted unique reason codes. |
-| `routing_key` | Compatibility alias of `route.canonical_routing_key`; when present, must exactly equal `route.canonical_routing_key`. |
 | `operator_actions` | Producer operator actions (normalized list, possibly empty). |
 
 Canonical severity normalization:
@@ -115,7 +114,7 @@ If producer payload already includes `routing_key`:
 - preserve original value as `route.source_routing_key`
 - still compute canonical route key for policy lookup
 - `route.canonical_routing_key` is the single source of truth for transport routing decisions.
-- `alert.routing_key` is compatibility-only and must exactly equal `route.canonical_routing_key` when emitted.
+- routing fields are defined only under `route` in the transport envelope (not duplicated under `alert`).
 
 ### Destination Mapping
 
@@ -206,6 +205,7 @@ Top-level keys (canonical order):
   - `max_attempts`
   - `last_attempt_at_utc` (nullable)
   - `next_attempt_at_utc` (nullable)
+- legacy singular delivery fields (`delivery.status`, `delivery.attempt_count`, `delivery.max_attempts`, `delivery.next_attempt_at_utc`) are not valid in v1 transport envelopes.
 
 ### `acknowledgment` fields
 
@@ -293,7 +293,7 @@ Escalation behavior:
   - if `ack_required = true`, `ack_state = pending`, and `now_utc >= first_delivery_at_utc + t`, enqueue escalation destinations for that step (exactly once per step).
   - record escalation attempt metadata in `delivery.delivery_receipts`.
 - set/retain `incident_id` for acknowledged/escalated critical and warn alerts.
-- if `ack_required = true` and no acknowledgment is received by the final configured escalation step, transition `ack_state` to `expired`.
+- if `ack_required = true` and `now_utc >= ack_deadline_utc` with no acknowledgment, transition `ack_state` to `expired` (independent of escalation-step count).
 
 ## Artifact And Audit Contract
 
