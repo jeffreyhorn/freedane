@@ -31,7 +31,7 @@ Source references:
 
 ### Alerting, Observability, And Data Quality Control (Days 7-10)
 
-- [ ] Day 7: define alert transport contract (`ALERT_TRANSPORT_V1.md`)
+- [x] Day 7: define alert transport contract (`ALERT_TRANSPORT_V1.md`)
   - Acceptance gate: transport-neutral envelope, routing, retry/idempotency, and acknowledgment policy are explicit.
 - [ ] Day 8: implement alert delivery integrations
   - Acceptance gate: alert routing is implemented with duplicate suppression and retry coverage.
