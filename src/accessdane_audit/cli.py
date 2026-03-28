@@ -3715,8 +3715,8 @@ def alert_transport_cmd(
             "Defaults from environment profile when configured."
         ),
     ),
-    artifact_base_dir: Path = typer.Option(
-        Path("data/alerts"),
+    artifact_base_dir: Optional[Path] = typer.Option(
+        None,
         "--artifact-base-dir",
         help="Base directory for alert transport artifacts.",
     ),
@@ -3753,9 +3753,13 @@ def alert_transport_cmd(
     if resolved_route_group is None:
         resolved_route_group = "ops-alerts"
 
-    if environment_profile is not None:
-        if artifact_base_dir == Path("data/alerts"):
+    if artifact_base_dir is None:
+        if environment_profile is not None:
             artifact_base_dir = environment_profile.artifact_base_dir / "alerts"
+        else:
+            artifact_base_dir = Path("data/alerts")
+
+    if environment_profile is not None:
         try:
             artifact_base_dir = validate_artifact_path_override(
                 profile=environment_profile,

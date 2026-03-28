@@ -1151,3 +1151,68 @@ def test_alert_transport_cli_uses_environment_default_alert_artifact_dir(
         / payload["events"][0]["envelope"]["event_id"]
     )
     assert expected_event_dir.exists()
+
+
+def test_alert_transport_cli_does_not_remap_explicit_artifact_base_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("environment_name", raising=False)
+    monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
+    monkeypatch.setenv(
+        "ACCESSDANE_RAW_DIR", str(tmp_path / "data" / "environments" / "stage" / "raw")
+    )
+    monkeypatch.setenv("ACCESSDANE_USER_AGENT", "AccessDaneAudit/0.1")
+    monkeypatch.setenv("ACCESSDANE_TIMEOUT", "30")
+    monkeypatch.setenv("ACCESSDANE_RETRIES", "3")
+    monkeypatch.setenv("ACCESSDANE_BACKOFF", "1.5")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_PROFILE", "analysis_only")
+    monkeypatch.setenv("ACCESSDANE_FEATURE_VERSION", "feature_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_RULESET_VERSION", "rules_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_SALES_RATIO_BASE", "sales_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_TOP", "25")
+    monkeypatch.setenv(
+        "ACCESSDANE_ARTIFACT_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "refresh_runs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_REFRESH_LOG_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "refresh_runs" / "logs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_BENCHMARK_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "benchmark_packs"),
+    )
+    monkeypatch.setenv("ALERT_ROUTE_GROUP", "ops-alerts")
+    monkeypatch.setenv("PROMOTION_APPROVER_GROUP", "release-approvers")
+    monkeypatch.setenv(
+        "PROMOTION_FREEZE_FILE",
+        str(tmp_path / "data" / "environments" / "stage" / "promotion_freeze.json"),
+    )
+
+    alert_path = tmp_path / "parser_alert.json"
+    alert_path.write_text(
+        json.dumps(_parser_alert_payload(), indent=2),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "alert-transport",
+            "--alert-file",
+            str(alert_path),
+            "--route-group",
+            "ops-alerts",
+            "--artifact-base-dir",
+            "data/alerts",
+        ],
+    )
+
+    assert result.exit_code != 0
+    stderr = getattr(result, "stderr", "")
+    combined_output = f"{result.output}{stderr}"
+    assert "--artifact-base-dir" in combined_output
+    assert "/environments/stage/" in combined_output
