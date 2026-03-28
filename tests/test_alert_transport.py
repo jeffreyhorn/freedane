@@ -11,6 +11,7 @@ from accessdane_audit import cli
 from accessdane_audit.alert_transport import (
     SimulatedDeliveryAdapter,
     TransportError,
+    _IdempotencyIndex,
     default_route_config,
     load_canonical_alerts,
     load_route_config,
@@ -908,3 +909,245 @@ def test_alert_transport_alert_payload_strips_source_routing_key(
     event = payload["events"][0]
     assert "source_routing_key" not in event["alert"]
     assert event["route"]["source_routing_key"] == "ops.parser_drift.warn"
+
+
+def test_alert_transport_rejects_event_id_dot_segments(tmp_path: Path) -> None:
+    config = default_route_config("ops-alerts")
+    alert = {
+        "event_id": "..",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    with pytest.raises(TransportError, match="cannot be '.' or '..'"):
+        run_alert_transport(
+            route_group="ops-alerts",
+            config=config,
+            alerts=[alert],  # type: ignore[list-item]
+            adapter=SimulatedDeliveryAdapter(),
+            artifact_base_dir=tmp_path / "alerts",
+            environment_name="dev",
+            transport_run_id="dot_segment_001",
+            now_fn=_fixed_now,
+        )
+
+
+def test_idempotency_index_save_merges_existing_file_state(tmp_path: Path) -> None:
+    index_path = tmp_path / "idempotency_index.json"
+    index_path.write_text(
+        json.dumps({"key_a": "evt_a"}, indent=2),
+        encoding="utf-8",
+    )
+
+    index = _IdempotencyIndex(path=index_path)
+    index_path.write_text(
+        json.dumps({"key_b": "evt_b"}, indent=2),
+        encoding="utf-8",
+    )
+    index.add("key_c", "evt_c")
+    index.save()
+
+    persisted = json.loads(index_path.read_text(encoding="utf-8"))
+    assert persisted["key_a"] == "evt_a"
+    assert persisted["key_b"] == "evt_b"
+    assert persisted["key_c"] == "evt_c"
+
+
+def test_escalation_step_index_skips_retryable_step_completion(tmp_path: Path) -> None:
+    config = default_route_config("ops-alerts")
+    config["routes"]["ops-alerts.parser_drift.warn"] = {
+        "primary_destinations": ["slack.ops-warn"],
+        "escalation_destinations": ["email.escalation"],
+        "ack_required": True,
+        "ack_timeout_seconds": 7200,
+        "escalation_schedule_seconds": [0],
+    }
+    config["destinations"]["email.escalation"] = {
+        "channel_type": "email",
+        "channel_target": "escalation@example.com",
+        "simulate_outcomes": ["failed_retryable"],
+    }
+
+    alert = {
+        "event_id": "evt_escalation_retryable_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    payload = run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="escalation_retryable_001",
+        now_fn=_fixed_now,
+    )
+    escalation_record = next(
+        record
+        for record in payload["events"][0]["delivery"]["deliveries"]
+        if record["destination_id"] == "email.escalation"
+    )
+    assert escalation_record["status"] == "failed_retryable"
+
+    step_index_path = tmp_path / "alerts" / "escalation_step_index.json"
+    if step_index_path.exists():
+        persisted = json.loads(step_index_path.read_text(encoding="utf-8"))
+        assert persisted == {}
+
+
+def test_alert_transport_preserves_prior_delivered_status_artifact(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+    alert = {
+        "event_id": "evt_preserve_delivered_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="preserve_delivered_first",
+        now_fn=_fixed_now,
+    )
+    run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="preserve_delivered_second",
+        now_fn=_fixed_now,
+    )
+
+    status_path = (
+        tmp_path
+        / "alerts"
+        / "20260327"
+        / "evt_preserve_delivered_001"
+        / "delivery_status.json"
+    )
+    status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_payload["overall_status"] == "delivered"
+
+
+def test_alert_transport_cli_uses_environment_default_alert_artifact_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("environment_name", raising=False)
+    monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
+    monkeypatch.setenv(
+        "ACCESSDANE_RAW_DIR", str(tmp_path / "data" / "environments" / "stage" / "raw")
+    )
+    monkeypatch.setenv("ACCESSDANE_USER_AGENT", "AccessDaneAudit/0.1")
+    monkeypatch.setenv("ACCESSDANE_TIMEOUT", "30")
+    monkeypatch.setenv("ACCESSDANE_RETRIES", "3")
+    monkeypatch.setenv("ACCESSDANE_BACKOFF", "1.5")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_PROFILE", "analysis_only")
+    monkeypatch.setenv("ACCESSDANE_FEATURE_VERSION", "feature_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_RULESET_VERSION", "rules_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_SALES_RATIO_BASE", "sales_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_TOP", "25")
+    monkeypatch.setenv(
+        "ACCESSDANE_ARTIFACT_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "refresh_runs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_REFRESH_LOG_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "refresh_runs" / "logs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_BENCHMARK_BASE_DIR",
+        str(tmp_path / "data" / "environments" / "stage" / "benchmark_packs"),
+    )
+    monkeypatch.setenv("ALERT_ROUTE_GROUP", "ops-alerts")
+    monkeypatch.setenv("PROMOTION_APPROVER_GROUP", "release-approvers")
+    monkeypatch.setenv(
+        "PROMOTION_FREEZE_FILE",
+        str(tmp_path / "data" / "environments" / "stage" / "promotion_freeze.json"),
+    )
+
+    alert_path = tmp_path / "parser_alert.json"
+    alert_path.write_text(
+        json.dumps(_parser_alert_payload(), indent=2),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "transport_profile_default.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "alert-transport",
+            "--alert-file",
+            str(alert_path),
+            "--route-group",
+            "ops-alerts",
+            "--transport-run-id",
+            "profile_default_001",
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["run"]["status"] == "succeeded"
+    run_date = payload["events"][0]["envelope"]["run_date"]
+    expected_event_dir = (
+        tmp_path
+        / "data"
+        / "environments"
+        / "stage"
+        / "refresh_runs"
+        / "alerts"
+        / run_date
+        / payload["events"][0]["envelope"]["event_id"]
+    )
+    assert expected_event_dir.exists()

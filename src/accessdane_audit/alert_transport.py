@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -172,21 +175,43 @@ def _sha256_bytes(payload_bytes: bytes) -> str:
 
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.tmp")
-    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _validate_path_component(*, label: str, value: str) -> str:
     text = value.strip()
     if not text:
         raise TransportError(f"{label} must be non-empty.")
+    if text in {".", ".."}:
+        raise TransportError(f"{label} cannot be '.' or '..'.")
     if not _SAFE_PATH_SEGMENT_RE.fullmatch(text):
         raise TransportError(
             f"{label} contains unsupported characters; allowed: letters, "
             "digits, '.', '_' and '-'."
         )
     return text
+
+
+def _load_string_map(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, value in payload.items():
+        if isinstance(key, str) and isinstance(value, str):
+            result[key] = value
+    return result
 
 
 def _build_event_id(
@@ -762,19 +787,7 @@ class _IdempotencyIndex:
         self._values = self._load()
 
     def _load(self) -> dict[str, str]:
-        if not self.path.exists():
-            return {}
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        result: dict[str, str] = {}
-        for key, value in payload.items():
-            if isinstance(key, str) and isinstance(value, str):
-                result[key] = value
-        return result
+        return _load_string_map(self.path)
 
     def contains(self, key: str) -> bool:
         return key in self._values
@@ -783,7 +796,16 @@ class _IdempotencyIndex:
         self._values[key] = event_id
 
     def save(self) -> None:
-        _write_json_atomic(self.path, self._values)
+        lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            current = _load_string_map(self.path)
+            merged = dict(current)
+            merged.update(self._values)
+            self._values = merged
+            _write_json_atomic(self.path, self._values)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class _EscalationStepIndex:
@@ -792,19 +814,7 @@ class _EscalationStepIndex:
         self._values = self._load()
 
     def _load(self) -> dict[str, str]:
-        if not self.path.exists():
-            return {}
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        result: dict[str, str] = {}
-        for key, value in payload.items():
-            if isinstance(key, str) and isinstance(value, str):
-                result[key] = value
-        return result
+        return _load_string_map(self.path)
 
     def contains(self, key: str) -> bool:
         return key in self._values
@@ -813,7 +823,16 @@ class _EscalationStepIndex:
         self._values[key] = event_id
 
     def save(self) -> None:
-        _write_json_atomic(self.path, self._values)
+        lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            current = _load_string_map(self.path)
+            merged = dict(current)
+            merged.update(self._values)
+            self._values = merged
+            _write_json_atomic(self.path, self._values)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _validate_route_group(route_group: str) -> str:
@@ -1333,8 +1352,9 @@ def run_alert_transport(
                     last_error_code = _as_str(step_record.get("last_error_code"))
                 if step_record.get("last_error_message") is not None:
                     last_error_message = _as_str(step_record.get("last_error_message"))
-                escalation_step_index.add(_step_key(due_offset), alert["event_id"])
-                escalation_step_index.save()
+                if step_record["status"] in {"delivered", "failed_terminal"}:
+                    escalation_step_index.add(_step_key(due_offset), alert["event_id"])
+                    escalation_step_index.save()
 
             destination_status = _delivery_overall_status(attempted_statuses)
             destination_record = {
@@ -1407,22 +1427,32 @@ def run_alert_transport(
 
         event_root = run_root / safe_event_id
         event_root.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(
-            event_root / "alert_transport_envelope.json",
-            event_payload,
-        )
+        existing_status_path = event_root / "delivery_status.json"
+        preserve_existing_delivered = False
+        if existing_status_path.exists():
+            existing_status = _load_string_map(existing_status_path)
+            preserve_existing_delivered = (
+                existing_status.get("overall_status") == "delivered"
+                and overall_status != "delivered"
+            )
+        if not preserve_existing_delivered:
+            _write_json_atomic(
+                event_root / "alert_transport_envelope.json",
+                event_payload,
+            )
         attempts_path = event_root / "delivery_attempts.jsonl"
         with attempts_path.open("a", encoding="utf-8") as handle:
             for receipt in delivery_receipts:
                 handle.write(json.dumps(receipt) + "\n")
-        _write_json_atomic(
-            event_root / "delivery_status.json",
-            {
-                "event_id": alert["event_id"],
-                "overall_status": overall_status,
-                "delivery_count": len(destination_records),
-            },
-        )
+        if not preserve_existing_delivered:
+            _write_json_atomic(
+                event_root / "delivery_status.json",
+                {
+                    "event_id": alert["event_id"],
+                    "overall_status": overall_status,
+                    "delivery_count": len(destination_records),
+                },
+            )
 
     delivered_count = sum(
         1 for event in events if event["delivery"]["overall_status"] == "delivered"

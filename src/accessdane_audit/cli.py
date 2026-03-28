@@ -3754,6 +3754,8 @@ def alert_transport_cmd(
         resolved_route_group = "ops-alerts"
 
     if environment_profile is not None:
+        if artifact_base_dir == Path("data/alerts"):
+            artifact_base_dir = environment_profile.artifact_base_dir / "alerts"
         try:
             artifact_base_dir = validate_artifact_path_override(
                 profile=environment_profile,
