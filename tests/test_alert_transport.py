@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import accessdane_audit.alert_transport as alert_transport_module
 from accessdane_audit import cli
 from accessdane_audit.alert_transport import (
     SimulatedDeliveryAdapter,
@@ -646,6 +647,50 @@ def test_alert_transport_rejects_missing_ack_timeout_key(tmp_path: Path) -> None
         )
 
 
+def test_alert_transport_rejects_missing_escalation_schedule_key(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+    config["routes"]["ops-alerts.parser_drift.warn"] = {
+        "primary_destinations": ["slack.ops-warn"],
+        "escalation_destinations": [],
+        "ack_required": True,
+        "ack_timeout_seconds": 60,
+    }
+
+    alert = {
+        "event_id": "evt_missing_escalation_schedule_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    with pytest.raises(
+        TransportError, match="must include escalation_schedule_seconds"
+    ):
+        run_alert_transport(
+            route_group="ops-alerts",
+            config=config,
+            alerts=[alert],  # type: ignore[list-item]
+            adapter=SimulatedDeliveryAdapter(),
+            artifact_base_dir=tmp_path / "alerts",
+            environment_name="dev",
+            transport_run_id="missing_escalation_schedule_001",
+            now_fn=_fixed_now,
+        )
+
+
 def test_alert_transport_executes_all_due_escalation_offsets_once(
     tmp_path: Path,
 ) -> None:
@@ -963,6 +1008,22 @@ def test_idempotency_index_save_merges_existing_file_state(tmp_path: Path) -> No
     assert persisted["key_a"] == "evt_a"
     assert persisted["key_b"] == "evt_b"
     assert persisted["key_c"] == "evt_c"
+
+
+def test_idempotency_index_save_falls_back_without_fcntl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(alert_transport_module, "_fcntl", None)
+    monkeypatch.setattr(alert_transport_module, "_LOCK_FALLBACK_WARNING_EMITTED", False)
+
+    index_path = tmp_path / "idempotency_index.json"
+    index = _IdempotencyIndex(path=index_path)
+    index.add("key_fallback", "evt_fallback")
+    with pytest.warns(RuntimeWarning, match="fcntl is unavailable"):
+        index.save()
+
+    persisted = json.loads(index_path.read_text(encoding="utf-8"))
+    assert persisted["key_fallback"] == "evt_fallback"
 
 
 def test_escalation_step_index_skips_retryable_step_completion(tmp_path: Path) -> None:

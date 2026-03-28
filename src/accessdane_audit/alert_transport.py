@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import re
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +19,13 @@ from typing import (
     Sequence,
     TypedDict,
 )
+
+try:
+    import fcntl as _fcntl_module
+except ModuleNotFoundError:  # pragma: no cover - exercised on non-POSIX runtimes.
+    _fcntl: Any = None
+else:
+    _fcntl = _fcntl_module
 
 DeliveryStatus = Literal[
     "pending",
@@ -212,6 +219,39 @@ def _load_string_map(path: Path) -> dict[str, str]:
         if isinstance(key, str) and isinstance(value, str):
             result[key] = value
     return result
+
+
+_LOCK_FALLBACK_WARNING_EMITTED = False
+
+
+def _merge_save_string_map(path: Path, values: dict[str, str]) -> dict[str, str]:
+    global _LOCK_FALLBACK_WARNING_EMITTED
+
+    if _fcntl is None:
+        if not _LOCK_FALLBACK_WARNING_EMITTED:
+            warnings.warn(
+                "fcntl is unavailable; using unlocked map-save fallback with reduced "
+                "cross-process safety.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            _LOCK_FALLBACK_WARNING_EMITTED = True
+        current = _load_string_map(path)
+        merged = dict(current)
+        merged.update(values)
+        _write_json_atomic(path, merged)
+        return merged
+
+    lock_path = path.with_suffix(f"{path.suffix}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as handle:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        current = _load_string_map(path)
+        merged = dict(current)
+        merged.update(values)
+        _write_json_atomic(path, merged)
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+    return merged
 
 
 def _build_event_id(
@@ -683,6 +723,10 @@ def _validate_route_policy(
             f"{policy_key} must set ack_timeout_seconds to null when "
             "ack_required=false."
         )
+    if "escalation_schedule_seconds" not in policy:
+        raise TransportError(
+            f"Routing policy {policy_key} must include escalation_schedule_seconds."
+        )
     schedule = [
         seconds
         for seconds in (
@@ -796,16 +840,7 @@ class _IdempotencyIndex:
         self._values[key] = event_id
 
     def save(self) -> None:
-        lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            current = _load_string_map(self.path)
-            merged = dict(current)
-            merged.update(self._values)
-            self._values = merged
-            _write_json_atomic(self.path, self._values)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        self._values = _merge_save_string_map(self.path, self._values)
 
 
 class _EscalationStepIndex:
@@ -823,16 +858,7 @@ class _EscalationStepIndex:
         self._values[key] = event_id
 
     def save(self) -> None:
-        lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            current = _load_string_map(self.path)
-            merged = dict(current)
-            merged.update(self._values)
-            self._values = merged
-            _write_json_atomic(self.path, self._values)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        self._values = _merge_save_string_map(self.path, self._values)
 
 
 def _validate_route_group(route_group: str) -> str:
