@@ -691,6 +691,51 @@ def test_alert_transport_rejects_missing_escalation_schedule_key(
         )
 
 
+def test_alert_transport_rejects_invalid_escalation_schedule_entries(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+    config["routes"]["ops-alerts.parser_drift.warn"] = {
+        "primary_destinations": ["slack.ops-warn"],
+        "escalation_destinations": [],
+        "ack_required": True,
+        "ack_timeout_seconds": 60,
+        "escalation_schedule_seconds": ["bad", -1],
+    }
+
+    alert = {
+        "event_id": "evt_invalid_escalation_schedule_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    with pytest.raises(
+        TransportError, match="invalid escalation_schedule_seconds entries"
+    ):
+        run_alert_transport(
+            route_group="ops-alerts",
+            config=config,
+            alerts=[alert],  # type: ignore[list-item]
+            adapter=SimulatedDeliveryAdapter(),
+            artifact_base_dir=tmp_path / "alerts",
+            environment_name="dev",
+            transport_run_id="invalid_escalation_schedule_001",
+            now_fn=_fixed_now,
+        )
+
+
 def test_alert_transport_executes_all_due_escalation_offsets_once(
     tmp_path: Path,
 ) -> None:
@@ -1277,3 +1322,33 @@ def test_alert_transport_cli_does_not_remap_explicit_artifact_base_dir(
     combined_output = f"{result.output}{stderr}"
     assert "--artifact-base-dir" in combined_output
     assert "/environments/stage/" in combined_output
+
+
+def test_alert_transport_cli_wraps_artifact_filesystem_errors(tmp_path: Path) -> None:
+    alert_path = tmp_path / "parser_alert.json"
+    alert_path.write_text(
+        json.dumps(_parser_alert_payload(), indent=2),
+        encoding="utf-8",
+    )
+    artifact_base_file = tmp_path / "artifact_base_file"
+    artifact_base_file.write_text("not-a-directory", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "alert-transport",
+            "--alert-file",
+            str(alert_path),
+            "--route-group",
+            "ops-alerts",
+            "--artifact-base-dir",
+            str(artifact_base_file),
+        ],
+    )
+
+    assert result.exit_code != 0
+    stderr = getattr(result, "stderr", "")
+    combined_output = f"{result.output}{stderr}"
+    assert "--artifact-base-dir" in combined_output
+    assert "Not a directory" in combined_output

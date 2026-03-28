@@ -727,14 +727,29 @@ def _validate_route_policy(
         raise TransportError(
             f"Routing policy {policy_key} must include escalation_schedule_seconds."
         )
-    schedule = [
-        seconds
-        for seconds in (
-            _as_int(item)
-            for item in _as_list(policy.get("escalation_schedule_seconds"))
+    raw_schedule = _as_list(policy.get("escalation_schedule_seconds"))
+    schedule: list[int] = []
+    invalid_entries: list[Any] = []
+    negative_entries: list[int] = []
+    for item in raw_schedule:
+        seconds = _as_int(item)
+        if seconds is None:
+            invalid_entries.append(item)
+        elif seconds < 0:
+            negative_entries.append(seconds)
+        else:
+            schedule.append(seconds)
+    if invalid_entries or negative_entries:
+        details: list[str] = []
+        if invalid_entries:
+            details.append(f"non-integer values: {invalid_entries!r}")
+        if negative_entries:
+            details.append(f"negative values: {negative_entries!r}")
+        raise TransportError(
+            "Routing policy "
+            f"{policy_key} has invalid escalation_schedule_seconds entries: "
+            + "; ".join(details)
         )
-        if seconds is not None and seconds >= 0
-    ]
     return {
         "primary_destinations": primary,
         "escalation_destinations": escalation,

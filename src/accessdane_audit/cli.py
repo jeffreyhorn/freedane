@@ -3806,17 +3806,28 @@ def alert_transport_cmd(
             str(exc),
             param_hint="alert-transport",
         ) from exc
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"Filesystem error during alert transport execution: {exc}",
+            param_hint="--artifact-base-dir",
+        ) from exc
 
     output_payload: dict[str, Any] = dict(payload)
     if parse_warnings:
         output_payload["warnings"] = parse_warnings
 
-    if out:
-        _ensure_output_file_path(out, param_hint="--out")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(output_payload, indent=2), encoding="utf-8")
-    else:
-        typer.echo(json.dumps(output_payload, indent=2))
+    try:
+        if out:
+            _ensure_output_file_path(out, param_hint="--out")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(output_payload, indent=2), encoding="utf-8")
+        else:
+            typer.echo(json.dumps(output_payload, indent=2))
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"Failed to write alert transport output: {exc}",
+            param_hint="--out",
+        ) from exc
 
     if payload["run"]["status"] != "succeeded":
         raise typer.Exit(code=1)
