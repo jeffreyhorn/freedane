@@ -467,10 +467,13 @@ def test_alert_transport_cli_validates_artifact_base_dir_against_environment_pro
         ],
     )
 
+    stderr = getattr(result, "stderr", "")
+    combined_output = f"{result.output}{stderr}"
     assert result.exit_code != 0
-    assert "Invalid value for --artifact-base-dir" in result.output
-    assert "environment 'prod'" in result.output
-    assert "expected 'stage'" in result.output
+    assert "Invalid value for" in combined_output
+    assert "--artifact-base-dir" in combined_output
+    assert "environment 'prod'" in combined_output
+    assert "expected 'stage'" in combined_output
 
 
 def test_load_canonical_alerts_skips_malformed_json_and_records_warning(
@@ -707,6 +710,62 @@ def test_alert_transport_executes_all_due_escalation_offsets_once(
     assert all(record["status"] == "delivered" for record in escalation_records)
 
 
+def test_alert_transport_duplicate_suppression_marks_escalation_as_suppressed(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+
+    alert = {
+        "event_id": "evt_duplicate_with_escalation_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="duplicate_escalation_first",
+        now_fn=_fixed_now,
+    )
+    second_payload = run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="duplicate_escalation_second",
+        now_fn=_fixed_now,
+    )
+
+    delivery = second_payload["events"][0]["delivery"]
+    assert delivery["overall_status"] == "suppressed_duplicate"
+    escalation_records = [
+        record
+        for record in delivery["deliveries"]
+        if record["destination_id"] in {"email.escalation"}
+    ]
+    assert len(escalation_records) == 1
+    assert escalation_records[0]["status"] == "suppressed_duplicate"
+    assert escalation_records[0]["attempt_count"] == 0
+
+
 def test_alert_transport_skips_escalation_when_ack_expired(tmp_path: Path) -> None:
     config = default_route_config("ops-alerts")
     config["routes"]["ops-alerts.parser_drift.warn"] = {
@@ -768,3 +827,36 @@ def test_alert_transport_skips_escalation_when_ack_expired(tmp_path: Path) -> No
     assert len(escalation_records) == 1
     assert escalation_records[0]["status"] == "pending"
     assert escalation_records[0]["attempt_count"] == 0
+
+
+def test_alert_transport_rejects_unknown_severity_value(tmp_path: Path) -> None:
+    config = default_route_config("ops-alerts")
+    invalid_alert = {
+        "event_id": "evt_bad_severity_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.unknown",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "urgent",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "unknown",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.urgent",
+    }
+
+    with pytest.raises(TransportError, match="Unsupported alert severity"):
+        run_alert_transport(
+            route_group="ops-alerts",
+            config=config,
+            alerts=[invalid_alert],  # type: ignore[list-item]
+            adapter=SimulatedDeliveryAdapter(),
+            artifact_base_dir=tmp_path / "alerts",
+            environment_name="dev",
+            transport_run_id="bad_severity_001",
+            now_fn=_fixed_now,
+        )

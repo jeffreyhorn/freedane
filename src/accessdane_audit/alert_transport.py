@@ -1056,13 +1056,24 @@ def run_alert_transport(
     events: list[dict[str, Any]] = []
 
     for alert in alerts:
-        canonical_routing_key = (
-            f"{resolved_group}.{alert['alert_type']}.{alert['severity']}"
-        )
+        raw_severity = _as_str(alert.get("severity"))
+        severity: Severity
+        if raw_severity == "info":
+            severity = "info"
+        elif raw_severity == "warn":
+            severity = "warn"
+        elif raw_severity == "critical":
+            severity = "critical"
+        else:
+            raise TransportError(
+                "Unsupported alert severity "
+                f"{alert.get('severity')!r}; expected one of info|warn|critical."
+            )
+        canonical_routing_key = f"{resolved_group}.{alert['alert_type']}.{severity}"
         policy_id, policy = _resolve_route_policy(
             route_group=resolved_group,
             alert_type=alert["alert_type"],
-            severity=alert["severity"],
+            severity=severity,
             config=config,
         )
 
@@ -1105,7 +1116,7 @@ def run_alert_transport(
 
         for destination_id in policy["primary_destinations"]:
             destination = destination_configs[destination_id]
-            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]]
+            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[severity]
             destination_record, receipts, delivered_at = _attempt_destination_delivery(
                 alert=alert,
                 destination_id=destination_id,
@@ -1147,21 +1158,31 @@ def run_alert_transport(
                 if ack_reference_now >= ack_deadline_dt:
                     ack_state = "expired"
 
+        primary_only_duplicate_suppression = (
+            first_delivery_dt is None
+            and bool(status_values)
+            and all(status == "suppressed_duplicate" for status in status_values)
+        )
         for destination_id in policy["escalation_destinations"]:
             destination = destination_configs[destination_id]
-            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]]
+            max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[severity]
             if first_delivery_dt is None or ack_state != "pending":
+                escalation_status: DeliveryStatus
+                if primary_only_duplicate_suppression:
+                    escalation_status = "suppressed_duplicate"
+                else:
+                    escalation_status = "pending"
                 destination_records.append(
                     {
                         "destination_id": destination_id,
-                        "status": "pending",
+                        "status": escalation_status,
                         "attempt_count": 0,
-                        "max_attempts": _RETRY_ATTEMPTS_BY_SEVERITY[alert["severity"]],
+                        "max_attempts": max_attempts,
                         "last_attempt_at_utc": None,
                         "next_attempt_at_utc": None,
                     }
                 )
-                status_values.append("pending")
+                status_values.append(escalation_status)
                 continue
 
             escalation_offsets = policy["escalation_schedule_seconds"]
