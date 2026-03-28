@@ -16,6 +16,9 @@ STARTUP_ARTIFACT_ROOT="${ACCESSDANE_STARTUP_ARTIFACT_ROOT:-data/startup_runs}"
 REFRESH_ARTIFACT_BASE_DIR="${ACCESSDANE_ARTIFACT_BASE_DIR:-data/refresh_runs}"
 BENCHMARK_ARTIFACT_BASE_DIR="${ACCESSDANE_BENCHMARK_BASE_DIR:-data/benchmark_packs}"
 ALERT_ARTIFACT_BASE_DIR="${ACCESSDANE_ALERT_ARTIFACT_BASE_DIR:-data/alerts}"
+if [[ -z "${ACCESSDANE_ALERT_ARTIFACT_BASE_DIR:-}" && -n "${ACCESSDANE_ARTIFACT_BASE_DIR:-}" ]]; then
+  ALERT_ARTIFACT_BASE_DIR="${ACCESSDANE_ARTIFACT_BASE_DIR}/alerts"
+fi
 ALERT_ROUTE_CONFIG="${ACCESSDANE_ALERT_ROUTE_CONFIG:-}"
 RETR_FILE="${ACCESSDANE_RETR_FILE:-}"
 PERMITS_FILE="${ACCESSDANE_PERMITS_FILE:-}"
@@ -41,7 +44,7 @@ Options:
   --startup-artifact-root PATH        Startup artifact root (default: data/startup_runs)
   --refresh-artifact-base-dir PATH    Refresh artifact base dir (default: data/refresh_runs)
   --benchmark-artifact-base-dir PATH  Benchmark artifact base dir (default: data/benchmark_packs)
-  --alert-artifact-base-dir PATH      Alert transport artifact base dir (default: data/alerts)
+  --alert-artifact-base-dir PATH      Alert transport artifact base dir (default: ACCESSDANE_ARTIFACT_BASE_DIR/alerts or data/alerts)
   --alert-route-config PATH           Optional alert route config JSON for alert-transport
   --retr-file PATH                    Optional RETR CSV input
   --permits-file PATH                 Optional permits CSV input

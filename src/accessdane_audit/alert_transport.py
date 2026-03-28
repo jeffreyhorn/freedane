@@ -786,6 +786,36 @@ class _IdempotencyIndex:
         _write_json_atomic(self.path, self._values)
 
 
+class _EscalationStepIndex:
+    def __init__(self, *, path: Path) -> None:
+        self.path = path
+        self._values = self._load()
+
+    def _load(self) -> dict[str, str]:
+        if not self.path.exists():
+            return {}
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        result: dict[str, str] = {}
+        for key, value in payload.items():
+            if isinstance(key, str) and isinstance(value, str):
+                result[key] = value
+        return result
+
+    def contains(self, key: str) -> bool:
+        return key in self._values
+
+    def add(self, key: str, event_id: str) -> None:
+        self._values[key] = event_id
+
+    def save(self) -> None:
+        _write_json_atomic(self.path, self._values)
+
+
 def _validate_route_group(route_group: str) -> str:
     return _validate_path_component(label="route_group", value=route_group)
 
@@ -796,13 +826,34 @@ def _idempotency_key(
     destination_id: str,
     canonical_routing_key: str,
     severity: Severity,
-    scope: Optional[str] = None,
+) -> str:
+    preimage = f"{event_id}|{destination_id}|{canonical_routing_key}|{severity}".encode(
+        "utf-8"
+    )
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def _escalation_step_key(
+    *,
+    event_id: str,
+    destination_id: str,
+    canonical_routing_key: str,
+    severity: Severity,
+    offset_seconds: int,
 ) -> str:
     preimage = (
         f"{event_id}|{destination_id}|{canonical_routing_key}|{severity}|"
-        f"{scope or 'default'}"
+        f"escalation_offset:{offset_seconds}"
     ).encode("utf-8")
     return hashlib.sha256(preimage).hexdigest()
+
+
+def _alert_payload_without_routing_fields(
+    alert: Mapping[str, Any],
+) -> dict[str, Any]:
+    alert_payload = dict(alert)
+    alert_payload.pop("source_routing_key", None)
+    return alert_payload
 
 
 def _destination_config_or_default(
@@ -868,7 +919,8 @@ def _build_transport_envelope_stub(
     run_date: str,
     environment_name: str,
     route_group: str,
-    alert: Mapping[str, Any],
+    alert_payload: Mapping[str, Any],
+    source_routing_key: Optional[str],
     canonical_routing_key: str,
     policy_id: str,
     policy_version: Optional[str],
@@ -883,10 +935,10 @@ def _build_transport_envelope_stub(
             "environment": environment_name,
             "alert_route_group": route_group,
         },
-        "alert": alert,
+        "alert": alert_payload,
         "route": {
             "canonical_routing_key": canonical_routing_key,
-            "source_routing_key": alert.get("source_routing_key"),
+            "source_routing_key": source_routing_key,
             "policy_id": policy_id,
             "policy_version": policy_version,
         },
@@ -904,16 +956,15 @@ def _attempt_destination_delivery(
     adapter: DeliveryAdapter,
     idempotency_index: "_IdempotencyIndex",
     start_dt: datetime,
-    idempotency_scope: Optional[str] = None,
+    idempotency_enabled: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Optional[datetime]]:
     idempotency_key = _idempotency_key(
         event_id=alert["event_id"],
         destination_id=destination_id,
         canonical_routing_key=canonical_routing_key,
         severity=alert["severity"],
-        scope=idempotency_scope,
     )
-    if idempotency_index.contains(idempotency_key):
+    if idempotency_enabled and idempotency_index.contains(idempotency_key):
         return (
             {
                 "destination_id": destination_id,
@@ -957,8 +1008,9 @@ def _attempt_destination_delivery(
             receipt["error_message"] = outcome.error_message
 
         if outcome.delivered:
-            idempotency_index.add(idempotency_key, alert["event_id"])
-            idempotency_index.save()
+            if idempotency_enabled:
+                idempotency_index.add(idempotency_key, alert["event_id"])
+                idempotency_index.save()
             receipts.append(receipt)
             return (
                 {
@@ -1053,6 +1105,9 @@ def run_alert_transport(
     idempotency_index = _IdempotencyIndex(
         path=artifact_base_dir / "idempotency_index.json"
     )
+    escalation_step_index = _EscalationStepIndex(
+        path=artifact_base_dir / "escalation_step_index.json"
+    )
     events: list[dict[str, Any]] = []
 
     for alert in alerts:
@@ -1083,6 +1138,8 @@ def run_alert_transport(
         )
         if safe_event_id != alert["event_id"]:
             raise TransportError("event_id cannot contain leading/trailing whitespace.")
+        alert_payload = _alert_payload_without_routing_fields(alert)
+        source_routing_key = _as_str(alert.get("source_routing_key"))
 
         all_destination_ids = (
             policy["primary_destinations"] + policy["escalation_destinations"]
@@ -1108,7 +1165,8 @@ def run_alert_transport(
             run_date=run_date,
             environment_name=environment_name,
             route_group=resolved_group,
-            alert=alert,
+            alert_payload=alert_payload,
+            source_routing_key=source_routing_key,
             canonical_routing_key=canonical_routing_key,
             policy_id=policy_id,
             policy_version=config.get("contract_version"),
@@ -1166,6 +1224,17 @@ def run_alert_transport(
         for destination_id in policy["escalation_destinations"]:
             destination = destination_configs[destination_id]
             max_attempts = _RETRY_ATTEMPTS_BY_SEVERITY[severity]
+            escalation_offsets = policy["escalation_schedule_seconds"]
+
+            def _step_key(offset_seconds: int) -> str:
+                return _escalation_step_key(
+                    event_id=alert["event_id"],
+                    destination_id=destination_id,
+                    canonical_routing_key=canonical_routing_key,
+                    severity=severity,
+                    offset_seconds=offset_seconds,
+                )
+
             if first_delivery_dt is None or ack_state != "pending":
                 escalation_status: DeliveryStatus
                 if primary_only_duplicate_suppression:
@@ -1185,34 +1254,55 @@ def run_alert_transport(
                 status_values.append(escalation_status)
                 continue
 
-            escalation_offsets = policy["escalation_schedule_seconds"]
             due_offsets = [
                 offset
                 for offset in escalation_offsets
                 if ack_reference_now >= first_delivery_dt + timedelta(seconds=offset)
             ]
-            if not due_offsets:
-                next_due_utc: Optional[str] = None
-                if escalation_offsets:
-                    next_due_dt = first_delivery_dt + timedelta(
-                        seconds=min(escalation_offsets)
-                    )
-                    next_due_utc = _iso_utc(next_due_dt)
+            due_unfired_offsets = [
+                offset
+                for offset in due_offsets
+                if not escalation_step_index.contains(_step_key(offset))
+            ]
+            pending_offsets = [
+                offset
+                for offset in escalation_offsets
+                if offset not in due_offsets
+                and not escalation_step_index.contains(_step_key(offset))
+            ]
+            next_due_utc: Optional[str] = None
+            if pending_offsets:
+                next_due_dt = first_delivery_dt + timedelta(
+                    seconds=min(pending_offsets)
+                )
+                next_due_utc = _iso_utc(next_due_dt)
+            if not due_unfired_offsets:
+                status: DeliveryStatus = (
+                    "suppressed_duplicate" if due_offsets else "pending"
+                )
                 destination_records.append(
                     {
                         "destination_id": destination_id,
-                        "status": "pending",
+                        "status": status,
                         "attempt_count": 0,
                         "max_attempts": max_attempts,
                         "last_attempt_at_utc": None,
                         "next_attempt_at_utc": next_due_utc,
+                        "last_error_code": None,
+                        "last_error_message": None,
                     }
                 )
-                status_values.append("pending")
+                status_values.append(status)
                 continue
 
-            for due_offset in due_offsets:
-                destination_record, receipts, _ = _attempt_destination_delivery(
+            attempted_offsets: list[int] = []
+            attempted_statuses: list[DeliveryStatus] = []
+            attempt_count_total = 0
+            last_attempt_at_utc: Optional[str] = None
+            last_error_code: Optional[str] = None
+            last_error_message: Optional[str] = None
+            for due_offset in due_unfired_offsets:
+                step_record, receipts, _ = _attempt_destination_delivery(
                     alert=alert,
                     destination_id=destination_id,
                     destination=destination,
@@ -1225,19 +1315,41 @@ def run_alert_transport(
                         ack_reference_now,
                         first_delivery_dt + timedelta(seconds=due_offset),
                     ),
-                    idempotency_scope=f"escalation_offset_{due_offset}",
+                    idempotency_enabled=False,
                 )
-                destination_record["escalation_offset_seconds"] = due_offset
                 for receipt in receipts:
                     receipt["escalation_offset_seconds"] = due_offset
-                destination_records.append(destination_record)
                 delivery_receipts.extend(receipts)
-                status_values.append(destination_record["status"])
-                if destination_record["last_attempt_at_utc"]:
+                attempted_offsets.append(due_offset)
+                attempted_statuses.append(step_record["status"])
+                attempt_count_total += int(step_record["attempt_count"])
+                if step_record["last_attempt_at_utc"]:
+                    last_attempt_at_utc = str(step_record["last_attempt_at_utc"])
                     current_dt = _parse_utc_timestamp(
-                        destination_record["last_attempt_at_utc"],
+                        step_record["last_attempt_at_utc"],
                         fallback_now=current_dt,
                     )
+                if step_record.get("last_error_code") is not None:
+                    last_error_code = _as_str(step_record.get("last_error_code"))
+                if step_record.get("last_error_message") is not None:
+                    last_error_message = _as_str(step_record.get("last_error_message"))
+                escalation_step_index.add(_step_key(due_offset), alert["event_id"])
+                escalation_step_index.save()
+
+            destination_status = _delivery_overall_status(attempted_statuses)
+            destination_record = {
+                "destination_id": destination_id,
+                "status": destination_status,
+                "attempt_count": attempt_count_total,
+                "max_attempts": max_attempts * len(due_unfired_offsets),
+                "last_attempt_at_utc": last_attempt_at_utc,
+                "next_attempt_at_utc": next_due_utc,
+                "last_error_code": last_error_code,
+                "last_error_message": last_error_message,
+                "escalation_offsets_attempted": attempted_offsets,
+            }
+            destination_records.append(destination_record)
+            status_values.append(destination_status)
 
         overall_status = _delivery_overall_status(status_values)
 
@@ -1251,10 +1363,10 @@ def run_alert_transport(
                 "environment": environment_name,
                 "alert_route_group": resolved_group,
             },
-            "alert": alert,
+            "alert": alert_payload,
             "route": {
                 "canonical_routing_key": canonical_routing_key,
-                "source_routing_key": alert["source_routing_key"],
+                "source_routing_key": source_routing_key,
                 "policy_id": policy_id,
                 "policy_version": config.get("contract_version"),
             },

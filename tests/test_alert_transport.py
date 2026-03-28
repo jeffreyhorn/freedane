@@ -703,11 +703,21 @@ def test_alert_transport_executes_all_due_escalation_offsets_once(
         for record in payload["events"][0]["delivery"]["deliveries"]
         if record["destination_id"] == "email.escalation"
     ]
-    assert len(escalation_records) == 2
+    assert len(escalation_records) == 1
+    assert escalation_records[0]["status"] == "delivered"
+    assert escalation_records[0]["attempt_count"] == 2
+    assert escalation_records[0]["escalation_offsets_attempted"] == [900, 1800]
+    escalation_receipts = [
+        receipt
+        for receipt in payload["events"][0]["delivery"]["delivery_receipts"]
+        if receipt["destination_id"] == "email.escalation"
+    ]
     assert sorted(
-        record["escalation_offset_seconds"] for record in escalation_records
-    ) == [900, 1800]
-    assert all(record["status"] == "delivered" for record in escalation_records)
+        receipt["escalation_offset_seconds"] for receipt in escalation_receipts
+    ) == [
+        900,
+        1800,
+    ]
 
 
 def test_alert_transport_duplicate_suppression_marks_escalation_as_suppressed(
@@ -860,3 +870,41 @@ def test_alert_transport_rejects_unknown_severity_value(tmp_path: Path) -> None:
             transport_run_id="bad_severity_001",
             now_fn=_fixed_now,
         )
+
+
+def test_alert_transport_alert_payload_strips_source_routing_key(
+    tmp_path: Path,
+) -> None:
+    config = default_route_config("ops-alerts")
+    alert = {
+        "event_id": "evt_route_field_scope_001",
+        "source_system": "parser_drift",
+        "source_payload_type": "parser_drift_alert_payload_v1",
+        "source_payload_path": "data/parser_alert.json",
+        "source_payload_hash": "abc123",
+        "source_run_id": "parser_run_001",
+        "alert_id": "parser_run_001.warn",
+        "alert_type": "parser_drift",
+        "source_alert_type": "parser_drift",
+        "severity": "warn",
+        "generated_at_utc": "2026-03-27T12:00:00Z",
+        "summary": "warn",
+        "reason_codes": ["x"],
+        "operator_actions": [],
+        "source_routing_key": "ops.parser_drift.warn",
+    }
+
+    payload = run_alert_transport(
+        route_group="ops-alerts",
+        config=config,
+        alerts=[alert],
+        adapter=SimulatedDeliveryAdapter(),
+        artifact_base_dir=tmp_path / "alerts",
+        environment_name="dev",
+        transport_run_id="route_field_scope_001",
+        now_fn=_fixed_now,
+    )
+
+    event = payload["events"][0]
+    assert "source_routing_key" not in event["alert"]
+    assert event["route"]["source_routing_key"] == "ops.parser_drift.warn"
