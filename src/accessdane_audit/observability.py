@@ -212,9 +212,7 @@ def discover_observability_input_files(
         explicit_paths=parser_drift_files,
         roots_and_patterns=(
             (refresh_search_root, "**/parser_drift_diff.json"),
-            (refresh_search_root, "**/parser_drift_snapshot.json"),
             (startup_search_root, "**/startup_parser_drift_diff.json"),
-            (startup_search_root, "**/startup_parser_drift_snapshot.json"),
         ),
     )
     discovered_load = _discover_files(
@@ -285,11 +283,18 @@ def build_observability_outputs(
     errors: list[dict[str, object]] = []
     benchmark_finished_ats: list[datetime] = []
 
-    _record_refresh_events(
+    refresh_event_keys = _record_refresh_events(
         refresh_payload_files=normalized_inputs["refresh_payload_files"],
         events_by_sli=events_by_sli,
         errors=errors,
         now_dt=now_dt,
+    )
+    _record_scheduler_events(
+        scheduler_payload_files=normalized_inputs["scheduler_payload_files"],
+        events_by_sli=events_by_sli,
+        errors=errors,
+        now_dt=now_dt,
+        seen_refresh_event_keys=refresh_event_keys,
     )
     _record_parser_drift_events(
         parser_drift_files=normalized_inputs["parser_drift_files"],
@@ -331,7 +336,10 @@ def build_observability_outputs(
     _append_missing_artifact_errors(
         errors=errors,
         domain_to_files={
-            "refresh": normalized_inputs["refresh_payload_files"],
+            "refresh": (
+                tuple(normalized_inputs["refresh_payload_files"])
+                + tuple(normalized_inputs["scheduler_payload_files"])
+            ),
             "parser_drift": normalized_inputs["parser_drift_files"],
             "load_monitoring": normalized_inputs["load_monitor_files"],
             "annual_refresh": normalized_inputs["annual_signoff_files"],
@@ -387,12 +395,22 @@ def build_observability_outputs(
         "errors": errors,
     }
 
+    measurement_windows = {
+        result.spec.measurement_window
+        for result in sli_results
+        if result.spec.measurement_window
+    }
+    if len(measurement_windows) == 1:
+        evaluation_measurement_window = next(iter(measurement_windows))
+    else:
+        evaluation_measurement_window = "mixed"
+
     slo_evaluation = {
         "evaluation": {
             "contract_version": "observability_slo_v1",
             "environment": environment_name,
             "generated_at_utc": _iso_utc(now_dt),
-            "measurement_window": "28d",
+            "measurement_window": evaluation_measurement_window,
         },
         "sli_results": [
             {
@@ -437,6 +455,14 @@ def persist_observability_outputs(
     observability_run_id: str,
     outputs: Mapping[str, object],
 ) -> dict[str, Path]:
+    if not re.fullmatch(r"\d{8}", run_date):
+        raise ObservabilityError(f"Invalid run_date {run_date!r}; expected YYYYMMDD.")
+    if not SAFE_RUN_ID_RE.fullmatch(observability_run_id):
+        raise ObservabilityError(
+            "Invalid observability_run_id; only letters, digits, '.', '_' and '-' "
+            "are allowed."
+        )
+
     output_base = _expand_and_resolve(artifact_base_dir)
     run_root = output_base / "ops_observability" / run_date / observability_run_id
     run_root.mkdir(parents=True, exist_ok=True)
@@ -469,7 +495,8 @@ def _record_refresh_events(
     events_by_sli: dict[str, list[_SliEvent]],
     errors: list[dict[str, object]],
     now_dt: datetime,
-) -> None:
+) -> set[str]:
+    event_keys: set[str] = set()
     for path in refresh_payload_files:
         payload = _load_json_or_error(path=path, domain="refresh", errors=errors)
         if payload is None:
@@ -483,6 +510,9 @@ def _record_refresh_events(
         status = _as_str(run.get("status"))
         if status == "cancelled":
             continue
+        run_id = _as_str(run.get("run_id")) or path.name
+        event_key = _refresh_event_key(profile_name=profile_name, run_id=run_id)
+        event_keys.add(event_key)
 
         finished_at = _parse_iso(_as_str(run.get("finished_at")))
         started_at = _parse_iso(_as_str(run.get("started_at")))
@@ -535,6 +565,96 @@ def _record_refresh_events(
                     profile_name="annual_refresh",
                 )
             )
+    return event_keys
+
+
+def _record_scheduler_events(
+    *,
+    scheduler_payload_files: Sequence[Path],
+    events_by_sli: dict[str, list[_SliEvent]],
+    errors: list[dict[str, object]],
+    now_dt: datetime,
+    seen_refresh_event_keys: set[str],
+) -> None:
+    for path in scheduler_payload_files:
+        payload = _load_json_or_error(path=path, domain="refresh", errors=errors)
+        if payload is None:
+            continue
+
+        scheduler_run = _as_dict(payload.get("scheduler_run"))
+        result = _as_dict(payload.get("result"))
+        profile_name = _as_str(scheduler_run.get("profile_name"))
+        if profile_name not in {"daily_refresh", "analysis_only", "annual_refresh"}:
+            continue
+
+        result_status = _as_str(result.get("status"))
+        if result_status in {None, "cancelled"}:
+            continue
+        scheduler_run_id = _as_str(scheduler_run.get("scheduler_run_id")) or path.stem
+        refresh_run_id = _as_str(scheduler_run.get("refresh_run_id"))
+        event_key = _refresh_event_key(
+            profile_name=profile_name,
+            run_id=refresh_run_id or scheduler_run_id,
+        )
+        if event_key in seen_refresh_event_keys:
+            continue
+        seen_refresh_event_keys.add(event_key)
+
+        observed_at = (
+            _parse_iso(_as_str(result.get("last_attempt_finished_at_utc")))
+            or _parse_iso(_as_str(scheduler_run.get("updated_at_utc")))
+            or now_dt
+        )
+        events_by_sli[f"refresh.success_ratio.{profile_name}"].append(
+            _SliEvent(
+                observed_at=observed_at,
+                passed=result_status == "succeeded",
+                profile_name=profile_name,
+            )
+        )
+
+        first_started, last_finished = _scheduler_attempt_bounds(
+            _as_list(payload.get("attempts"))
+        )
+        duration_seconds: Optional[float] = None
+        if first_started is not None and last_finished is not None:
+            duration_seconds = (last_finished - first_started).total_seconds()
+
+        latency_threshold = {
+            "daily_refresh": 90 * 60,
+            "analysis_only": 30 * 60,
+            "annual_refresh": 8 * 60 * 60,
+        }[profile_name]
+        passed_latency = bool(
+            result_status == "succeeded"
+            and duration_seconds is not None
+            and duration_seconds <= float(latency_threshold)
+        )
+        events_by_sli[f"refresh.latency_compliance.{profile_name}"].append(
+            _SliEvent(
+                observed_at=observed_at,
+                passed=passed_latency,
+                profile_name=profile_name,
+            )
+        )
+
+
+def _scheduler_attempt_bounds(
+    attempts: Sequence[object],
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    started_values: list[datetime] = []
+    finished_values: list[datetime] = []
+    for raw_attempt in attempts:
+        attempt = _as_dict(raw_attempt)
+        started_at = _parse_iso(_as_str(attempt.get("started_at_utc")))
+        finished_at = _parse_iso(_as_str(attempt.get("finished_at_utc")))
+        if started_at is not None:
+            started_values.append(started_at)
+        if finished_at is not None:
+            finished_values.append(finished_at)
+    first_started = min(started_values) if started_values else None
+    last_finished = max(finished_values) if finished_values else None
+    return first_started, last_finished
 
 
 def _record_parser_drift_events(
@@ -993,6 +1113,10 @@ def _append_missing_artifact_errors(
                 "message": f"No source artifacts discovered for domain '{domain}'.",
             }
         )
+
+
+def _refresh_event_key(*, profile_name: str, run_id: str) -> str:
+    return f"{profile_name}:{run_id}"
 
 
 def _discover_files(

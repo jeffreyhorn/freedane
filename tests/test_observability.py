@@ -4,10 +4,15 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
-from accessdane_audit.observability import build_observability_outputs
+from accessdane_audit.observability import (
+    ObservabilityError,
+    build_observability_outputs,
+    persist_observability_outputs,
+)
 
 
 def _fixed_now() -> datetime:
@@ -106,6 +111,36 @@ def _benchmark_payload(*, run_id: str, finished_at: datetime) -> dict[str, objec
     }
 
 
+def _scheduler_payload(
+    *,
+    scheduler_run_id: str,
+    profile_name: str,
+    refresh_run_id: str,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+) -> dict[str, object]:
+    return {
+        "scheduler_run": {
+            "scheduler_run_id": scheduler_run_id,
+            "profile_name": profile_name,
+            "refresh_run_id": refresh_run_id,
+            "updated_at_utc": _iso(finished_at),
+        },
+        "attempts": [
+            {
+                "attempt_index": 1,
+                "started_at_utc": _iso(started_at),
+                "finished_at_utc": _iso(finished_at),
+            }
+        ],
+        "result": {
+            "status": status,
+            "last_attempt_finished_at_utc": _iso(finished_at),
+        },
+    }
+
+
 def test_build_observability_outputs_is_deterministic(tmp_path: Path) -> None:
     now_dt = _fixed_now()
 
@@ -200,6 +235,7 @@ def test_build_observability_outputs_is_deterministic(tmp_path: Path) -> None:
         == "observability_20260329_120000"
     )
     assert outputs_one["rollup"]["burn_alerts"] == []
+    assert outputs_one["slo_evaluation"]["evaluation"]["measurement_window"] == "mixed"
 
 
 def test_observability_burn_threshold_classification_marks_critical(
@@ -350,3 +386,73 @@ def test_observability_rollup_cli_writes_required_artifacts(tmp_path: Path) -> N
         "run",
         "slo_status",
     ]
+
+
+def test_observability_uses_scheduler_inputs_for_refresh_slis(tmp_path: Path) -> None:
+    now_dt = _fixed_now()
+    scheduler_path = tmp_path / "refresh_runs" / "scheduler_logs" / "sched_001.json"
+    _write_json(
+        scheduler_path,
+        _scheduler_payload(
+            scheduler_run_id="sched_001",
+            profile_name="daily_refresh",
+            refresh_run_id="refresh_run_from_scheduler",
+            started_at=now_dt - timedelta(minutes=35),
+            finished_at=now_dt - timedelta(minutes=5),
+            status="succeeded",
+        ),
+    )
+
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_scheduler_only",
+        refresh_payload_files=[],
+        scheduler_payload_files=[scheduler_path],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[],
+        benchmark_files=[],
+        now_fn=_fixed_now,
+    )
+
+    refresh_sli = next(
+        row
+        for row in outputs["slo_evaluation"]["sli_results"]
+        if row["sli_id"] == "refresh.success_ratio.daily_refresh"
+    )
+    assert refresh_sli["denominator"] == 1
+    assert refresh_sli["numerator"] == 1
+
+    latency_sli = next(
+        row
+        for row in outputs["slo_evaluation"]["sli_results"]
+        if row["sli_id"] == "refresh.latency_compliance.daily_refresh"
+    )
+    assert latency_sli["denominator"] == 1
+    assert latency_sli["numerator"] == 1
+
+
+def test_persist_observability_outputs_validates_inputs(tmp_path: Path) -> None:
+    outputs = {
+        "rollup": {"run": {}},
+        "slo_evaluation": {"evaluation": {}, "sli_results": [], "non_computable": []},
+        "dashboard_snapshot": {"snapshot": {}, "panels": [], "alerts": []},
+        "timeseries_rows": [],
+    }
+
+    with pytest.raises(ObservabilityError):
+        persist_observability_outputs(
+            artifact_base_dir=tmp_path,
+            run_date="2026-03-29",
+            observability_run_id="obs_ok",
+            outputs=outputs,
+        )
+    with pytest.raises(ObservabilityError):
+        persist_observability_outputs(
+            artifact_base_dir=tmp_path,
+            run_date="20260329",
+            observability_run_id="../obs_bad",
+            outputs=outputs,
+        )

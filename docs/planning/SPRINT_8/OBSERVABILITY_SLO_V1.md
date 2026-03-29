@@ -285,7 +285,7 @@ Top-level keys:
 - `contract_version` (must be `observability_slo_v1`)
 - `environment`
 - `generated_at_utc`
-- `measurement_window` (`28d` or `365d` for annual SLIs)
+- `measurement_window` (`28d`, `365d`, or `mixed` when one evaluation contains both 28-day and 365-day SLI results)
 
 `sli_results` required fields:
 
