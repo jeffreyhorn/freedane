@@ -1,0 +1,75 @@
+{
+  "contract_version": "alert_route_config_v1",
+  "route_group": "ops-alerts",
+  "routes": {
+    "ops-alerts.*.critical": {
+      "primary_destinations": [
+        "slack.ops-critical",
+        "pagerduty.primary",
+        "email.oncall"
+      ],
+      "escalation_destinations": [
+        "email.escalation"
+      ],
+      "ack_required": true,
+      "ack_timeout_seconds": 900,
+      "escalation_schedule_seconds": [
+        900,
+        1800
+      ]
+    },
+    "ops-alerts.*.warn": {
+      "primary_destinations": [
+        "slack.ops-warn",
+        "email.team"
+      ],
+      "escalation_destinations": [
+        "email.escalation"
+      ],
+      "ack_required": true,
+      "ack_timeout_seconds": 14400,
+      "escalation_schedule_seconds": [
+        14400
+      ]
+    },
+    "ops-alerts.*.info": {
+      "primary_destinations": [
+        "slack.ops-info"
+      ],
+      "escalation_destinations": [],
+      "ack_required": false,
+      "ack_timeout_seconds": null,
+      "escalation_schedule_seconds": []
+    }
+  },
+  "destinations": {
+    "slack.ops-critical": {
+      "channel_type": "slack",
+      "channel_target": "ops-critical"
+    },
+    "pagerduty.primary": {
+      "channel_type": "pagerduty",
+      "channel_target": "primary-service"
+    },
+    "email.oncall": {
+      "channel_type": "email",
+      "channel_target": "oncall@accessdane.local"
+    },
+    "email.escalation": {
+      "channel_type": "email",
+      "channel_target": "escalation@accessdane.local"
+    },
+    "slack.ops-warn": {
+      "channel_type": "slack",
+      "channel_target": "ops-warn"
+    },
+    "email.team": {
+      "channel_type": "email",
+      "channel_target": "team@accessdane.local"
+    },
+    "slack.ops-info": {
+      "channel_type": "slack",
+      "channel_target": "ops-info"
+    }
+  }
+}

@@ -15,6 +15,11 @@ TOP_N="${ACCESSDANE_REFRESH_TOP:-100}"
 STARTUP_ARTIFACT_ROOT="${ACCESSDANE_STARTUP_ARTIFACT_ROOT:-data/startup_runs}"
 REFRESH_ARTIFACT_BASE_DIR="${ACCESSDANE_ARTIFACT_BASE_DIR:-data/refresh_runs}"
 BENCHMARK_ARTIFACT_BASE_DIR="${ACCESSDANE_BENCHMARK_BASE_DIR:-data/benchmark_packs}"
+ALERT_ARTIFACT_BASE_DIR="${ACCESSDANE_ALERT_ARTIFACT_BASE_DIR:-data/alerts}"
+if [[ -z "${ACCESSDANE_ALERT_ARTIFACT_BASE_DIR:-}" && -n "${ACCESSDANE_ARTIFACT_BASE_DIR:-}" ]]; then
+  ALERT_ARTIFACT_BASE_DIR="${ACCESSDANE_ARTIFACT_BASE_DIR}/alerts"
+fi
+ALERT_ROUTE_CONFIG="${ACCESSDANE_ALERT_ROUTE_CONFIG:-}"
 RETR_FILE="${ACCESSDANE_RETR_FILE:-}"
 PERMITS_FILE="${ACCESSDANE_PERMITS_FILE:-}"
 APPEALS_FILE="${ACCESSDANE_APPEALS_FILE:-}"
@@ -39,6 +44,8 @@ Options:
   --startup-artifact-root PATH        Startup artifact root (default: data/startup_runs)
   --refresh-artifact-base-dir PATH    Refresh artifact base dir (default: data/refresh_runs)
   --benchmark-artifact-base-dir PATH  Benchmark artifact base dir (default: data/benchmark_packs)
+  --alert-artifact-base-dir PATH      Alert transport artifact base dir (default: ACCESSDANE_ARTIFACT_BASE_DIR/alerts or data/alerts)
+  --alert-route-config PATH           Optional alert route config JSON for alert-transport
   --retr-file PATH                    Optional RETR CSV input
   --permits-file PATH                 Optional permits CSV input
   --appeals-file PATH                 Optional appeals CSV input
@@ -109,6 +116,16 @@ while [[ $# -gt 0 ]]; do
     --benchmark-artifact-base-dir)
       require_option_value "$1" "$#"
       BENCHMARK_ARTIFACT_BASE_DIR="$2"
+      shift 2
+      ;;
+    --alert-artifact-base-dir)
+      require_option_value "$1" "$#"
+      ALERT_ARTIFACT_BASE_DIR="$2"
+      shift 2
+      ;;
+    --alert-route-config)
+      require_option_value "$1" "$#"
+      ALERT_ROUTE_CONFIG="$2"
       shift 2
       ;;
     --retr-file)
@@ -229,7 +246,7 @@ then
   exit 2
 fi
 
-for optional_file in "${RETR_FILE}" "${PERMITS_FILE}" "${APPEALS_FILE}"; do
+for optional_file in "${RETR_FILE}" "${PERMITS_FILE}" "${APPEALS_FILE}" "${ALERT_ROUTE_CONFIG}"; do
   if [[ -n "${optional_file}" ]] && [[ ! -f "${optional_file}" ]]; then
     echo "Optional input file not found: ${optional_file}" >&2
     exit 2
@@ -268,6 +285,7 @@ LOAD_MONITOR_ALERT_OUT="${OUTPUT_DIR}/startup_load_monitor_alert.json"
 BENCHMARK_OUT="${OUTPUT_DIR}/startup_benchmark_pack.json"
 BENCHMARK_TREND_OUT="${OUTPUT_DIR}/startup_benchmark_pack_trend.json"
 BENCHMARK_ALERT_OUT="${OUTPUT_DIR}/startup_benchmark_pack_alert.json"
+ALERT_TRANSPORT_OUT="${OUTPUT_DIR}/startup_alert_transport.json"
 GO_NO_GO_OUT="${OUTPUT_DIR}/startup_go_no_go.json"
 SUMMARY_OUT="${OUTPUT_DIR}/startup_run_summary.json"
 
@@ -418,6 +436,30 @@ run_step \
   "--trend-out" "${BENCHMARK_TREND_OUT}" \
   "--alert-out" "${BENCHMARK_ALERT_OUT}"
 
+ALERT_TRANSPORT_ARGS=()
+if [[ -f "${LOAD_MONITOR_ALERT_OUT}" ]]; then
+  ALERT_TRANSPORT_ARGS+=("--alert-file" "${LOAD_MONITOR_ALERT_OUT}")
+fi
+if [[ -f "${BENCHMARK_ALERT_OUT}" ]]; then
+  ALERT_TRANSPORT_ARGS+=("--alert-file" "${BENCHMARK_ALERT_OUT}")
+fi
+if [[ -n "${ALERT_ROUTE_CONFIG}" ]]; then
+  ALERT_TRANSPORT_ARGS+=("--route-config" "${ALERT_ROUTE_CONFIG}")
+fi
+
+if [[ "${#ALERT_TRANSPORT_ARGS[@]}" -gt 0 ]]; then
+  run_step \
+    "alert_transport" \
+    "false" \
+    "${ACCESSDANE_BIN}" "alert-transport" \
+    "${ALERT_TRANSPORT_ARGS[@]}" \
+    "--artifact-base-dir" "${ALERT_ARTIFACT_BASE_DIR}" \
+    "--transport-run-id" "${RUN_ID}" \
+    "--out" "${ALERT_TRANSPORT_OUT}"
+else
+  record_skipped_step "alert_transport" "false" "no alert payload files present"
+fi
+
 run_step \
   "generate_startup_summary" \
   "true" \
@@ -449,6 +491,7 @@ run_step \
   "${BENCHMARK_OUT}" \
   "${BENCHMARK_TREND_OUT}" \
   "${BENCHMARK_ALERT_OUT}" \
+  "${ALERT_TRANSPORT_OUT}" \
   "${PARSER_SNAPSHOT_OUT}" <<'PY'
 import json
 import sys
@@ -483,6 +526,7 @@ from pathlib import Path
     benchmark_out,
     benchmark_trend_out,
     benchmark_alert_out,
+    alert_transport_out,
     parser_snapshot_out,
 ) = sys.argv[1:]
 
@@ -766,6 +810,7 @@ summary_payload = {
         "benchmark_pack": benchmark_out,
         "benchmark_trend": benchmark_trend_out,
         "benchmark_alert": benchmark_alert_out,
+        "alert_transport": alert_transport_out,
         "go_no_go": go_no_go_path,
     },
     "go_no_go": go_no_go_payload,

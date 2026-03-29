@@ -11,6 +11,7 @@ Use them as starter headers for records-request cleanup and manual curation.
 
 - `permit_events_template.csv`
 - `appeal_events_template.csv`
+- `alert_route_config_v1.template.json`
 
 ## Value Guidance
 
@@ -63,4 +64,8 @@ Appeal rows must include at least:
 ```bash
 accessdane ingest-permits --file docs/templates/permit_events_template.csv
 accessdane ingest-appeals --file docs/templates/appeal_events_template.csv
+.venv/bin/accessdane alert-transport \
+  --alert-file path/to/load_monitor_alert.json \
+  --alert-file path/to/benchmark_pack_alert.json \
+  --route-config docs/templates/alert_route_config_v1.template.json
 ```
