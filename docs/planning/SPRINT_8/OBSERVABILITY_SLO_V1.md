@@ -61,9 +61,9 @@ paths below are environment-scoped under each environment's
 | Domain | Required source artifact(s) | Required identifiers |
 | --- | --- | --- |
 | `refresh` | `refresh_run.json` and scheduler run payload for the same logical execution | `run_id`, `profile_name`, `run_date`, terminal `status`, `started_at_utc`, `finished_at_utc` |
-| `parser_drift` | parser drift diff/alert payloads when emitted | `run_id`, `status`, `severity` (when alert emitted), `generated_at_utc` |
-| `load_monitoring` | `load_monitor.json`, `load_monitor_alert.json` (when emitted) | `run_id`, `status`, `severity` (when alert emitted), `generated_at_utc` |
-| `annual_refresh` | annual runner payload + annual signoff artifact | `run_id`, `status`, `stage_statuses`, `signoff.decision`, `finished_at_utc` |
+| `parser_drift` | parser drift diff/alert payloads when emitted | `run_id`, `status`, `severity` (when alert emitted), `generated_at` |
+| `load_monitoring` | `load_monitor.json`, `load_monitor_alert.json` (when emitted) | `run_id`, `status`, `severity` (when alert emitted), `generated_at` |
+| `annual_refresh` | annual runner payload + annual signoff artifact | `run_id`, `status`, `stage_statuses`, `annual_signoff.run.status`, `finished_at_utc` |
 | `benchmark_pack` | `benchmark_pack.json`, trend payload, companion alert payload (when emitted) | `benchmark_run_id`, `status`, `comparison.overall_severity`, `generated_at` |
 
 Source-ingest rules:
@@ -121,10 +121,10 @@ SLI 1.2: refresh completion latency compliance
 
 ### 2) Parser Drift Health
 
-SLI 2.1: parser drift critical-free ratio
+SLI 2.1: parser drift error-free ratio
 
 - definition:
-  - runs with no `critical` parser drift alert / total parser drift evaluations.
+  - runs with no `error`-severity parser drift alert / total parser drift evaluations.
 - SLO target:
   - `>= 99.0%`
 
@@ -156,7 +156,7 @@ SLI 3.2: load-monitor execution timeliness
 SLI 4.1: annual signoff success ratio
 
 - definition:
-  - annual refresh runs with `annual_signoff.decision = approved` / total annual refresh runs that reached signoff stage.
+  - annual refresh runs with `annual_signoff.run.status = approved` / total annual refresh runs that reached signoff stage.
 - SLO target:
   - `>= 95.0%`
 
@@ -207,7 +207,8 @@ Low-traffic protection:
 
 Alert transport mapping:
 
-- observability burn alerts use canonical `alert_type = observability_slo`.
+- for Alert Transport Contract v1 compatibility, observability burn alerts route as canonical `alert_type = load_monitoring`.
+- `observability_slo` is carried as non-routing metadata (for example `alert_subtype = observability_slo`).
 - severity maps directly to alert transport severity (`info|warn|critical`).
 
 ## Dashboard Artifact Contract v1
