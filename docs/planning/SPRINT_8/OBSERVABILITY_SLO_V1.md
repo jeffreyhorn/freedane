@@ -257,7 +257,7 @@ Top-level keys:
   - `target`
   - `observed`
   - `compliant` (bool)
-  - `error_budget_remaining` (0..1)
+  - `error_budget_remaining` [0..1], fraction of budget remaining (MUST be clamped: never negative, never > 1)
 
 `burn_alerts` required fields:
 
@@ -268,7 +268,9 @@ Top-level keys:
   - `burn_rate_6h`
   - `burn_rate_24h`
   - `triggered_at_utc`
-  - `routing_key`
+  - `routing_key` (Alert Transport v1 canonical routing key)
+    - format: `<ALERT_ROUTE_GROUP>.<alert_type>.<severity>`
+    - must use Alert Transport v1 canonical derivation (not producer/source-only routing keys)
 
 ### `observability_slo_evaluation.json` required structure
 
