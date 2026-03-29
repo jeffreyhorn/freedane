@@ -35,7 +35,7 @@ Source references:
   - Acceptance gate: transport-neutral envelope, routing, retry/idempotency, and acknowledgment policy are explicit.
 - [x] Day 8: implement alert delivery integrations
   - Acceptance gate: alert routing is implemented with duplicate suppression and retry coverage.
-- [ ] Day 9: define observability + SLO contract (`OBSERVABILITY_SLO_V1.md`)
+- [x] Day 9: define observability + SLO contract (`OBSERVABILITY_SLO_V1.md`)
   - Acceptance gate: refresh/drift/load/benchmark operational metrics and burn thresholds are explicit.
 - [ ] Day 10: implement dashboards/SLO wiring + quality guardrails
   - Acceptance gate: dashboard artifacts and data quality/replay checks are produced automatically and tested.

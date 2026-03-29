@@ -259,7 +259,7 @@ Planned work:
 
 Deliverables:
 
-- `docs/planning/SPRINT_8/OBSERVABILITY_V1.md`
+- `docs/planning/SPRINT_8/OBSERVABILITY_SLO_V1.md`
 
 PR closeout:
 
