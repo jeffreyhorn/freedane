@@ -67,6 +67,12 @@ from .models import (
     PaymentRecord,
     TaxRecord,
 )
+from .observability import (
+    ObservabilityError,
+    build_observability_outputs,
+    discover_observability_input_files,
+    persist_observability_outputs,
+)
 from .parcel_dossier import build_parcel_dossier
 from .parcel_year_facts import rebuild_parcel_year_facts
 from .parse import ParsedPage, parse_page
@@ -3673,6 +3679,263 @@ def benchmark_pack_cmd(
 
     if run_status == "failed":
         raise typer.Exit(code=1)
+
+
+@app.command("observability-rollup")
+def observability_rollup_cmd(
+    refresh_artifact_base_dir: Optional[Path] = typer.Option(
+        None,
+        "--refresh-artifact-base-dir",
+        help="Base directory for refresh artifacts and scheduler logs.",
+    ),
+    benchmark_artifact_base_dir: Optional[Path] = typer.Option(
+        None,
+        "--benchmark-artifact-base-dir",
+        help="Base directory for benchmark pack artifacts.",
+    ),
+    startup_artifact_base_dir: Path = typer.Option(
+        Path("data/startup_runs"),
+        "--startup-artifact-base-dir",
+        help="Base directory for startup workflow artifacts.",
+    ),
+    refresh_file: list[Path] = typer.Option(
+        [],
+        "--refresh-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Explicit refresh payload JSON file (repeatable).",
+    ),
+    scheduler_file: list[Path] = typer.Option(
+        [],
+        "--scheduler-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Explicit scheduler payload JSON file (repeatable).",
+    ),
+    parser_drift_file: list[Path] = typer.Option(
+        [],
+        "--parser-drift-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Explicit parser drift payload JSON file (repeatable).",
+    ),
+    load_monitor_file: list[Path] = typer.Option(
+        [],
+        "--load-monitor-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Explicit load monitoring payload JSON file (repeatable).",
+    ),
+    annual_signoff_file: list[Path] = typer.Option(
+        [],
+        "--annual-signoff-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Explicit annual signoff payload JSON file (repeatable).",
+    ),
+    benchmark_file: list[Path] = typer.Option(
+        [],
+        "--benchmark-file",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Explicit benchmark pack JSON file (repeatable).",
+    ),
+    route_group: Optional[str] = typer.Option(
+        None,
+        "--route-group",
+        help=(
+            "Alert route group used for canonical burn-alert routing keys. "
+            "Defaults from environment profile when configured."
+        ),
+    ),
+    run_date: Optional[str] = typer.Option(
+        None,
+        "--run-date",
+        help="Run date in YYYYMMDD format (default: current UTC date).",
+    ),
+    observability_run_id: Optional[str] = typer.Option(
+        None,
+        "--observability-run-id",
+        help="Optional explicit observability run id (default generated).",
+    ),
+    artifact_base_dir: Optional[Path] = typer.Option(
+        None,
+        "--artifact-base-dir",
+        help="Root directory where observability artifacts are written.",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        dir_okay=False,
+        resolve_path=True,
+        help="Optional output JSON path for command summary payload.",
+    ),
+) -> None:
+    try:
+        environment_profile = load_environment_profile()
+    except EnvironmentProfileError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        ) from exc
+
+    resolved_route_group = route_group
+    if resolved_route_group is None and environment_profile is not None:
+        resolved_route_group = environment_profile.alert_route_group
+    if resolved_route_group is None:
+        resolved_route_group = "ops-alerts"
+
+    resolved_refresh_root = refresh_artifact_base_dir
+    if resolved_refresh_root is None:
+        if environment_profile is not None:
+            resolved_refresh_root = environment_profile.artifact_base_dir
+        else:
+            resolved_refresh_root = Path("data/refresh_runs")
+    resolved_refresh_root = resolved_refresh_root.expanduser().resolve()
+
+    resolved_benchmark_root = benchmark_artifact_base_dir
+    if resolved_benchmark_root is None:
+        if environment_profile is not None:
+            resolved_benchmark_root = environment_profile.benchmark_base_dir
+        else:
+            resolved_benchmark_root = Path("data/benchmark_packs")
+    resolved_benchmark_root = resolved_benchmark_root.expanduser().resolve()
+
+    resolved_startup_root = startup_artifact_base_dir.expanduser().resolve()
+
+    resolved_output_root = artifact_base_dir
+    if resolved_output_root is None:
+        if environment_profile is not None:
+            resolved_output_root = environment_profile.artifact_base_dir
+        else:
+            resolved_output_root = Path("data")
+    resolved_output_root = resolved_output_root.expanduser().resolve()
+
+    if environment_profile is not None:
+        try:
+            resolved_refresh_root = validate_artifact_path_override(
+                profile=environment_profile,
+                artifact_base_dir=resolved_refresh_root,
+            )
+            resolved_benchmark_root = validate_artifact_path_override(
+                profile=environment_profile,
+                artifact_base_dir=resolved_benchmark_root,
+            )
+            resolved_output_root = validate_artifact_path_override(
+                profile=environment_profile,
+                artifact_base_dir=resolved_output_root,
+            )
+        except EnvironmentProfileError as exc:
+            raise typer.BadParameter(
+                str(exc),
+                param_hint=(
+                    "--refresh-artifact-base-dir/--benchmark-artifact-base-dir/"
+                    "--artifact-base-dir"
+                ),
+            ) from exc
+
+    now_dt = datetime.now(timezone.utc)
+    resolved_run_date = run_date or now_dt.strftime("%Y%m%d")
+    if not re.fullmatch(r"\d{8}", resolved_run_date):
+        raise typer.BadParameter(
+            f"Invalid run_date {resolved_run_date!r}; expected YYYYMMDD.",
+            param_hint="--run-date",
+        )
+    resolved_run_id = (
+        observability_run_id
+        or f"observability_{resolved_run_date}_{now_dt.strftime('%H%M%S')}"
+    )
+    environment_name = (
+        environment_profile.environment_name
+        if environment_profile is not None
+        else "local"
+    )
+
+    try:
+        discovered_inputs = discover_observability_input_files(
+            refresh_artifact_base_dir=resolved_refresh_root,
+            benchmark_artifact_base_dir=resolved_benchmark_root,
+            startup_artifact_base_dir=resolved_startup_root,
+            refresh_files=refresh_file,
+            scheduler_files=scheduler_file,
+            parser_drift_files=parser_drift_file,
+            load_monitor_files=load_monitor_file,
+            annual_signoff_files=annual_signoff_file,
+            benchmark_files=benchmark_file,
+            run_date=resolved_run_date,
+        )
+
+        outputs = build_observability_outputs(
+            environment_name=environment_name,
+            alert_route_group=resolved_route_group,
+            run_date=resolved_run_date,
+            observability_run_id=resolved_run_id,
+            refresh_payload_files=discovered_inputs["refresh"],
+            scheduler_payload_files=discovered_inputs["scheduler"],
+            parser_drift_files=discovered_inputs["parser_drift"],
+            load_monitor_files=discovered_inputs["load_monitoring"],
+            annual_signoff_files=discovered_inputs["annual_signoff"],
+            benchmark_files=discovered_inputs["benchmark"],
+        )
+        artifact_paths = persist_observability_outputs(
+            artifact_base_dir=resolved_output_root,
+            run_date=resolved_run_date,
+            observability_run_id=resolved_run_id,
+            outputs=outputs,
+        )
+    except ObservabilityError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="observability-rollup",
+        ) from exc
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"Filesystem error during observability rollup execution: {exc}",
+            param_hint="--artifact-base-dir",
+        ) from exc
+
+    rollup_payload = _as_dict(outputs.get("rollup"))
+    eval_payload = _as_dict(outputs.get("slo_evaluation"))
+    sli_results = eval_payload.get("sli_results")
+    burn_alerts = rollup_payload.get("burn_alerts")
+    rollup_errors = rollup_payload.get("errors")
+
+    output_payload = {
+        "run": _as_dict(rollup_payload.get("run")),
+        "artifact_paths": {key: str(path) for key, path in artifact_paths.items()},
+        "summary": {
+            "sli_count": len(sli_results) if isinstance(sli_results, list) else 0,
+            "burn_alert_count": (
+                len(burn_alerts) if isinstance(burn_alerts, list) else 0
+            ),
+            "error_count": len(rollup_errors) if isinstance(rollup_errors, list) else 0,
+        },
+    }
+
+    try:
+        if out is not None:
+            _ensure_output_file_path(out, param_hint="--out")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(output_payload, indent=2), encoding="utf-8")
+        else:
+            typer.echo(json.dumps(output_payload, indent=2))
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"Failed to write observability rollup output: {exc}",
+            param_hint="--out",
+        ) from exc
 
 
 @app.command("alert-transport")
