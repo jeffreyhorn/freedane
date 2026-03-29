@@ -3903,7 +3903,7 @@ def observability_rollup_cmd(
     except ObservabilityError as exc:
         raise typer.BadParameter(
             str(exc),
-            param_hint="observability-rollup",
+            param_hint=_observability_error_param_hint(exc),
         ) from exc
     except OSError as exc:
         raise typer.BadParameter(
@@ -4105,6 +4105,15 @@ def _as_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _observability_error_param_hint(exc: ObservabilityError) -> str:
+    message = str(exc)
+    if "observability_run_id" in message:
+        return "--observability-run-id"
+    if "run_date" in message:
+        return "--run-date"
+    return "observability-rollup"
 
 
 def _as_str(value: object) -> Optional[str]:

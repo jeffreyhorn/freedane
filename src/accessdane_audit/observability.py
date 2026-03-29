@@ -348,7 +348,10 @@ def build_observability_outputs(
             ),
             "parser_drift": normalized_inputs["parser_drift_files"],
             "load_monitoring": normalized_inputs["load_monitor_files"],
-            "annual_refresh": normalized_inputs["annual_signoff_files"],
+            "annual_refresh": (
+                tuple(normalized_inputs["refresh_payload_files"])
+                + tuple(normalized_inputs["annual_signoff_files"])
+            ),
             "benchmark_pack": normalized_inputs["benchmark_files"],
         },
     )

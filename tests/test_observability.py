@@ -475,6 +475,35 @@ def test_observability_rollup_cli_reports_specific_override_flag(
     assert "--benchmark-artifact-base-dir" in combined_output
 
 
+def test_observability_rollup_cli_reports_observability_run_id_hint(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "observability-rollup",
+            "--refresh-artifact-base-dir",
+            str(tmp_path / "refresh_runs"),
+            "--benchmark-artifact-base-dir",
+            str(tmp_path / "benchmark_packs"),
+            "--startup-artifact-base-dir",
+            str(tmp_path / "startup_runs"),
+            "--artifact-base-dir",
+            str(tmp_path / "out"),
+            "--run-date",
+            "20260329",
+            "--observability-run-id",
+            ".",
+        ],
+    )
+
+    assert result.exit_code == 2
+    stderr = getattr(result, "stderr", "")
+    combined_output = f"{result.output}{stderr}"
+    assert "--observability-run-id" in combined_output
+
+
 def test_observability_uses_scheduler_inputs_for_refresh_slis(tmp_path: Path) -> None:
     now_dt = _fixed_now()
     scheduler_path = tmp_path / "refresh_runs" / "scheduler_logs" / "sched_001.json"
@@ -620,6 +649,51 @@ def test_no_events_do_not_set_insufficient_sample_size() -> None:
         row["sli_id"] == "refresh.success_ratio.daily_refresh"
         and row["reason"] == "insufficient_sample_size"
         for row in non_computable
+    )
+
+
+def test_annual_refresh_domain_not_marked_missing_when_refresh_payload_exists(
+    tmp_path: Path,
+) -> None:
+    now_dt = _fixed_now()
+    annual_refresh_payload = (
+        tmp_path
+        / "refresh_runs"
+        / "20260329"
+        / "annual_refresh"
+        / "annual_refresh_001"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    _write_json(
+        annual_refresh_payload,
+        _refresh_payload(
+            run_id="annual_refresh_001",
+            profile_name="annual_refresh",
+            status="succeeded",
+            started_at=now_dt - timedelta(hours=3),
+            finished_at=now_dt - timedelta(hours=1),
+        ),
+    )
+
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_annual_refresh_payload_only",
+        refresh_payload_files=[annual_refresh_payload],
+        scheduler_payload_files=[],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[],
+        benchmark_files=[],
+        now_fn=_fixed_now,
+    )
+
+    errors = outputs["rollup"]["errors"]
+    assert not any(
+        row.get("code") == "artifact_missing" and row.get("domain") == "annual_refresh"
+        for row in errors
     )
 
 

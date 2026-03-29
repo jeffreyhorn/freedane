@@ -23,7 +23,7 @@ Optional inputs:
 - `--refresh-artifact-base-dir`
 - `--benchmark-artifact-base-dir`
 - `--startup-artifact-base-dir`
-- explicit file overrides (`--refresh-file`, `--parser-drift-file`, `--load-monitor-file`, `--annual-signoff-file`, `--benchmark-file`)
+- explicit file overrides (`--refresh-file`, `--scheduler-file`, `--parser-drift-file`, `--load-monitor-file`, `--annual-signoff-file`, `--benchmark-file`)
 
 ## Artifact Layout
 
