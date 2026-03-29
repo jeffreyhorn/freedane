@@ -185,15 +185,11 @@ def discover_observability_input_files(
     if run_date is not None and not re.fullmatch(r"\d{8}", run_date):
         raise ObservabilityError(f"Invalid run_date {run_date!r}; expected YYYYMMDD.")
 
-    refresh_search_root = (
-        refresh_root / run_date if run_date is not None else refresh_root
-    )
-    benchmark_search_root = (
-        benchmark_root / run_date if run_date is not None else benchmark_root
-    )
-    startup_search_root = (
-        startup_root / run_date if run_date is not None else startup_root
-    )
+    # Discovery intentionally scans the full artifact roots to support rolling
+    # window metrics (28d/365d), independent of the output run_date label.
+    refresh_search_root = refresh_root
+    benchmark_search_root = benchmark_root
+    startup_search_root = startup_root
 
     discovered_refresh = _discover_files(
         explicit_paths=refresh_files,
@@ -461,6 +457,28 @@ def persist_observability_outputs(
         raise ObservabilityError(
             "Invalid observability_run_id; only letters, digits, '.', '_' and '-' "
             "are allowed."
+        )
+    if "rollup" not in outputs or not isinstance(outputs["rollup"], Mapping):
+        raise ObservabilityError(
+            "outputs must include a mapping value for key 'rollup'."
+        )
+    if "slo_evaluation" not in outputs or not isinstance(
+        outputs["slo_evaluation"], Mapping
+    ):
+        raise ObservabilityError(
+            "outputs must include a mapping value for key 'slo_evaluation'."
+        )
+    if "dashboard_snapshot" not in outputs or not isinstance(
+        outputs["dashboard_snapshot"], Mapping
+    ):
+        raise ObservabilityError(
+            "outputs must include a mapping value for key 'dashboard_snapshot'."
+        )
+    if "timeseries_rows" not in outputs or not isinstance(
+        outputs["timeseries_rows"], list
+    ):
+        raise ObservabilityError(
+            "outputs must include a list value for key 'timeseries_rows'."
         )
 
     output_base = _expand_and_resolve(artifact_base_dir)
@@ -928,9 +946,7 @@ def _compute_sli_results(
                     "burn_rate_6h": _round_float(burn_6h, 6),
                     "burn_rate_24h": _round_float(burn_24h, 6),
                     "triggered_at_utc": _iso_utc(now_dt),
-                    "routing_key": (
-                        f"{alert_route_group}.load_monitoring.{burn_severity}"
-                    ),
+                    "routing_key": f"{alert_route_group}.{spec.domain}.{burn_severity}",
                 }
             )
 

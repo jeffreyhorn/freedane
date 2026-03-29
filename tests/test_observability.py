@@ -11,6 +11,7 @@ from accessdane_audit import cli
 from accessdane_audit.observability import (
     ObservabilityError,
     build_observability_outputs,
+    discover_observability_input_files,
     persist_observability_outputs,
 )
 
@@ -287,6 +288,12 @@ def test_observability_burn_threshold_classification_marks_critical(
         and alert["severity"] == "critical"
         for alert in burn_alerts
     )
+    refresh_burn_alert = next(
+        alert
+        for alert in burn_alerts
+        if alert["sli_id"] == "refresh.success_ratio.daily_refresh"
+    )
+    assert refresh_burn_alert["routing_key"] == "ops-alerts.refresh.critical"
 
     sli_results = outputs["slo_evaluation"]["sli_results"]
     refresh_sli = next(
@@ -456,3 +463,63 @@ def test_persist_observability_outputs_validates_inputs(tmp_path: Path) -> None:
             observability_run_id="../obs_bad",
             outputs=outputs,
         )
+    with pytest.raises(ObservabilityError):
+        persist_observability_outputs(
+            artifact_base_dir=tmp_path,
+            run_date="20260329",
+            observability_run_id="obs_ok",
+            outputs={
+                "rollup": {},
+                "slo_evaluation": {},
+                "dashboard_snapshot": {},
+            },
+        )
+
+
+def test_discovery_scans_full_history_for_rolling_windows(tmp_path: Path) -> None:
+    refresh_root = tmp_path / "refresh_runs"
+    benchmark_root = tmp_path / "benchmark_packs"
+    startup_root = tmp_path / "startup_runs"
+
+    refresh_old = (
+        refresh_root
+        / "20260301"
+        / "daily_refresh"
+        / "refresh_old_001"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    benchmark_old = (
+        benchmark_root
+        / "20260301"
+        / "daily_refresh"
+        / "benchmark_old_001"
+        / "benchmark_pack.json"
+    )
+    _write_json(
+        refresh_old,
+        _refresh_payload(
+            run_id="refresh_old_001",
+            profile_name="daily_refresh",
+            status="succeeded",
+            started_at=_fixed_now() - timedelta(days=1, minutes=25),
+            finished_at=_fixed_now() - timedelta(days=1, minutes=5),
+        ),
+    )
+    _write_json(
+        benchmark_old,
+        _benchmark_payload(
+            run_id="benchmark_old_001",
+            finished_at=_fixed_now() - timedelta(days=1, minutes=2),
+        ),
+    )
+
+    discovered = discover_observability_input_files(
+        refresh_artifact_base_dir=refresh_root,
+        benchmark_artifact_base_dir=benchmark_root,
+        startup_artifact_base_dir=startup_root,
+        run_date="20260329",
+    )
+
+    assert refresh_old.resolve() in discovered["refresh"]
+    assert benchmark_old.resolve() in discovered["benchmark"]
