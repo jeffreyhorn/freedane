@@ -237,6 +237,12 @@ def test_build_observability_outputs_is_deterministic(tmp_path: Path) -> None:
     )
     assert outputs_one["rollup"]["burn_alerts"] == []
     assert outputs_one["slo_evaluation"]["evaluation"]["measurement_window"] == "mixed"
+    daily_refresh = next(
+        row
+        for row in outputs_one["slo_evaluation"]["sli_results"]
+        if row["sli_id"] == "refresh.success_ratio.daily_refresh"
+    )
+    assert daily_refresh["insufficient_sample_size"] is True
 
 
 def test_observability_burn_threshold_classification_marks_critical(
@@ -473,6 +479,37 @@ def test_persist_observability_outputs_validates_inputs(tmp_path: Path) -> None:
                 "slo_evaluation": {},
                 "dashboard_snapshot": {},
             },
+        )
+
+
+def test_observability_run_id_rejects_dot_segments(tmp_path: Path) -> None:
+    with pytest.raises(ObservabilityError):
+        build_observability_outputs(
+            environment_name="dev",
+            alert_route_group="ops-alerts",
+            run_date="20260329",
+            observability_run_id=".",
+            refresh_payload_files=[],
+            scheduler_payload_files=[],
+            parser_drift_files=[],
+            load_monitor_files=[],
+            annual_signoff_files=[],
+            benchmark_files=[],
+            now_fn=_fixed_now,
+        )
+
+    outputs = {
+        "rollup": {"run": {}},
+        "slo_evaluation": {"evaluation": {}, "sli_results": [], "non_computable": []},
+        "dashboard_snapshot": {"snapshot": {}, "panels": [], "alerts": []},
+        "timeseries_rows": [],
+    }
+    with pytest.raises(ObservabilityError):
+        persist_observability_outputs(
+            artifact_base_dir=tmp_path,
+            run_date="20260329",
+            observability_run_id="..",
+            outputs=outputs,
         )
 
 

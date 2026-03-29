@@ -24,6 +24,18 @@ class ObservabilityError(ValueError):
     pass
 
 
+def _validate_observability_run_id(observability_run_id: str) -> None:
+    if not SAFE_RUN_ID_RE.fullmatch(observability_run_id):
+        raise ObservabilityError(
+            "Invalid observability_run_id; only letters, digits, '.', '_' and '-' "
+            "are allowed."
+        )
+    if observability_run_id in {".", ".."}:
+        raise ObservabilityError(
+            "Invalid observability_run_id; '.' and '..' are not allowed."
+        )
+
+
 @dataclass(frozen=True)
 class _SliSpec:
     sli_id: str
@@ -258,11 +270,7 @@ def build_observability_outputs(
 ) -> dict[str, object]:
     if not re.fullmatch(r"\d{8}", run_date):
         raise ObservabilityError(f"Invalid run_date {run_date!r}; expected YYYYMMDD.")
-    if not SAFE_RUN_ID_RE.fullmatch(observability_run_id):
-        raise ObservabilityError(
-            "Invalid observability_run_id; only letters, digits, '.', '_' and '-' "
-            "are allowed."
-        )
+    _validate_observability_run_id(observability_run_id)
 
     now_dt = now_fn().astimezone(timezone.utc)
 
@@ -384,6 +392,7 @@ def build_observability_outputs(
                 "error_budget_remaining": result.error_budget_remaining,
                 "status": result.status,
                 "measurement_window": result.spec.measurement_window,
+                "insufficient_sample_size": result.insufficient_sample_size,
             }
             for result in sli_results
         ],
@@ -418,6 +427,7 @@ def build_observability_outputs(
                 "error_budget_burn_rate": _round_float(result.burn_rate_24h, 6),
                 "status": result.status,
                 "measurement_window": result.spec.measurement_window,
+                "insufficient_sample_size": result.insufficient_sample_size,
             }
             for result in sli_results
         ],
@@ -453,11 +463,7 @@ def persist_observability_outputs(
 ) -> dict[str, Path]:
     if not re.fullmatch(r"\d{8}", run_date):
         raise ObservabilityError(f"Invalid run_date {run_date!r}; expected YYYYMMDD.")
-    if not SAFE_RUN_ID_RE.fullmatch(observability_run_id):
-        raise ObservabilityError(
-            "Invalid observability_run_id; only letters, digits, '.', '_' and '-' "
-            "are allowed."
-        )
+    _validate_observability_run_id(observability_run_id)
     if "rollup" not in outputs or not isinstance(outputs["rollup"], Mapping):
         raise ObservabilityError(
             "outputs must include a mapping value for key 'rollup'."
