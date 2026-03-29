@@ -77,7 +77,7 @@ Source-ingest rules:
 Metrics are emitted in two classes:
 
 - `event_metrics`: one record per observed run/event, used for traceability.
-- `window_metrics`: aggregated metrics over fixed windows (`1h`, `6h`, `24h`, `28d`), used for SLO/burn evaluation.
+- `window_metrics`: aggregated metrics over fixed windows (`1h`, `6h`, `24h`, `28d`, `365d`), used for SLO/burn evaluation.
 
 Each metric record must include:
 
@@ -85,7 +85,7 @@ Each metric record must include:
 - `domain` (`refresh|parser_drift|load_monitoring|annual_refresh|benchmark_pack`)
 - `environment`
 - `profile_name` (nullable when not applicable)
-- `window` (`event|1h|6h|24h|28d`)
+- `window` (`event|1h|6h|24h|28d|365d`)
 - `observed_at_utc`
 - `value`
 - `numerator` and `denominator` (required for ratio/compliance metrics; nullable for gauges)
@@ -95,7 +95,7 @@ Each metric record must include:
 Measurement window:
 
 - rolling 28-day window per `environment` and `profile_name` when profile-scoped.
-- for annual refresh metrics, window is rolling 365 days due to low event frequency.
+- for annual refresh metrics, window is rolling 365 days due to low event frequency (`window = 365d`).
 
 ### 1) Refresh Reliability And Latency
 
@@ -190,6 +190,8 @@ For ratio/compliance SLOs:
 - `error_budget = 1 - slo_target`
 - `observed_error_rate = bad_events / total_events`
 - `burn_rate = observed_error_rate / error_budget`
+- `measurement_window_days = 28` for standard SLIs and `365` for annual-refresh SLIs
+- `projected_days_to_exhaust_24h = measurement_window_days / burn_rate_24h` when `burn_rate_24h > 0`; otherwise `infinity`
 
 Multi-window burn classification:
 
@@ -198,7 +200,7 @@ Multi-window burn classification:
 - `warn` burn alert:
   - trigger when `burn_rate_6h >= 4` and `burn_rate_24h >= 2`
 - `info` burn alert:
-  - trigger when `burn_rate_24h >= 1` and 7-day exhaustion projection < 21 days
+  - trigger when `burn_rate_24h >= 1` and `projected_days_to_exhaust_24h < 21`
 
 Low-traffic protection:
 
