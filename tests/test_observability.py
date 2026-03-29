@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from accessdane_audit import cli
+from accessdane_audit import observability as observability_module
 from accessdane_audit.observability import (
     ObservabilityError,
     build_observability_outputs,
@@ -584,6 +585,81 @@ def test_observability_run_id_rejects_dot_segments(tmp_path: Path) -> None:
             observability_run_id="..",
             outputs=outputs,
         )
+
+
+def test_no_events_do_not_set_insufficient_sample_size() -> None:
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_no_events",
+        refresh_payload_files=[],
+        scheduler_payload_files=[],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[],
+        benchmark_files=[],
+        now_fn=_fixed_now,
+    )
+
+    daily_refresh = next(
+        row
+        for row in outputs["slo_evaluation"]["sli_results"]
+        if row["sli_id"] == "refresh.success_ratio.daily_refresh"
+    )
+    assert daily_refresh["denominator"] == 0
+    assert daily_refresh["insufficient_sample_size"] is False
+
+    non_computable = outputs["slo_evaluation"]["non_computable"]
+    assert any(
+        row["sli_id"] == "refresh.success_ratio.daily_refresh"
+        and row["reason"] == "no_events"
+        for row in non_computable
+    )
+    assert not any(
+        row["sli_id"] == "refresh.success_ratio.daily_refresh"
+        and row["reason"] == "insufficient_sample_size"
+        for row in non_computable
+    )
+
+
+def test_atomic_writes_use_unique_temp_files(tmp_path: Path) -> None:
+    json_path = tmp_path / "observability_rollup.json"
+    legacy_json_tmp = json_path.with_suffix(f"{json_path.suffix}.tmp")
+    legacy_json_tmp.write_text("do-not-touch", encoding="utf-8")
+    legacy_json_tmp.chmod(0o444)
+
+    csv_path = tmp_path / "observability_metric_timeseries.csv"
+    legacy_csv_tmp = csv_path.with_suffix(f"{csv_path.suffix}.tmp")
+    legacy_csv_tmp.write_text("do-not-touch", encoding="utf-8")
+    legacy_csv_tmp.chmod(0o444)
+
+    try:
+        observability_module._write_json_atomic(json_path, {"ok": True})
+        observability_module._write_timeseries_csv(
+            csv_path,
+            rows=[
+                {
+                    "metric_id": "refresh.success_ratio.daily_refresh.compliance",
+                    "domain": "refresh",
+                    "environment": "dev",
+                    "profile_name": "daily_refresh",
+                    "window": "24h",
+                    "observed_at_utc": "2026-03-29T12:00:00Z",
+                    "value": "1.0",
+                    "numerator": "1",
+                    "denominator": "1",
+                }
+            ],
+        )
+    finally:
+        legacy_json_tmp.chmod(0o644)
+        legacy_csv_tmp.chmod(0o644)
+
+    assert json.loads(json_path.read_text(encoding="utf-8")) == {"ok": True}
+    assert "metric_id,domain,environment" in csv_path.read_text(encoding="utf-8")
+    assert legacy_json_tmp.read_text(encoding="utf-8") == "do-not-touch"
+    assert legacy_csv_tmp.read_text(encoding="utf-8") == "do-not-touch"
 
 
 def test_discovery_scans_full_history_for_rolling_windows(tmp_path: Path) -> None:

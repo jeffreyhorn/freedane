@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -888,17 +890,16 @@ def _compute_sli_results(
 
         insufficient_sample_size = False
         burn_severity: Optional[str] = None
-        if denom_6h < 20 and denom_24h < 20:
+        if denominator > 0 and denom_6h < 20 and denom_24h < 20:
             insufficient_sample_size = True
-            if denominator > 0:
-                non_computable.append(
-                    {
-                        "sli_id": spec.sli_id,
-                        "reason": "insufficient_sample_size",
-                        "window": "24h",
-                        "denominator": denom_24h,
-                    }
-                )
+            non_computable.append(
+                {
+                    "sli_id": spec.sli_id,
+                    "reason": "insufficient_sample_size",
+                    "window": "24h",
+                    "denominator": denom_24h,
+                }
+            )
         else:
             if denom_6h >= 20 and burn_1h_value >= 14 and burn_6h_value >= 7:
                 burn_severity = "critical"
@@ -1252,45 +1253,64 @@ def _window_fraction(
 
 def _write_json_atomic(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _write_timeseries_csv(path: Path, *, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    with tmp_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "metric_id",
-                "domain",
-                "environment",
-                "profile_name",
-                "window",
-                "observed_at_utc",
-                "value",
-                "numerator",
-                "denominator",
-            ],
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "metric_id": row.get("metric_id"),
-                    "domain": row.get("domain"),
-                    "environment": row.get("environment"),
-                    "profile_name": row.get("profile_name"),
-                    "window": row.get("window"),
-                    "observed_at_utc": row.get("observed_at_utc"),
-                    "value": row.get("value"),
-                    "numerator": row.get("numerator"),
-                    "denominator": row.get("denominator"),
-                }
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "metric_id",
+                    "domain",
+                    "environment",
+                    "profile_name",
+                    "window",
+                    "observed_at_utc",
+                    "value",
+                    "numerator",
+                    "denominator",
+                ],
             )
-    tmp_path.replace(path)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {
+                        "metric_id": row.get("metric_id"),
+                        "domain": row.get("domain"),
+                        "environment": row.get("environment"),
+                        "profile_name": row.get("profile_name"),
+                        "window": row.get("window"),
+                        "observed_at_utc": row.get("observed_at_utc"),
+                        "value": row.get("value"),
+                        "numerator": row.get("numerator"),
+                        "denominator": row.get("denominator"),
+                    }
+                )
+        os.replace(tmp_path, path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _dedupe_sorted(paths: Sequence[Path]) -> list[Path]:
