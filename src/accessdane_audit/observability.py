@@ -61,9 +61,9 @@ class _SliResult:
     observed: Optional[float]
     error_budget_remaining: float
     status: str
-    burn_rate_1h: float
-    burn_rate_6h: float
-    burn_rate_24h: float
+    burn_rate_1h: Optional[float]
+    burn_rate_6h: Optional[float]
+    burn_rate_24h: Optional[float]
     insufficient_sample_size: bool
 
 
@@ -882,6 +882,9 @@ def _compute_sli_results(
             target=spec.target,
             window="24h",
         )
+        burn_1h_value = 0.0 if burn_1h is None else burn_1h
+        burn_6h_value = 0.0 if burn_6h is None else burn_6h
+        burn_24h_value = 0.0 if burn_24h is None else burn_24h
 
         insufficient_sample_size = False
         burn_severity: Optional[str] = None
@@ -897,16 +900,18 @@ def _compute_sli_results(
                     }
                 )
         else:
-            if denom_6h >= 20 and burn_1h >= 14 and burn_6h >= 7:
+            if denom_6h >= 20 and burn_1h_value >= 14 and burn_6h_value >= 7:
                 burn_severity = "critical"
-            elif denom_24h >= 20 and burn_6h >= 4 and burn_24h >= 2:
+            elif denom_24h >= 20 and burn_6h_value >= 4 and burn_24h_value >= 2:
                 burn_severity = "warn"
             else:
                 measurement_days = 365 if spec.measurement_window == "365d" else 28
                 projected_days = (
-                    float("inf") if burn_24h <= 0 else measurement_days / burn_24h
+                    float("inf")
+                    if burn_24h_value <= 0
+                    else measurement_days / burn_24h_value
                 )
-                if denom_24h >= 20 and burn_24h >= 1 and projected_days < 21:
+                if denom_24h >= 20 and burn_24h_value >= 1 and projected_days < 21:
                     burn_severity = "info"
 
         status = "ok"
@@ -948,9 +953,9 @@ def _compute_sli_results(
                 {
                     "sli_id": spec.sli_id,
                     "severity": burn_severity,
-                    "burn_rate_1h": _round_float(burn_1h, 6),
-                    "burn_rate_6h": _round_float(burn_6h, 6),
-                    "burn_rate_24h": _round_float(burn_24h, 6),
+                    "burn_rate_1h": _round_float(burn_1h_value, 6),
+                    "burn_rate_6h": _round_float(burn_6h_value, 6),
+                    "burn_rate_24h": _round_float(burn_24h_value, 6),
                     "triggered_at_utc": _iso_utc(now_dt),
                     "routing_key": f"{alert_route_group}.{spec.domain}.{burn_severity}",
                 }
@@ -1098,6 +1103,7 @@ def _build_panels(*, sli_results: Sequence[_SliResult]) -> list[dict[str, object
                 "value": _round_float(result.observed, 6),
                 "target": result.spec.target,
                 "status": result.status,
+                "insufficient_sample_size": result.insufficient_sample_size,
             }
             for result in panel_results
         ]
@@ -1205,12 +1211,12 @@ def _burn_rate_for_window(
     now_dt: datetime,
     target: float,
     window: str,
-) -> tuple[float, int]:
+) -> tuple[Optional[float], int]:
     numerator, denominator = _window_fraction(
         events=events, now_dt=now_dt, window=window
     )
     if denominator == 0:
-        return 0.0, 0
+        return None, 0
     bad = denominator - numerator
     observed_error_rate = bad / denominator
     error_budget = 1 - target

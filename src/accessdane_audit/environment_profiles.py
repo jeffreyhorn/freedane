@@ -158,11 +158,14 @@ def load_environment_profile(
 
 
 def validate_artifact_path_override(
-    *, profile: EnvironmentProfile, artifact_base_dir: Path
+    *,
+    profile: EnvironmentProfile,
+    artifact_base_dir: Path,
+    option_name: str = "--artifact-base-dir",
 ) -> Path:
     resolved_path = artifact_base_dir.expanduser().resolve()
     _validate_environment_local_path(
-        key="--artifact-base-dir",
+        key=option_name,
         value=resolved_path,
         environment_name=profile.environment_name,
     )
@@ -198,7 +201,7 @@ def _validate_environment_local_path(
                 )
             if segment in ENVIRONMENTS and segment != expected_environment:
                 raise EnvironmentProfileError(
-                    f"{key} path contains foreign environment segment " f"'{segment}'."
+                    f"{key} path contains foreign environment segment '{segment}'."
                 )
         return
 

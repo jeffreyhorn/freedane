@@ -29,6 +29,39 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _set_stage_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "data" / "environments" / "stage"
+    monkeypatch.delenv("environment_name", raising=False)
+    monkeypatch.setenv("ACCESSDANE_ENVIRONMENT", "stage")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("ACCESSDANE_BASE_URL", "https://accessdane.danecounty.gov")
+    monkeypatch.setenv("ACCESSDANE_RAW_DIR", str(root / "raw"))
+    monkeypatch.setenv("ACCESSDANE_USER_AGENT", "AccessDaneAudit/0.1")
+    monkeypatch.setenv("ACCESSDANE_TIMEOUT", "30")
+    monkeypatch.setenv("ACCESSDANE_RETRIES", "3")
+    monkeypatch.setenv("ACCESSDANE_BACKOFF", "1.5")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_PROFILE", "analysis_only")
+    monkeypatch.setenv("ACCESSDANE_FEATURE_VERSION", "feature_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_RULESET_VERSION", "rules_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_SALES_RATIO_BASE", "sales_stage_v2")
+    monkeypatch.setenv("ACCESSDANE_REFRESH_TOP", "25")
+    monkeypatch.setenv("ACCESSDANE_ARTIFACT_BASE_DIR", str(root / "refresh_runs"))
+    monkeypatch.setenv(
+        "ACCESSDANE_REFRESH_LOG_DIR",
+        str(root / "refresh_runs" / "logs"),
+    )
+    monkeypatch.setenv(
+        "ACCESSDANE_BENCHMARK_BASE_DIR",
+        str(root / "benchmark_packs"),
+    )
+    monkeypatch.setenv("ALERT_ROUTE_GROUP", "ops-alerts")
+    monkeypatch.setenv("PROMOTION_APPROVER_GROUP", "release-approvers")
+    monkeypatch.setenv(
+        "PROMOTION_FREEZE_FILE",
+        str(root / "promotion_freeze.json"),
+    )
+
+
 def _refresh_payload(
     *,
     run_id: str,
@@ -243,6 +276,24 @@ def test_build_observability_outputs_is_deterministic(tmp_path: Path) -> None:
         if row["sli_id"] == "refresh.success_ratio.daily_refresh"
     )
     assert daily_refresh["insufficient_sample_size"] is True
+    analysis_only = next(
+        row
+        for row in outputs_one["slo_evaluation"]["sli_results"]
+        if row["sli_id"] == "refresh.success_ratio.analysis_only"
+    )
+    assert analysis_only["error_budget_burn_rate"] is None
+
+    refresh_panel = next(
+        panel
+        for panel in outputs_one["dashboard_snapshot"]["panels"]
+        if panel["panel_id"] == "refresh_reliability"
+    )
+    refresh_series = next(
+        row
+        for row in refresh_panel["series"]
+        if row["label"] == "refresh.success_ratio.daily_refresh"
+    )
+    assert refresh_series["insufficient_sample_size"] is True
 
 
 def test_observability_burn_threshold_classification_marks_critical(
@@ -399,6 +450,28 @@ def test_observability_rollup_cli_writes_required_artifacts(tmp_path: Path) -> N
         "run",
         "slo_status",
     ]
+
+
+def test_observability_rollup_cli_reports_specific_override_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_stage_env(monkeypatch, tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "observability-rollup",
+            "--benchmark-artifact-base-dir",
+            str(tmp_path / "data" / "environments" / "prod" / "benchmark_packs"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    stderr = getattr(result, "stderr", "")
+    combined_output = f"{result.output}{stderr}"
+    assert "--benchmark-artifact-base-dir" in combined_output
 
 
 def test_observability_uses_scheduler_inputs_for_refresh_slis(tmp_path: Path) -> None:

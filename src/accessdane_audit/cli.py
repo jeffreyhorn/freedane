@@ -3824,27 +3824,32 @@ def observability_rollup_cmd(
     resolved_output_root = resolved_output_root.expanduser().resolve()
 
     if environment_profile is not None:
-        try:
-            resolved_refresh_root = validate_artifact_path_override(
-                profile=environment_profile,
-                artifact_base_dir=resolved_refresh_root,
-            )
-            resolved_benchmark_root = validate_artifact_path_override(
-                profile=environment_profile,
-                artifact_base_dir=resolved_benchmark_root,
-            )
-            resolved_output_root = validate_artifact_path_override(
-                profile=environment_profile,
-                artifact_base_dir=resolved_output_root,
-            )
-        except EnvironmentProfileError as exc:
-            raise typer.BadParameter(
-                str(exc),
-                param_hint=(
-                    "--refresh-artifact-base-dir/--benchmark-artifact-base-dir/"
-                    "--artifact-base-dir"
-                ),
-            ) from exc
+
+        def _validate_observability_path(path: Path, option_name: str) -> Path:
+            try:
+                return validate_artifact_path_override(
+                    profile=environment_profile,
+                    artifact_base_dir=path,
+                    option_name=option_name,
+                )
+            except EnvironmentProfileError as exc:
+                raise typer.BadParameter(
+                    str(exc),
+                    param_hint=option_name,
+                ) from exc
+
+        resolved_refresh_root = _validate_observability_path(
+            resolved_refresh_root,
+            "--refresh-artifact-base-dir",
+        )
+        resolved_benchmark_root = _validate_observability_path(
+            resolved_benchmark_root,
+            "--benchmark-artifact-base-dir",
+        )
+        resolved_output_root = _validate_observability_path(
+            resolved_output_root,
+            "--artifact-base-dir",
+        )
 
     now_dt = datetime.now(timezone.utc)
     resolved_run_date = run_date or now_dt.strftime("%Y%m%d")
