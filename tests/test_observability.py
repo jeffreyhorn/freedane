@@ -685,8 +685,28 @@ def test_no_events_do_not_set_insufficient_sample_size() -> None:
         for row in non_computable
     )
 
+    compliance_metric = next(
+        row
+        for row in outputs["rollup"]["metrics"]
+        if row["metric_id"] == "refresh.success_ratio.daily_refresh.compliance"
+        and row["window"] == "24h"
+    )
+    assert compliance_metric["value"] is None
+    assert compliance_metric["numerator"] == 0
+    assert compliance_metric["denominator"] == 0
 
-def test_annual_refresh_domain_not_marked_missing_when_refresh_payload_exists(
+    timeseries_row = next(
+        row
+        for row in outputs["timeseries_rows"]
+        if row["metric_id"] == "refresh.success_ratio.daily_refresh.compliance"
+        and row["window"] == "24h"
+    )
+    assert timeseries_row["value"] == ""
+    assert timeseries_row["numerator"] == "0"
+    assert timeseries_row["denominator"] == "0"
+
+
+def test_annual_refresh_domain_requires_signoff_and_refresh_payload(
     tmp_path: Path,
 ) -> None:
     now_dt = _fixed_now()
@@ -720,6 +740,62 @@ def test_annual_refresh_domain_not_marked_missing_when_refresh_payload_exists(
         parser_drift_files=[],
         load_monitor_files=[],
         annual_signoff_files=[],
+        benchmark_files=[],
+        now_fn=_fixed_now,
+    )
+
+    errors = outputs["rollup"]["errors"]
+    assert any(
+        row.get("code") == "artifact_missing"
+        and row.get("domain") == "annual_refresh"
+        and row.get("artifact_type") == "annual_signoff"
+        for row in errors
+    )
+
+
+def test_annual_refresh_domain_not_missing_when_both_artifact_types_present(
+    tmp_path: Path,
+) -> None:
+    now_dt = _fixed_now()
+    annual_refresh_payload = (
+        tmp_path
+        / "refresh_runs"
+        / "20260329"
+        / "annual_refresh"
+        / "annual_refresh_001"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    annual_signoff_path = tmp_path / "annual" / "annual_signoff.json"
+    _write_json(
+        annual_refresh_payload,
+        _refresh_payload(
+            run_id="annual_refresh_001",
+            profile_name="annual_refresh",
+            status="succeeded",
+            started_at=now_dt - timedelta(hours=3),
+            finished_at=now_dt - timedelta(hours=1),
+        ),
+    )
+    _write_json(
+        annual_signoff_path,
+        _annual_signoff_payload(
+            run_id="annual_refresh_signoff_001",
+            status="approved",
+            updated_at=now_dt - timedelta(minutes=5),
+        ),
+    )
+
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_annual_refresh_complete_inputs",
+        refresh_payload_files=[annual_refresh_payload],
+        scheduler_payload_files=[],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[annual_signoff_path],
         benchmark_files=[],
         now_fn=_fixed_now,
     )

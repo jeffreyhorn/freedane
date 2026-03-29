@@ -345,12 +345,13 @@ def build_observability_outputs(
             ),
             "parser_drift": normalized_inputs["parser_drift_files"],
             "load_monitoring": normalized_inputs["load_monitor_files"],
-            "annual_refresh": (
-                tuple(normalized_inputs["refresh_payload_files"])
-                + tuple(normalized_inputs["annual_signoff_files"])
-            ),
             "benchmark_pack": normalized_inputs["benchmark_files"],
         },
+    )
+    _append_annual_refresh_artifact_errors(
+        errors=errors,
+        refresh_payload_files=normalized_inputs["refresh_payload_files"],
+        annual_signoff_files=normalized_inputs["annual_signoff_files"],
     )
 
     sli_results, burn_alerts, non_computable = _compute_sli_results(
@@ -1039,8 +1040,8 @@ def _build_metric_records(
                     "window": window,
                     "observed_at_utc": _iso_utc(now_dt),
                     "value": _round_float(value, 6),
-                    "numerator": numerator if denominator > 0 else None,
-                    "denominator": denominator if denominator > 0 else None,
+                    "numerator": numerator,
+                    "denominator": denominator,
                 }
             )
 
@@ -1169,6 +1170,38 @@ def _append_missing_artifact_errors(
                 "code": "artifact_missing",
                 "domain": domain,
                 "message": f"No source artifacts discovered for domain '{domain}'.",
+            }
+        )
+
+
+def _append_annual_refresh_artifact_errors(
+    *,
+    errors: list[dict[str, object]],
+    refresh_payload_files: Sequence[Path],
+    annual_signoff_files: Sequence[Path],
+) -> None:
+    if not refresh_payload_files:
+        errors.append(
+            {
+                "code": "artifact_missing",
+                "domain": "annual_refresh",
+                "artifact_type": "refresh_payload",
+                "message": (
+                    "No annual refresh run payload artifacts discovered for domain "
+                    "'annual_refresh'."
+                ),
+            }
+        )
+    if not annual_signoff_files:
+        errors.append(
+            {
+                "code": "artifact_missing",
+                "domain": "annual_refresh",
+                "artifact_type": "annual_signoff",
+                "message": (
+                    "No annual signoff artifacts discovered for domain "
+                    "'annual_refresh'."
+                ),
             }
         )
 
