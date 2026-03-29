@@ -3860,7 +3860,7 @@ def observability_rollup_cmd(
         )
     resolved_run_id = (
         observability_run_id
-        or f"observability_{resolved_run_date}_{now_dt.strftime('%H%M%S')}"
+        or f"observability_{resolved_run_date}_{now_dt.strftime('%H%M%S_%f')}"
     )
     environment_name = (
         environment_profile.environment_name

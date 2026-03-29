@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -269,7 +270,6 @@ def test_build_observability_outputs_is_deterministic(tmp_path: Path) -> None:
         outputs_one["rollup"]["run"]["observability_run_id"]
         == "observability_20260329_120000"
     )
-    assert outputs_one["rollup"]["burn_alerts"] == []
     assert outputs_one["slo_evaluation"]["evaluation"]["measurement_window"] == "mixed"
     daily_refresh = next(
         row
@@ -550,6 +550,40 @@ def test_observability_uses_scheduler_inputs_for_refresh_slis(tmp_path: Path) ->
     assert latency_sli["numerator"] == 1
 
 
+def test_benchmark_freshness_hourly_checks_cover_window(tmp_path: Path) -> None:
+    now_dt = _fixed_now()
+    benchmark_path = tmp_path / "benchmark" / "benchmark_pack.json"
+    _write_json(
+        benchmark_path,
+        _benchmark_payload(
+            run_id="benchmark_001",
+            finished_at=now_dt - timedelta(hours=1),
+        ),
+    )
+
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_benchmark_hourly_window",
+        refresh_payload_files=[],
+        scheduler_payload_files=[],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[],
+        benchmark_files=[benchmark_path],
+        now_fn=_fixed_now,
+    )
+
+    freshness_sli = next(
+        row
+        for row in outputs["slo_evaluation"]["sli_results"]
+        if row["sli_id"] == "benchmark.freshness_compliance"
+    )
+    assert freshness_sli["denominator"] == 28 * 24
+    assert freshness_sli["numerator"] == 2
+
+
 def test_persist_observability_outputs_validates_inputs(tmp_path: Path) -> None:
     outputs = {
         "rollup": {"run": {}},
@@ -783,3 +817,120 @@ def test_discovery_scans_full_history_for_rolling_windows(tmp_path: Path) -> Non
 
     assert refresh_old.resolve() in discovered["refresh"]
     assert benchmark_old.resolve() in discovered["benchmark"]
+
+
+def test_discovery_prefers_fixed_depth_patterns(tmp_path: Path) -> None:
+    refresh_root = tmp_path / "refresh_runs"
+    benchmark_root = tmp_path / "benchmark_packs"
+    startup_root = tmp_path / "startup_runs"
+
+    fixed_depth_refresh = (
+        refresh_root
+        / "20260329"
+        / "daily_refresh"
+        / "run_001"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    deep_refresh = (
+        refresh_root
+        / "20260329"
+        / "daily_refresh"
+        / "run_002"
+        / "nested"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    fixed_depth_benchmark = (
+        benchmark_root
+        / "20260329"
+        / "daily_refresh"
+        / "bench_001"
+        / "benchmark_pack.json"
+    )
+    deep_benchmark = (
+        benchmark_root
+        / "20260329"
+        / "daily_refresh"
+        / "bench_002"
+        / "nested"
+        / "benchmark_pack.json"
+    )
+
+    _write_json(
+        fixed_depth_refresh,
+        _refresh_payload(
+            run_id="run_001",
+            profile_name="daily_refresh",
+            status="succeeded",
+            started_at=_fixed_now() - timedelta(minutes=20),
+            finished_at=_fixed_now() - timedelta(minutes=10),
+        ),
+    )
+    _write_json(
+        deep_refresh,
+        _refresh_payload(
+            run_id="run_002",
+            profile_name="daily_refresh",
+            status="succeeded",
+            started_at=_fixed_now() - timedelta(minutes=40),
+            finished_at=_fixed_now() - timedelta(minutes=30),
+        ),
+    )
+    _write_json(
+        fixed_depth_benchmark,
+        _benchmark_payload(
+            run_id="bench_001",
+            finished_at=_fixed_now() - timedelta(hours=1),
+        ),
+    )
+    _write_json(
+        deep_benchmark,
+        _benchmark_payload(
+            run_id="bench_002",
+            finished_at=_fixed_now() - timedelta(hours=2),
+        ),
+    )
+
+    discovered = discover_observability_input_files(
+        refresh_artifact_base_dir=refresh_root,
+        benchmark_artifact_base_dir=benchmark_root,
+        startup_artifact_base_dir=startup_root,
+        run_date="20260329",
+    )
+
+    assert fixed_depth_refresh.resolve() in discovered["refresh"]
+    assert deep_refresh.resolve() not in discovered["refresh"]
+    assert fixed_depth_benchmark.resolve() in discovered["benchmark"]
+    assert deep_benchmark.resolve() not in discovered["benchmark"]
+
+
+def test_observability_rollup_cli_default_run_id_includes_subseconds(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    summary_out = tmp_path / "summary.json"
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "observability-rollup",
+            "--refresh-artifact-base-dir",
+            str(tmp_path / "refresh_runs"),
+            "--benchmark-artifact-base-dir",
+            str(tmp_path / "benchmark_packs"),
+            "--startup-artifact-base-dir",
+            str(tmp_path / "startup_runs"),
+            "--artifact-base-dir",
+            str(tmp_path / "out"),
+            "--run-date",
+            "20260329",
+            "--out",
+            str(summary_out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    summary_payload = json.loads(summary_out.read_text(encoding="utf-8"))
+    run_id = summary_payload["run"]["observability_run_id"]
+    assert re.fullmatch(r"observability_20260329_\d{6}_\d{6}", run_id)

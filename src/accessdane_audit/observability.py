@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -208,41 +209,41 @@ def discover_observability_input_files(
     discovered_refresh = _discover_files(
         explicit_paths=refresh_files,
         roots_and_patterns=(
-            (refresh_search_root, "**/health_summary/refresh_run_payload.json"),
+            (refresh_search_root, "*/*/*/health_summary/refresh_run_payload.json"),
         ),
     )
     discovered_scheduler = _discover_files(
         explicit_paths=scheduler_files,
         roots_and_patterns=(
             (refresh_root / "scheduler_logs", "*.json"),
-            (refresh_search_root, "**/scheduler_logs/*.json"),
+            (refresh_search_root, "*/*/*/scheduler_logs/*.json"),
         ),
     )
     discovered_parser = _discover_files(
         explicit_paths=parser_drift_files,
         roots_and_patterns=(
-            (refresh_search_root, "**/parser_drift_diff.json"),
-            (startup_search_root, "**/startup_parser_drift_diff.json"),
+            (refresh_search_root, "*/*/*/parser_drift_diff.json"),
+            (startup_search_root, "*/*/*/startup_parser_drift_diff.json"),
         ),
     )
     discovered_load = _discover_files(
         explicit_paths=load_monitor_files,
         roots_and_patterns=(
-            (refresh_search_root, "**/load_monitor.json"),
-            (startup_search_root, "**/startup_load_monitor.json"),
+            (refresh_search_root, "*/*/*/load_monitor.json"),
+            (startup_search_root, "*/*/*/startup_load_monitor.json"),
         ),
     )
     discovered_annual = _discover_files(
         explicit_paths=annual_signoff_files,
         roots_and_patterns=(
-            (refresh_search_root, "**/annual_signoff/annual_signoff.json"),
+            (refresh_search_root, "*/*/*/annual_signoff/annual_signoff.json"),
         ),
     )
     discovered_benchmark = _discover_files(
         explicit_paths=benchmark_files,
         roots_and_patterns=(
-            (benchmark_search_root, "**/benchmark_pack.json"),
-            (startup_search_root, "**/startup_benchmark_pack.json"),
+            (benchmark_search_root, "*/*/*/benchmark_pack.json"),
+            (startup_search_root, "*/*/*/startup_benchmark_pack.json"),
         ),
     )
 
@@ -329,14 +330,10 @@ def build_observability_outputs(
     )
 
     if benchmark_finished_ats:
-        latest_benchmark = max(benchmark_finished_ats)
-        freshness_passed = (now_dt - latest_benchmark) <= timedelta(hours=24)
-        events_by_sli["benchmark.freshness_compliance"].append(
-            _SliEvent(
-                observed_at=now_dt,
-                passed=freshness_passed,
-                profile_name=None,
-            )
+        _record_benchmark_freshness_events(
+            benchmark_finished_ats=benchmark_finished_ats,
+            events_by_sli=events_by_sli,
+            now_dt=now_dt,
         )
 
     _append_missing_artifact_errors(
@@ -839,6 +836,35 @@ def _record_benchmark_events(
             _SliEvent(
                 observed_at=observed_at,
                 passed=status == "succeeded",
+                profile_name=None,
+            )
+        )
+
+
+def _record_benchmark_freshness_events(
+    *,
+    benchmark_finished_ats: Sequence[datetime],
+    events_by_sli: dict[str, list[_SliEvent]],
+    now_dt: datetime,
+) -> None:
+    # Emit one synthetic hourly freshness check across the benchmark SLI window
+    # so denominator semantics are "hours checked", not rollup executions.
+    sorted_finished = sorted(benchmark_finished_ats)
+    total_hours = int(WINDOW_TO_DELTA["28d"].total_seconds() // 3600)
+    freshness_threshold = timedelta(hours=24)
+
+    for hours_ago in range(total_hours):
+        check_time = now_dt - timedelta(hours=hours_ago)
+        idx = bisect_right(sorted_finished, check_time) - 1
+        latest_for_check = sorted_finished[idx] if idx >= 0 else None
+        freshness_passed = bool(
+            latest_for_check is not None
+            and (check_time - latest_for_check) <= freshness_threshold
+        )
+        events_by_sli["benchmark.freshness_compliance"].append(
+            _SliEvent(
+                observed_at=check_time,
+                passed=freshness_passed,
                 profile_name=None,
             )
         )
