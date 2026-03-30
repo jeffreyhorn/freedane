@@ -319,7 +319,7 @@ def run_promotion_gate(
             if not isinstance(artifact, dict):
                 _append_gate_error(
                     errors,
-                    code="manifest_invalid_value",
+                    code="evidence_missing",
                     message="evidence_index artifacts[] entries must be objects.",
                     stage_id=stage_id,
                     path=evidence_index_path,
@@ -1196,7 +1196,9 @@ def _validate_pipeline_manifest_fields(manifest: dict[str, Any]) -> None:
 
     source_commit_sha = str(manifest.get("source_commit_sha", "")).strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit_sha):
-        raise PromotionError("source_commit_sha must be a 40-character lowercase SHA.")
+        raise PromotionError(
+            "source_commit_sha must be a 40-character hexadecimal SHA-1."
+        )
     manifest["source_commit_sha"] = source_commit_sha
 
     source_pr_number = manifest.get("source_pr_number")
