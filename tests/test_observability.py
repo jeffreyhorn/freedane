@@ -453,6 +453,65 @@ def test_observability_rollup_cli_writes_required_artifacts(tmp_path: Path) -> N
     ]
 
 
+def test_observability_rollup_cli_discovers_scheduler_logs_under_refresh_logs(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+
+    refresh_root = tmp_path / "refresh_runs"
+    benchmark_root = tmp_path / "benchmark_packs"
+    startup_root = tmp_path / "startup_runs"
+    output_root = tmp_path / "observability_output"
+    summary_out = tmp_path / "observability_summary.json"
+    now_dt = _fixed_now()
+
+    scheduler_payload_path = refresh_root / "logs" / "sched_001.json"
+    _write_json(
+        scheduler_payload_path,
+        _scheduler_payload(
+            scheduler_run_id="sched_001",
+            profile_name="daily_refresh",
+            refresh_run_id="refresh_from_logs_001",
+            started_at=now_dt - timedelta(minutes=30),
+            finished_at=now_dt - timedelta(minutes=5),
+            status="succeeded",
+        ),
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "observability-rollup",
+            "--refresh-artifact-base-dir",
+            str(refresh_root),
+            "--benchmark-artifact-base-dir",
+            str(benchmark_root),
+            "--startup-artifact-base-dir",
+            str(startup_root),
+            "--artifact-base-dir",
+            str(output_root),
+            "--run-date",
+            "20260329",
+            "--observability-run-id",
+            "obs_scheduler_logs_dir",
+            "--out",
+            str(summary_out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    summary_payload = json.loads(summary_out.read_text(encoding="utf-8"))
+    evaluation_path = Path(summary_payload["artifact_paths"]["slo_evaluation_path"])
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    refresh_sli = next(
+        row
+        for row in evaluation["sli_results"]
+        if row["sli_id"] == "refresh.success_ratio.daily_refresh"
+    )
+    assert refresh_sli["denominator"] == 1
+    assert refresh_sli["numerator"] == 1
+
+
 def test_observability_rollup_cli_reports_specific_override_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -570,6 +629,35 @@ def test_observability_uses_scheduler_inputs_for_refresh_slis(tmp_path: Path) ->
     )
     assert latency_sli["denominator"] == 1
     assert latency_sli["numerator"] == 1
+
+
+def test_discovery_includes_scheduler_logs_under_refresh_logs(tmp_path: Path) -> None:
+    refresh_root = tmp_path / "refresh_runs"
+    benchmark_root = tmp_path / "benchmark_packs"
+    startup_root = tmp_path / "startup_runs"
+    now_dt = _fixed_now()
+
+    scheduler_path = refresh_root / "logs" / "sched_001.json"
+    _write_json(
+        scheduler_path,
+        _scheduler_payload(
+            scheduler_run_id="sched_001",
+            profile_name="daily_refresh",
+            refresh_run_id="refresh_from_logs_001",
+            started_at=now_dt - timedelta(minutes=30),
+            finished_at=now_dt - timedelta(minutes=5),
+            status="succeeded",
+        ),
+    )
+
+    discovered = discover_observability_input_files(
+        refresh_artifact_base_dir=refresh_root,
+        benchmark_artifact_base_dir=benchmark_root,
+        startup_artifact_base_dir=startup_root,
+        run_date="20260329",
+    )
+
+    assert scheduler_path.resolve() in discovered["scheduler"]
 
 
 def test_benchmark_freshness_hourly_checks_cover_window(tmp_path: Path) -> None:

@@ -216,7 +216,9 @@ def discover_observability_input_files(
         explicit_paths=scheduler_files,
         roots_and_patterns=(
             (refresh_root / "scheduler_logs", "*.json"),
+            (refresh_root / "logs", "*.json"),
             (refresh_search_root, "*/*/*/scheduler_logs/*.json"),
+            (refresh_search_root, "*/*/*/logs/*.json"),
         ),
     )
     discovered_parser = _discover_files(
