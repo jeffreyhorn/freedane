@@ -100,7 +100,8 @@ Required files:
 Optional files:
 
 - `decision_memo.md`
-- `override_justification.md` (required only for break-glass or advisory-freeze override)
+- `override_justification.md` (recommended for break-glass or advisory-freeze
+  override; advisory-only and not enforced by any v1 gate)
 
 ### `manifest.json` minimum contract
 
@@ -184,8 +185,11 @@ For all promotions, gate requires at least one valid artifact of each type:
 
 Conditional requirement (machine-evaluable):
 
-- when `manifest.flags.annual_refresh_impact = true`, `annual_signoff` is
-  required and must indicate approved signoff state.
+- when `manifest.flags.annual_refresh_impact = true`, an `annual_signoff`
+  artifact is required and gate must validate
+  `annual_signoff.run.status == "approved"`.
+- any other `annual_signoff.run.status` value (for example,
+  `"pending_signoff"` or `"rejected"`) must fail the gate.
 - promotions whose rationale references annual-refresh
   corrections/backfill impact must set `manifest.flags.annual_refresh_impact`
   to `true`.
