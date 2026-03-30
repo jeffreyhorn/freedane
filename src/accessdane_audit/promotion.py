@@ -521,27 +521,44 @@ def run_promotion_gate(
     else:
         freeze_manifest = deepcopy(normalized_manifest)
         freeze_state = "none"
-        freeze_payload = _read_json_if_exists(profile.promotion_freeze_file)
-        if freeze_payload is not None:
-            freeze_state = str(freeze_payload.get("state", "none")).strip() or "none"
+        freeze_file_read_ok = True
+        freeze_payload: Optional[dict[str, Any]] = None
         try:
-            _enforce_freeze_policy(
-                manifest=freeze_manifest,
-                freeze_file_path=profile.promotion_freeze_file,
-                activation_started_at_utc=evaluated_at_utc,
-            )
+            freeze_payload = _read_json_if_exists(profile.promotion_freeze_file)
         except PromotionError as exc:
             _append_gate_error(
                 errors,
-                code=_map_freeze_error_code(str(exc)),
+                code="break_glass_invalid",
                 message=str(exc),
                 stage_id=stage_id,
                 path=profile.promotion_freeze_file,
             )
+            freeze_file_read_ok = False
+            freeze_state = "invalid"
         else:
-            normalized_manifest["break_glass_validated_at_utc"] = freeze_manifest.get(
-                "break_glass_validated_at_utc"
-            )
+            if freeze_payload is not None:
+                freeze_state = (
+                    str(freeze_payload.get("state", "none")).strip() or "none"
+                )
+        if freeze_file_read_ok:
+            try:
+                _enforce_freeze_policy(
+                    manifest=freeze_manifest,
+                    freeze_file_path=profile.promotion_freeze_file,
+                    activation_started_at_utc=evaluated_at_utc,
+                )
+            except PromotionError as exc:
+                _append_gate_error(
+                    errors,
+                    code=_map_freeze_error_code(str(exc)),
+                    message=str(exc),
+                    stage_id=stage_id,
+                    path=profile.promotion_freeze_file,
+                )
+            else:
+                normalized_manifest["break_glass_validated_at_utc"] = (
+                    freeze_manifest.get("break_glass_validated_at_utc")
+                )
         stage_details = {
             "freeze_state": freeze_state,
             "break_glass_used": bool(normalized_manifest.get("break_glass_used")),
@@ -621,11 +638,22 @@ def run_promotion_gate(
         }
     )
 
-    resolved_gate_run_id = (
-        _validate_safe_path_component(gate_run_id, field_name="gate_run_id")
-        if gate_run_id is not None
-        else _build_default_gate_run_id(evaluated_at)
-    )
+    resolved_gate_run_id = _build_default_gate_run_id(evaluated_at)
+    if gate_run_id is not None:
+        try:
+            resolved_gate_run_id = _validate_safe_path_component(
+                gate_run_id, field_name="gate_run_id"
+            )
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code="path_safety_violation",
+                message=str(exc),
+                stage_id="request_normalization",
+                path=request_dir,
+            )
+            stages[0]["status"] = "failed"
+            stages[0]["details"]["gate_run_id_validation"] = "invalid_fallback_applied"
     status = (
         "failed" if any(stage["status"] == "failed" for stage in stages) else "passed"
     )
