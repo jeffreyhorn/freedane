@@ -71,11 +71,17 @@ Pipeline stages are evaluated in order; any failed stage blocks promotion.
 
 Required stage behavior:
 
-- stage outcome is `passed|failed|skipped`.
+- all stages listed in this v1 contract (`request_normalization` through
+  `activation_readiness_validation`) are required stages.
+- for these v1 stages, valid outcomes are `passed` or `failed`; `skipped`
+  must not be emitted for any stage defined in this document.
 - `failed` in any required stage sets overall gate status to `failed`.
-- optional stage skips must include explicit `skip_reason`; in gate result
-  artifacts this must be recorded as `details.skip_reason` whenever
-  `status = skipped`.
+- support for optional stages, and corresponding `status = skipped`
+  behavior, is reserved for future pipeline versions that define such
+  stages explicitly.
+- when optional stages are introduced in a future version, any `skipped`
+  outcome must include explicit `skip_reason`; in gate result artifacts this
+  must be recorded as `details.skip_reason` whenever `status = skipped`.
 - pipeline exits non-zero when overall status is `failed`.
 
 ## Promotion Request Bundle Contract
@@ -128,7 +134,7 @@ Additional pipeline-required keys (v1):
 - `source_pr_number` (integer)
 - `change_summary` (non-empty string)
 - `flags` (object)
-- `flags.annual_refresh_impact` (boolean; default `false` when omitted)
+- `flags.annual_refresh_impact` (boolean; required in v1 manifests)
 
 ### `evidence_index.json` contract
 
@@ -192,6 +198,16 @@ Evidence freshness policy (v1):
 
 Approval records are sourced from `manifest.approvals[]`.
 
+Reference timestamp semantics:
+
+- for gate evaluation, `request.activation_started_at_utc` is the gate
+  evaluation start time (UTC RFC3339 with trailing `Z`) and is the reference
+  timestamp for approval/freeze freshness checks in this contract.
+- activation-time checks remain authoritative in `promotion-activate`; when
+  activation begins, it may re-check policy freshness against actual
+  activation start time and reject promotions that became stale/expired after
+  gate evaluation.
+
 General rules:
 
 - no self-approval by `requested_by`.
@@ -237,8 +253,8 @@ Policy:
   - freeze file must include `override_approvers[]` with at least two distinct identities
   - freeze file must include `override_expires_at_utc`
   - override must be unexpired relative to `request.activation_started_at_utc`
-    (gate evaluation must use this same reference time so behavior matches
-    activation-time enforcement)
+    (gate reference time); activation may still reject at activation time if
+    override freshness changes before activation starts.
 
 ## Environment And Path Safety Contract
 
@@ -279,16 +295,19 @@ Required top-level keys:
 - `source_environment`
 - `target_environment`
 - `manifest_path`
-- `activation_started_at_utc` (reference timestamp used for approval/freeze
-  expiry checks; must be UTC RFC3339 with trailing `Z`)
+- `activation_started_at_utc` (gate evaluation start timestamp used as the
+  reference time for approval/freeze expiry checks; must be UTC RFC3339 with
+  trailing `Z`)
 
 `stages[]` required fields:
 
 - `stage_id`
-- `status` (`passed|failed|skipped`)
+- `status` (`passed|failed` for v1 required stages; `skipped` reserved for
+  future contract versions that define optional stages)
 - `checked_at_utc`
 - `details`
-- `details.skip_reason` (required when `status = skipped`; otherwise omitted)
+- `details.skip_reason` (required when `status = skipped`; otherwise omitted;
+  applies to future optional stages)
 
 `summary` required fields:
 
