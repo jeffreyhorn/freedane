@@ -127,6 +127,8 @@ Additional pipeline-required keys (v1):
 - `source_commit_sha` (40-char lowercase git SHA)
 - `source_pr_number` (integer)
 - `change_summary` (non-empty string)
+- `flags` (object)
+- `flags.annual_refresh_impact` (boolean; default `false` when omitted)
 
 ### `evidence_index.json` contract
 
@@ -166,10 +168,13 @@ For all promotions, gate requires at least one valid artifact of each type:
 - `benchmark_pack`
 - `observability_rollup`
 
-Conditional requirement:
+Conditional requirement (machine-evaluable):
 
-- when promotion rationale references annual-refresh corrections/backfill impact,
-  `annual_signoff` is required and must indicate approved signoff state.
+- when `manifest.flags.annual_refresh_impact = true`, `annual_signoff` is
+  required and must indicate approved signoff state.
+- promotions whose rationale references annual-refresh
+  corrections/backfill impact must set `manifest.flags.annual_refresh_impact`
+  to `true`.
 
 Evidence validation rules:
 
@@ -229,7 +234,9 @@ Policy:
   - `break_glass_incident_id` required
   - freeze file must include `override_approvers[]` with at least two distinct identities
   - freeze file must include `override_expires_at_utc`
-  - override must be unexpired at evaluation time
+  - override must be unexpired relative to `request.activation_started_at_utc`
+    (gate evaluation must use this same reference time so behavior matches
+    activation-time enforcement)
 
 ## Environment And Path Safety Contract
 
@@ -263,6 +270,15 @@ Required top-level keys:
 - `evaluated_at_utc`
 - `environment`
 - `status` (`passed|failed`)
+
+`request` required fields:
+
+- `promotion_id`
+- `source_environment`
+- `target_environment`
+- `manifest_path`
+- `activation_started_at_utc` (reference timestamp used for approval/freeze
+  expiry checks; must be UTC RFC3339 with trailing `Z`)
 
 `stages[]` required fields:
 
@@ -321,7 +337,7 @@ Required named checks (v1):
 
 Retention policy:
 
-- keep promotion request bundles and gate results for >= 365 days.
+- keep promotion request bundles and gate results for >= 400 days.
 - gate results are append-only artifacts; updates require new `gate_run_id`.
 
 Audit minimums:
