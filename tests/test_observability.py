@@ -270,6 +270,7 @@ def test_build_observability_outputs_is_deterministic(tmp_path: Path) -> None:
         outputs_one["rollup"]["run"]["observability_run_id"]
         == "observability_20260329_120000"
     )
+    assert outputs_one["rollup"]["run"]["contract_version"] == "observability_slo_v1"
     assert outputs_one["slo_evaluation"]["evaluation"]["measurement_window"] == "mixed"
     daily_refresh = next(
         row
@@ -451,6 +452,7 @@ def test_observability_rollup_cli_writes_required_artifacts(tmp_path: Path) -> N
         "run",
         "slo_status",
     ]
+    assert rollup_payload["run"]["contract_version"] == "observability_slo_v1"
 
 
 def test_observability_rollup_cli_discovers_scheduler_logs_under_refresh_logs(
@@ -532,6 +534,32 @@ def test_observability_rollup_cli_reports_specific_override_flag(
     stderr = getattr(result, "stderr", "")
     combined_output = f"{result.output}{stderr}"
     assert "--benchmark-artifact-base-dir" in combined_output
+
+
+def test_observability_rollup_cli_uses_environment_default_startup_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_stage_env(monkeypatch, tmp_path)
+
+    runner = CliRunner()
+    summary_out = tmp_path / "summary_default_startup.json"
+    result = runner.invoke(
+        cli.app,
+        [
+            "observability-rollup",
+            "--run-date",
+            "20260329",
+            "--observability-run-id",
+            "obs_default_startup_root",
+            "--out",
+            str(summary_out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    summary_payload = json.loads(summary_out.read_text(encoding="utf-8"))
+    assert summary_payload["run"]["observability_run_id"] == "obs_default_startup_root"
 
 
 def test_observability_rollup_cli_reports_startup_override_flag(

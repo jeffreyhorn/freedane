@@ -372,6 +372,7 @@ def build_observability_outputs(
     timeseries_rows = _build_timeseries_rows(metrics)
 
     run_payload = {
+        "contract_version": "observability_slo_v1",
         "observability_run_id": observability_run_id,
         "run_date": run_date,
         "environment": environment_name,

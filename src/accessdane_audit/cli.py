@@ -3693,10 +3693,14 @@ def observability_rollup_cmd(
         "--benchmark-artifact-base-dir",
         help="Base directory for benchmark pack artifacts.",
     ),
-    startup_artifact_base_dir: Path = typer.Option(
-        Path("data/startup_runs"),
+    startup_artifact_base_dir: Optional[Path] = typer.Option(
+        None,
         "--startup-artifact-base-dir",
-        help="Base directory for startup workflow artifacts.",
+        help=(
+            "Base directory for startup workflow artifacts. Defaults to "
+            "<artifact-base-dir parent>/startup_runs when an environment profile is "
+            "configured, else data/startup_runs."
+        ),
     ),
     refresh_file: list[Path] = typer.Option(
         [],
@@ -3813,7 +3817,15 @@ def observability_rollup_cmd(
             resolved_benchmark_root = Path("data/benchmark_packs")
     resolved_benchmark_root = resolved_benchmark_root.expanduser().resolve()
 
-    resolved_startup_root = startup_artifact_base_dir.expanduser().resolve()
+    resolved_startup_root = startup_artifact_base_dir
+    if resolved_startup_root is None:
+        if environment_profile is not None:
+            resolved_startup_root = environment_profile.artifact_base_dir.parent / (
+                "startup_runs"
+            )
+        else:
+            resolved_startup_root = Path("data/startup_runs")
+    resolved_startup_root = resolved_startup_root.expanduser().resolve()
 
     resolved_output_root = artifact_base_dir
     if resolved_output_root is None:
