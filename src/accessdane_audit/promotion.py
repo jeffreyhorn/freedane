@@ -238,8 +238,12 @@ def run_promotion_gate(
             path=evidence_index_path,
         )
     else:
-        source_environment = str(normalized_manifest.get("source_environment", ""))
-        target_environment = str(normalized_manifest.get("target_environment", ""))
+        source_environment = (
+            str(normalized_manifest.get("source_environment", "")).strip().lower()
+        )
+        target_environment = (
+            str(normalized_manifest.get("target_environment", "")).strip().lower()
+        )
         evidence_window_days = (
             7
             if (source_environment, target_environment)
@@ -254,181 +258,191 @@ def run_promotion_gate(
         except PromotionError as exc:
             _append_gate_error(
                 errors,
-                code=_map_manifest_error_code(str(exc)),
+                code=_map_evidence_error_code(str(exc)),
                 message=str(exc),
                 stage_id=stage_id,
                 path=evidence_index_path,
             )
             artifacts = []
-        if artifacts:
-            entry_paths = {
-                str(item.get("path", "")).strip()
-                for item in artifacts
-                if isinstance(item, dict)
-            }
-            for manifest_ref in normalized_manifest.get("evidence_artifacts", []):
-                manifest_ref_str = str(manifest_ref).strip()
-                if manifest_ref_str not in entry_paths:
-                    _append_gate_error(
-                        errors,
-                        code="evidence_missing",
-                        message=(
-                            "manifest.evidence_artifacts entry "
-                            f"'{manifest_ref_str}' is missing from evidence_index."
-                        ),
-                        stage_id=stage_id,
-                        path=evidence_index_path,
-                    )
-
-            artifact_types_seen: set[str] = set()
-            for artifact in artifacts:
-                if not isinstance(artifact, dict):
-                    _append_gate_error(
-                        errors,
-                        code="manifest_invalid_value",
-                        message="evidence_index artifacts[] entries must be objects.",
-                        stage_id=stage_id,
-                        path=evidence_index_path,
-                    )
-                    continue
-                missing_fields = [
-                    field
-                    for field in PIPELINE_REQUIRED_EVIDENCE_ARTIFACT_FIELDS
-                    if field not in artifact
-                ]
-                if missing_fields:
-                    _append_gate_error(
-                        errors,
-                        code="evidence_missing",
-                        message=(
-                            "evidence artifact missing required fields: "
-                            + ", ".join(missing_fields)
-                        ),
-                        stage_id=stage_id,
-                        path=evidence_index_path,
-                    )
-                    continue
-                artifact_type = str(artifact["artifact_type"]).strip()
-                artifact_types_seen.add(artifact_type)
-                artifact_generated_at: Optional[datetime]
-                try:
-                    artifact_generated_at = _parse_iso_utc(
-                        str(artifact["generated_at_utc"]),
-                        field_name="generated_at_utc",
-                    )
-                except PromotionError as exc:
-                    _append_gate_error(
-                        errors,
-                        code="manifest_invalid_value",
-                        message=str(exc),
-                        stage_id=stage_id,
-                        path=evidence_index_path,
-                    )
-                    artifact_generated_at = None
-                try:
-                    resolved_artifact_path = _resolve_evidence_artifact_path(
-                        raw_path=str(artifact["path"]),
-                        request_bundle_dir=request_dir,
-                        profile=profile,
-                    )
-                except PromotionError as exc:
-                    _append_gate_error(
-                        errors,
-                        code="path_safety_violation",
-                        message=str(exc),
-                        stage_id=stage_id,
-                        path=evidence_index_path,
-                    )
-                    continue
-                if not resolved_artifact_path.is_file():
-                    _append_gate_error(
-                        errors,
-                        code="evidence_missing",
-                        message=(
-                            f"evidence artifact is missing: {resolved_artifact_path}"
-                        ),
-                        stage_id=stage_id,
-                        path=resolved_artifact_path,
-                    )
-                    continue
-                expected_sha = str(artifact["sha256"]).strip().lower()
-                observed_sha = _hash_file_sha256(resolved_artifact_path)
-                if expected_sha != observed_sha:
-                    _append_gate_error(
-                        errors,
-                        code="evidence_hash_mismatch",
-                        message=(
-                            f"sha256 mismatch for {resolved_artifact_path}: expected "
-                            f"{expected_sha}, observed {observed_sha}."
-                        ),
-                        stage_id=stage_id,
-                        path=resolved_artifact_path,
-                    )
-                if artifact_generated_at is not None:
-                    if (
-                        artifact_generated_at + timedelta(days=evidence_window_days)
-                        <= evaluated_at
-                    ):
-                        _append_gate_error(
-                            errors,
-                            code="evidence_stale",
-                            message=(
-                                "evidence artifact is stale "
-                                f"(>{evidence_window_days} days): "
-                                f"{resolved_artifact_path}"
-                            ),
-                            stage_id=stage_id,
-                            path=resolved_artifact_path,
-                        )
-                if artifact_type == "annual_signoff" and bool(
-                    normalized_manifest.get("flags", {}).get("annual_refresh_impact")
-                ):
-                    annual_payload = _load_gate_json_object(
-                        path=resolved_artifact_path,
-                        missing_code="evidence_missing",
-                        invalid_code="manifest_invalid_value",
-                        stage_id=stage_id,
-                        errors=errors,
-                    )
-                    if annual_payload is not None:
-                        run_payload = annual_payload.get("run")
-                        run_status = (
-                            str(run_payload.get("status", "")).strip()
-                            if isinstance(run_payload, dict)
-                            else ""
-                        )
-                        if run_status != "approved":
-                            _append_gate_error(
-                                errors,
-                                code="manifest_invalid_value",
-                                message=(
-                                    "annual_signoff.run.status must be 'approved' when "
-                                    "flags.annual_refresh_impact is true."
-                                ),
-                                stage_id=stage_id,
-                                path=resolved_artifact_path,
-                            )
-
-            required_types = set(PIPELINE_REQUIRED_ARTIFACT_TYPES)
-            if bool(normalized_manifest.get("flags", {}).get("annual_refresh_impact")):
-                required_types.add("annual_signoff")
-            missing_types = sorted(required_types - artifact_types_seen)
-            if missing_types:
+        entry_paths = {
+            str(item.get("path", "")).strip()
+            for item in artifacts
+            if isinstance(item, dict)
+        }
+        for manifest_ref in normalized_manifest.get("evidence_artifacts", []):
+            manifest_ref_str = str(manifest_ref).strip()
+            if manifest_ref_str not in entry_paths:
                 _append_gate_error(
                     errors,
                     code="evidence_missing",
                     message=(
-                        "missing required evidence artifact_type values: "
-                        + ", ".join(missing_types)
+                        "manifest.evidence_artifacts entry "
+                        f"'{manifest_ref_str}' is missing from evidence_index."
                     ),
                     stage_id=stage_id,
                     path=evidence_index_path,
                 )
-            stage_details = {
-                "required_artifact_types": sorted(required_types),
-                "artifact_entries": len(artifacts),
-                "evidence_freshness_window_days": evidence_window_days,
-            }
+
+        artifact_types_seen: set[str] = set()
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                _append_gate_error(
+                    errors,
+                    code="manifest_invalid_value",
+                    message="evidence_index artifacts[] entries must be objects.",
+                    stage_id=stage_id,
+                    path=evidence_index_path,
+                )
+                continue
+            missing_fields = [
+                field
+                for field in PIPELINE_REQUIRED_EVIDENCE_ARTIFACT_FIELDS
+                if field not in artifact
+            ]
+            if missing_fields:
+                _append_gate_error(
+                    errors,
+                    code="evidence_missing",
+                    message=(
+                        "evidence artifact missing required fields: "
+                        + ", ".join(missing_fields)
+                    ),
+                    stage_id=stage_id,
+                    path=evidence_index_path,
+                )
+                continue
+            artifact_type = str(artifact["artifact_type"]).strip()
+            artifact_types_seen.add(artifact_type)
+            artifact_generated_at: Optional[datetime]
+            try:
+                raw_generated_at = str(artifact["generated_at_utc"]).strip()
+                if not raw_generated_at.endswith("Z"):
+                    _append_gate_error(
+                        errors,
+                        code="manifest_invalid_value",
+                        message=(
+                            "generated_at_utc must be an ISO-8601 UTC "
+                            "timestamp ending with 'Z'."
+                        ),
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
+                    continue
+                artifact_generated_at = _parse_iso_utc(
+                    raw_generated_at,
+                    field_name="generated_at_utc",
+                )
+            except PromotionError as exc:
+                _append_gate_error(
+                    errors,
+                    code="manifest_invalid_value",
+                    message=str(exc),
+                    stage_id=stage_id,
+                    path=evidence_index_path,
+                )
+                artifact_generated_at = None
+            try:
+                resolved_artifact_path = _resolve_evidence_artifact_path(
+                    raw_path=str(artifact["path"]),
+                    request_bundle_dir=request_dir,
+                    profile=profile,
+                )
+            except PromotionError as exc:
+                _append_gate_error(
+                    errors,
+                    code="path_safety_violation",
+                    message=str(exc),
+                    stage_id=stage_id,
+                    path=evidence_index_path,
+                )
+                continue
+            if not resolved_artifact_path.is_file():
+                _append_gate_error(
+                    errors,
+                    code="evidence_missing",
+                    message=(f"evidence artifact is missing: {resolved_artifact_path}"),
+                    stage_id=stage_id,
+                    path=resolved_artifact_path,
+                )
+                continue
+            expected_sha = str(artifact["sha256"]).strip().lower()
+            observed_sha = _hash_file_sha256(resolved_artifact_path)
+            if expected_sha != observed_sha:
+                _append_gate_error(
+                    errors,
+                    code="evidence_hash_mismatch",
+                    message=(
+                        f"sha256 mismatch for {resolved_artifact_path}: expected "
+                        f"{expected_sha}, observed {observed_sha}."
+                    ),
+                    stage_id=stage_id,
+                    path=resolved_artifact_path,
+                )
+            if artifact_generated_at is not None:
+                if (
+                    artifact_generated_at + timedelta(days=evidence_window_days)
+                    < evaluated_at
+                ):
+                    _append_gate_error(
+                        errors,
+                        code="evidence_stale",
+                        message=(
+                            "evidence artifact is stale "
+                            f"(>{evidence_window_days} days): "
+                            f"{resolved_artifact_path}"
+                        ),
+                        stage_id=stage_id,
+                        path=resolved_artifact_path,
+                    )
+            if artifact_type == "annual_signoff" and bool(
+                normalized_manifest.get("flags", {}).get("annual_refresh_impact")
+            ):
+                annual_payload = _load_gate_json_object(
+                    path=resolved_artifact_path,
+                    missing_code="evidence_missing",
+                    invalid_code="manifest_invalid_value",
+                    stage_id=stage_id,
+                    errors=errors,
+                )
+                if annual_payload is not None:
+                    run_payload = annual_payload.get("run")
+                    run_status = (
+                        str(run_payload.get("status", "")).strip()
+                        if isinstance(run_payload, dict)
+                        else ""
+                    )
+                    if run_status != "approved":
+                        _append_gate_error(
+                            errors,
+                            code="manifest_invalid_value",
+                            message=(
+                                "annual_signoff.run.status must be 'approved' when "
+                                "flags.annual_refresh_impact is true."
+                            ),
+                            stage_id=stage_id,
+                            path=resolved_artifact_path,
+                        )
+
+        required_types = set(PIPELINE_REQUIRED_ARTIFACT_TYPES)
+        if bool(normalized_manifest.get("flags", {}).get("annual_refresh_impact")):
+            required_types.add("annual_signoff")
+        missing_types = sorted(required_types - artifact_types_seen)
+        if missing_types:
+            _append_gate_error(
+                errors,
+                code="evidence_missing",
+                message=(
+                    "missing required evidence artifact_type values: "
+                    + ", ".join(missing_types)
+                ),
+                stage_id=stage_id,
+                path=evidence_index_path,
+            )
+        stage_details = {
+            "required_artifact_types": sorted(required_types),
+            "artifact_entries": len(artifacts),
+            "evidence_freshness_window_days": evidence_window_days,
+        }
     stages.append(
         {
             "stage_id": stage_id,
@@ -1130,9 +1144,12 @@ def _validate_pipeline_evidence_index(
         raise PromotionError(
             "evidence_index.contract_version must be 'promotion_pipeline_v1'."
         )
-    _parse_iso_utc(
-        str(payload.get("generated_at_utc", "")), field_name="generated_at_utc"
-    )
+    generated_at_utc = str(payload.get("generated_at_utc", "")).strip()
+    if not generated_at_utc.endswith("Z"):
+        raise PromotionError(
+            "evidence_index.generated_at_utc must be a UTC timestamp ending with 'Z'."
+        )
+    _parse_iso_utc(generated_at_utc, field_name="generated_at_utc")
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list):
         raise PromotionError("evidence_index.artifacts must be a list.")
@@ -1150,6 +1167,13 @@ def _map_manifest_error_code(message: str) -> str:
         or "unsupported path characters" in lowered
     ):
         return "path_safety_violation"
+    return "manifest_invalid_value"
+
+
+def _map_evidence_error_code(message: str) -> str:
+    lowered = message.lower()
+    if "missing required fields" in lowered or "must be a list" in lowered:
+        return "evidence_missing"
     return "manifest_invalid_value"
 
 
