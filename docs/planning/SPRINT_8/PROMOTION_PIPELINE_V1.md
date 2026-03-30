@@ -45,7 +45,7 @@ Out of scope for v1:
   - [environment and promotion contract](ENVIRONMENT_PROMOTION_V1.md)
 - Existing activation logic and checks remain authoritative for activation-time behavior:
   - `accessdane promotion-activate`
-- [`src/accessdane_audit/promotion.py`](../../../src/accessdane_audit/promotion.py)
+  - [`src/accessdane_audit/promotion.py`](../../../src/accessdane_audit/promotion.py)
 - Prior governance notes remain the human policy baseline this contract formalizes:
   - [Sprint 7 threshold promotion governance notes](../SPRINT_7/THRESHOLD_PROMOTION_GOVERNANCE_NOTES.md)
 - Operational evidence producers remain authoritative:
@@ -378,7 +378,10 @@ Retention policy:
 Audit minimums:
 
 - every activation in target environment must map to a passed gate result for the same `promotion_id`.
-- activation records must reference gate-run metadata (`gate_run_id`, `evaluated_at_utc`).
+- activation records must reference gate-run metadata (`gate_run_id`, `evaluated_at_utc`) in
+  `activation_log.json` at top-level fields `gate_run_id` and `evaluated_at_utc`.
+- `activation_log.json.gate_run_id` and `activation_log.json.evaluated_at_utc` must exactly match
+  gate-result artifact `gate.gate_run_id` and `gate.evaluated_at_utc` for the same `promotion_id`.
 
 ## Backward Compatibility And Versioning
 
