@@ -153,7 +153,7 @@ def run_promotion_gate(
     evidence_index_payload = _load_gate_json_object(
         path=evidence_index_path,
         missing_code="evidence_missing",
-        invalid_code="manifest_invalid_value",
+        invalid_code="evidence_missing",
         stage_id=stage_id,
         errors=errors,
     )
@@ -444,7 +444,7 @@ def run_promotion_gate(
                 annual_payload = _load_gate_json_object(
                     path=resolved_artifact_path,
                     missing_code="evidence_missing",
-                    invalid_code="manifest_invalid_value",
+                    invalid_code="evidence_missing",
                     stage_id=stage_id,
                     errors=errors,
                 )
@@ -1382,6 +1382,8 @@ def _read_json_if_exists(path: Path) -> Optional[dict[str, Any]]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise PromotionError(f"Invalid JSON in {path}.") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PromotionError(f"Failed to read {path}: {exc}.") from exc
     if not isinstance(payload, dict):
         raise PromotionError(f"Expected object payload in {path}.")
     return payload
