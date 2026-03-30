@@ -1377,3 +1377,190 @@ def test_promotion_gate_cli_reports_source_commit_sha_hex_requirement(
         "source_commit_sha must be a 40-character hexadecimal SHA-1." in err["message"]
         for err in payload["errors"]
     )
+
+
+def test_promotion_gate_cli_rejects_duplicate_gate_run_id_without_overwrite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    runner = CliRunner()
+    duplicate_gate_run_id = "gate_manual_duplicate"
+    first_result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+            "--gate-run-id",
+            duplicate_gate_run_id,
+        ],
+    )
+    assert first_result.exit_code == 0
+    first_payload = json.loads(first_result.output)
+    assert first_payload["gate"]["gate_run_id"] == duplicate_gate_run_id
+    existing_path = (
+        Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"])
+        / "promotion_gate_results"
+        / "promotion_001"
+        / f"{duplicate_gate_run_id}.json"
+    )
+    assert existing_path.is_file()
+    original_contents = existing_path.read_text(encoding="utf-8")
+
+    second_result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+            "--gate-run-id",
+            duplicate_gate_run_id,
+        ],
+    )
+    assert second_result.exit_code == 1
+    second_payload = json.loads(second_result.output)
+    assert second_payload["gate"]["status"] == "failed"
+    assert second_payload["gate"]["gate_run_id"] != duplicate_gate_run_id
+    assert any(
+        "promotion gate results are append-only" in err["message"]
+        for err in second_payload["errors"]
+    )
+    assert existing_path.read_text(encoding="utf-8") == original_contents
+    fallback_path = (
+        Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"])
+        / "promotion_gate_results"
+        / "promotion_001"
+        / f"{second_payload['gate']['gate_run_id']}.json"
+    )
+    assert fallback_path.is_file()
+
+
+def test_promotion_gate_cli_avoids_default_gate_run_id_collisions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    monkeypatch.setattr(
+        promotion_module,
+        "_build_default_gate_run_id",
+        lambda _: "gate_collision",
+    )
+
+    runner = CliRunner()
+    first_result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+    assert first_result.exit_code == 0
+    first_payload = json.loads(first_result.output)
+    assert first_payload["gate"]["gate_run_id"] == "gate_collision"
+
+    second_result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+    assert second_result.exit_code == 0
+    second_payload = json.loads(second_result.output)
+    assert second_payload["gate"]["gate_run_id"] == "gate_collision_1"
+    request_stage = next(
+        stage
+        for stage in second_payload["stages"]
+        if stage["stage_id"] == "request_normalization"
+    )
+    assert (
+        request_stage["details"]["gate_run_id_uniqueness"]
+        == "default_collision_avoided"
+    )

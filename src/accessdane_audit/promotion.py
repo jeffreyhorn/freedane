@@ -684,7 +684,9 @@ def run_promotion_gate(
     )
 
     resolved_gate_run_id = _build_default_gate_run_id(evaluated_at)
+    provided_gate_run_id = False
     if gate_run_id is not None:
+        provided_gate_run_id = True
         try:
             resolved_gate_run_id = _validate_safe_path_component(
                 gate_run_id, field_name="gate_run_id"
@@ -699,6 +701,37 @@ def run_promotion_gate(
             )
             stages[0]["status"] = "failed"
             stages[0]["details"]["gate_run_id_validation"] = "invalid_fallback_applied"
+    if provided_gate_run_id:
+        requested_gate_result_path = _build_gate_result_path(
+            profile=profile,
+            promotion_id=artifact_promotion_id,
+            gate_run_id=resolved_gate_run_id,
+        )
+        if requested_gate_result_path.exists():
+            _append_gate_error(
+                errors,
+                code="manifest_invalid_value",
+                message=(
+                    "gate_run_id already exists; "
+                    "promotion gate results are append-only "
+                    "and require a new gate_run_id."
+                ),
+                stage_id="request_normalization",
+                path=requested_gate_result_path,
+            )
+            stages[0]["status"] = "failed"
+            stages[0]["details"][
+                "gate_run_id_uniqueness"
+            ] = "duplicate_fallback_applied"
+            resolved_gate_run_id = _build_default_gate_run_id(evaluated_at)
+    unique_gate_run_id = _ensure_unique_gate_run_id(
+        profile=profile,
+        promotion_id=artifact_promotion_id,
+        base_gate_run_id=resolved_gate_run_id,
+    )
+    if unique_gate_run_id != resolved_gate_run_id:
+        stages[0]["details"]["gate_run_id_uniqueness"] = "default_collision_avoided"
+    resolved_gate_run_id = unique_gate_run_id
     status = (
         "failed" if any(stage["status"] == "failed" for stage in stages) else "passed"
     )
@@ -732,11 +765,10 @@ def run_promotion_gate(
         "errors": errors,
     }
 
-    gate_result_path = (
-        profile.artifact_base_dir
-        / "promotion_gate_results"
-        / artifact_promotion_id
-        / f"{resolved_gate_run_id}.json"
+    gate_result_path = _build_gate_result_path(
+        profile=profile,
+        promotion_id=artifact_promotion_id,
+        gate_run_id=resolved_gate_run_id,
     )
     _write_json_atomic(gate_result_path, payload)
 
@@ -1352,7 +1384,36 @@ def _coerce_promotion_id_for_artifact(value: str) -> str:
 
 
 def _build_default_gate_run_id(evaluated_at: datetime) -> str:
-    return f"gate_{evaluated_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    return f"gate_{evaluated_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+
+
+def _build_gate_result_path(
+    *, profile: EnvironmentProfile, promotion_id: str, gate_run_id: str
+) -> Path:
+    return (
+        profile.artifact_base_dir
+        / "promotion_gate_results"
+        / promotion_id
+        / f"{gate_run_id}.json"
+    )
+
+
+def _ensure_unique_gate_run_id(
+    *,
+    profile: EnvironmentProfile,
+    promotion_id: str,
+    base_gate_run_id: str,
+) -> str:
+    candidate = base_gate_run_id
+    suffix = 1
+    while _build_gate_result_path(
+        profile=profile,
+        promotion_id=promotion_id,
+        gate_run_id=candidate,
+    ).exists():
+        candidate = f"{base_gate_run_id}_{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _summarize_valid_approvals(
