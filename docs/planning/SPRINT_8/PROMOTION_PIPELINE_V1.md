@@ -195,8 +195,10 @@ Approval records are sourced from `manifest.approvals[]`.
 General rules:
 
 - no self-approval by `requested_by`.
-- approval timestamps must be <= gate evaluation time.
-- approvals older than 24 hours are stale and do not count.
+- approval timestamps (`approved_at_utc`) must be <=
+  `request.activation_started_at_utc`.
+- approvals where `approved_at_utc + 24h <= request.activation_started_at_utc`
+  are stale and do not count.
 
 Path-specific requirements:
 
