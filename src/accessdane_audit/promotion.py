@@ -264,6 +264,37 @@ def run_promotion_gate(
                 path=evidence_index_path,
             )
             artifacts = []
+        else:
+            manifest_promotion_id = str(
+                normalized_manifest.get("promotion_id", "")
+            ).strip()
+            evidence_promotion_id_raw = str(
+                evidence_index_payload.get("promotion_id", "")
+            ).strip()
+            try:
+                evidence_promotion_id = _validate_promotion_id(
+                    evidence_promotion_id_raw
+                )
+            except PromotionError as exc:
+                _append_gate_error(
+                    errors,
+                    code="path_safety_violation",
+                    message=str(exc),
+                    stage_id=stage_id,
+                    path=evidence_index_path,
+                )
+            else:
+                if evidence_promotion_id != manifest_promotion_id:
+                    _append_gate_error(
+                        errors,
+                        code="manifest_invalid_value",
+                        message=(
+                            "evidence_index.promotion_id must match "
+                            "manifest.promotion_id."
+                        ),
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
         entry_paths = {
             str(item.get("path", "")).strip()
             for item in artifacts
@@ -929,8 +960,10 @@ def _validate_approvals_for_activation(
     approvals = manifest.get("approvals")
     if not isinstance(approvals, list):
         raise PromotionError("approvals must be a list of approval records.")
-    source_environment = str(manifest["source_environment"])
-    target_environment = str(manifest["target_environment"])
+    source_environment = str(manifest["source_environment"]).strip().lower()
+    target_environment = str(manifest["target_environment"]).strip().lower()
+    manifest["source_environment"] = source_environment
+    manifest["target_environment"] = target_environment
     requester = str(manifest["requested_by"])
 
     normalized_approvals: list[dict[str, str]] = []

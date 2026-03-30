@@ -460,6 +460,139 @@ def test_promotion_gate_cli_handles_artifact_hash_read_oserror_and_emits_payload
     assert gate_result_path.is_file()
 
 
+def test_promotion_gate_cli_rejects_mismatched_evidence_index_promotion_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_999",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["gate"]["status"] == "failed"
+    assert any(
+        "evidence_index.promotion_id must match manifest.promotion_id."
+        in err["message"]
+        for err in payload["errors"]
+    )
+
+
+def test_promotion_gate_cli_normalizes_dev_stage_path_for_approval_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment=" Dev ",
+        target_environment="Stage",
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["gate"]["status"] == "passed"
+    approval_stage = next(
+        stage
+        for stage in payload["stages"]
+        if stage["stage_id"] == "approval_policy_validation"
+    )
+    assert approval_stage["status"] == "passed"
+    assert approval_stage["details"]["valid_approval_count"] == 1
+
+
 def test_promotion_gate_cli_rejects_non_approved_annual_signoff_status(
     tmp_path: Path, monkeypatch
 ) -> None:
