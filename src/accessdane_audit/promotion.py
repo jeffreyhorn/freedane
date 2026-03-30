@@ -546,6 +546,7 @@ def run_promotion_gate(
                     manifest=freeze_manifest,
                     freeze_file_path=profile.promotion_freeze_file,
                     activation_started_at_utc=evaluated_at_utc,
+                    freeze_payload=freeze_payload,
                 )
             except PromotionError as exc:
                 _append_gate_error(
@@ -985,8 +986,11 @@ def _enforce_freeze_policy(
     manifest: dict[str, Any],
     freeze_file_path: Path,
     activation_started_at_utc: str,
+    freeze_payload: Optional[dict[str, Any]] = None,
 ) -> None:
-    freeze_payload = _read_json_if_exists(freeze_file_path) or {"state": "none"}
+    if freeze_payload is None:
+        freeze_payload = _read_json_if_exists(freeze_file_path)
+    freeze_payload = freeze_payload or {"state": "none"}
     state = str(freeze_payload.get("state", "none"))
     if state not in {"none", "advisory", "hard"}:
         raise PromotionError("freeze file state must be one of: none, advisory, hard.")
@@ -1087,6 +1091,15 @@ def _load_gate_json_object(
             errors,
             code=invalid_code,
             message=f"invalid JSON in {path}",
+            stage_id=stage_id,
+            path=path,
+        )
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        _append_gate_error(
+            errors,
+            code=invalid_code,
+            message=f"failed to read {path}: {exc}",
             stage_id=stage_id,
             path=path,
         )

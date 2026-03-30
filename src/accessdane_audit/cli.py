@@ -1978,7 +1978,6 @@ def promotion_gate_cmd(
     request_dir: Path = typer.Option(
         ...,
         "--request-dir",
-        exists=True,
         file_okay=False,
         dir_okay=True,
         readable=True,
