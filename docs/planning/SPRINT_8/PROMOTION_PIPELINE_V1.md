@@ -73,7 +73,9 @@ Required stage behavior:
 
 - stage outcome is `passed|failed|skipped`.
 - `failed` in any required stage sets overall gate status to `failed`.
-- optional stage skips must include explicit `skip_reason`.
+- optional stage skips must include explicit `skip_reason`; in gate result
+  artifacts this must be recorded as `details.skip_reason` whenever
+  `status = skipped`.
 - pipeline exits non-zero when overall status is `failed`.
 
 ## Promotion Request Bundle Contract
@@ -268,6 +270,7 @@ Required top-level keys:
 - `status` (`passed|failed|skipped`)
 - `checked_at_utc`
 - `details`
+- `details.skip_reason` (required when `status = skipped`; otherwise omitted)
 
 `summary` required fields:
 
