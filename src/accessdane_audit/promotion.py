@@ -366,7 +366,20 @@ def run_promotion_gate(
                 )
                 continue
             expected_sha = str(artifact["sha256"]).strip().lower()
-            observed_sha = _hash_file_sha256(resolved_artifact_path)
+            try:
+                observed_sha = _hash_file_sha256(resolved_artifact_path)
+            except (OSError, PermissionError) as exc:
+                _append_gate_error(
+                    errors,
+                    code="evidence_missing",
+                    message=(
+                        "failed to read evidence artifact for hashing: "
+                        f"{resolved_artifact_path}: {exc}"
+                    ),
+                    stage_id=stage_id,
+                    path=resolved_artifact_path,
+                )
+                continue
             if expected_sha != observed_sha:
                 _append_gate_error(
                     errors,

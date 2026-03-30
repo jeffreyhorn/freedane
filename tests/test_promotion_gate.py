@@ -375,6 +375,91 @@ def test_promotion_gate_cli_handles_manifest_read_oserror_and_emits_payload(
     assert any("failed to read" in err["message"] for err in payload["errors"])
 
 
+def test_promotion_gate_cli_handles_artifact_hash_read_oserror_and_emits_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    original_hash_file_sha256 = promotion_module._hash_file_sha256
+
+    def _hash_file_sha256_with_read_failure(path: Path) -> str:
+        if path.name == "refresh_payload.json":
+            raise OSError("permission denied")
+        return original_hash_file_sha256(path)
+
+    monkeypatch.setattr(
+        promotion_module,
+        "_hash_file_sha256",
+        _hash_file_sha256_with_read_failure,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["gate"]["status"] == "failed"
+    assert any(err["code"] == "evidence_missing" for err in payload["errors"])
+    assert any(
+        "failed to read evidence artifact for hashing" in err["message"]
+        for err in payload["errors"]
+    )
+    gate_result_path = (
+        Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"])
+        / "promotion_gate_results"
+        / "promotion_001"
+        / f"{payload['gate']['gate_run_id']}.json"
+    )
+    assert gate_result_path.is_file()
+
+
 def test_promotion_gate_cli_rejects_non_approved_annual_signoff_status(
     tmp_path: Path, monkeypatch
 ) -> None:
