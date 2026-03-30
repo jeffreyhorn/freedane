@@ -127,6 +127,14 @@ Manifest keys must include all fields already enforced by activation logic:
 - `break_glass_used`
 - `break_glass_incident_id`
 
+Pre-activation manifest invariants (enforced by gate and activation-time checks):
+
+- `approval_state` must be `approved`.
+- `activation_state` must be `not_started`.
+- `activation_started_at_utc` must be `null`.
+- `activated_by` must be `null`.
+- `activated_at_utc` must be `null`.
+
 Additional pipeline-required keys (v1):
 
 - `contract_version` (must be `promotion_pipeline_v1`)
@@ -245,8 +253,10 @@ Policy:
 
 - `none`
   - no additional override requirements
+  - `break_glass_used` must be `false`.
 - `advisory`
   - `freeze_override_note` is required
+  - `break_glass_used` must be `false`.
 - `hard`
   - promotion blocked unless `break_glass_used = true`
   - `break_glass_incident_id` required
