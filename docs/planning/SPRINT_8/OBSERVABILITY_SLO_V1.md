@@ -209,8 +209,9 @@ Low-traffic protection:
 
 Alert transport mapping:
 
-- for Alert Transport Contract v1 compatibility, observability burn alerts route as canonical `alert_type = load_monitoring`.
-- `observability_slo` is carried as non-routing metadata (for example `alert_subtype = observability_slo`).
+- observability burn alerts use canonical routing keys in format `<ALERT_ROUTE_GROUP>.<alert_type>.<severity>`.
+- `alert_type` is derived from SLI domain (`refresh`, `parser_drift`, `load_monitoring`, `annual_refresh`, `benchmark_pack`) so burn alerts route to domain-appropriate policies.
+- `observability_slo` remains available as non-routing metadata (for example `alert_subtype = observability_slo`).
 - severity maps directly to alert transport severity (`info|warn|critical`).
 
 ## Dashboard Artifact Contract v1
@@ -285,7 +286,7 @@ Top-level keys:
 - `contract_version` (must be `observability_slo_v1`)
 - `environment`
 - `generated_at_utc`
-- `measurement_window` (`28d` or `365d` for annual SLIs)
+- `measurement_window` (`28d`, `365d`, or `mixed` when one evaluation contains both 28-day and 365-day SLI results)
 
 `sli_results` required fields:
 
