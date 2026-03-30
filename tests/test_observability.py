@@ -475,6 +475,28 @@ def test_observability_rollup_cli_reports_specific_override_flag(
     assert "--benchmark-artifact-base-dir" in combined_output
 
 
+def test_observability_rollup_cli_reports_startup_override_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_stage_env(monkeypatch, tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "observability-rollup",
+            "--startup-artifact-base-dir",
+            str(tmp_path / "data" / "environments" / "prod" / "startup_runs"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    stderr = getattr(result, "stderr", "")
+    combined_output = f"{result.output}{stderr}"
+    assert "--startup-artifact-base-dir" in combined_output
+
+
 def test_observability_rollup_cli_reports_observability_run_id_hint(
     tmp_path: Path,
 ) -> None:
@@ -805,6 +827,113 @@ def test_annual_refresh_domain_not_missing_when_both_artifact_types_present(
         row.get("code") == "artifact_missing" and row.get("domain") == "annual_refresh"
         for row in errors
     )
+
+
+def test_annual_refresh_domain_requires_annual_refresh_payload_profile(
+    tmp_path: Path,
+) -> None:
+    now_dt = _fixed_now()
+    daily_refresh_payload = (
+        tmp_path
+        / "refresh_runs"
+        / "20260329"
+        / "daily_refresh"
+        / "daily_refresh_001"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    annual_signoff_path = tmp_path / "annual" / "annual_signoff.json"
+    _write_json(
+        daily_refresh_payload,
+        _refresh_payload(
+            run_id="daily_refresh_001",
+            profile_name="daily_refresh",
+            status="succeeded",
+            started_at=now_dt - timedelta(hours=3),
+            finished_at=now_dt - timedelta(hours=1),
+        ),
+    )
+    _write_json(
+        annual_signoff_path,
+        _annual_signoff_payload(
+            run_id="annual_refresh_signoff_001",
+            status="approved",
+            updated_at=now_dt - timedelta(minutes=5),
+        ),
+    )
+
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_annual_refresh_missing_profile_payload",
+        refresh_payload_files=[daily_refresh_payload],
+        scheduler_payload_files=[],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[annual_signoff_path],
+        benchmark_files=[],
+        now_fn=_fixed_now,
+    )
+
+    errors = outputs["rollup"]["errors"]
+    assert any(
+        row.get("code") == "artifact_missing"
+        and row.get("domain") == "annual_refresh"
+        and row.get("artifact_type") == "annual_refresh_payload"
+        for row in errors
+    )
+    assert not any(
+        row.get("code") == "artifact_missing"
+        and row.get("domain") == "annual_refresh"
+        and row.get("artifact_type") == "annual_signoff"
+        for row in errors
+    )
+
+
+def test_rollup_inputs_emit_absolute_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now_dt = _fixed_now()
+    refresh_payload = (
+        tmp_path
+        / "refresh_runs"
+        / "20260329"
+        / "daily_refresh"
+        / "refresh_run_001"
+        / "health_summary"
+        / "refresh_run_payload.json"
+    )
+    _write_json(
+        refresh_payload,
+        _refresh_payload(
+            run_id="refresh_run_001",
+            profile_name="daily_refresh",
+            status="succeeded",
+            started_at=now_dt - timedelta(minutes=25),
+            finished_at=now_dt - timedelta(minutes=10),
+        ),
+    )
+
+    monkeypatch.chdir(tmp_path)
+    outputs = build_observability_outputs(
+        environment_name="dev",
+        alert_route_group="ops-alerts",
+        run_date="20260329",
+        observability_run_id="obs_absolute_inputs",
+        refresh_payload_files=[refresh_payload],
+        scheduler_payload_files=[],
+        parser_drift_files=[],
+        load_monitor_files=[],
+        annual_signoff_files=[],
+        benchmark_files=[],
+        now_fn=_fixed_now,
+    )
+
+    assert outputs["rollup"]["inputs"]["refresh_payload_files"] == [
+        refresh_payload.resolve().as_posix()
+    ]
 
 
 def test_atomic_writes_use_unique_temp_files(tmp_path: Path) -> None:

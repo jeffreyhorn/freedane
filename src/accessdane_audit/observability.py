@@ -350,7 +350,9 @@ def build_observability_outputs(
     )
     _append_annual_refresh_artifact_errors(
         errors=errors,
-        refresh_payload_files=normalized_inputs["refresh_payload_files"],
+        has_annual_refresh_payload=bool(
+            events_by_sli["annual_refresh.required_stage_completion_ratio"]
+        ),
         annual_signoff_files=normalized_inputs["annual_signoff_files"],
     )
 
@@ -1177,18 +1179,18 @@ def _append_missing_artifact_errors(
 def _append_annual_refresh_artifact_errors(
     *,
     errors: list[dict[str, object]],
-    refresh_payload_files: Sequence[Path],
+    has_annual_refresh_payload: bool,
     annual_signoff_files: Sequence[Path],
 ) -> None:
-    if not refresh_payload_files:
+    if not has_annual_refresh_payload:
         errors.append(
             {
                 "code": "artifact_missing",
                 "domain": "annual_refresh",
-                "artifact_type": "refresh_payload",
+                "artifact_type": "annual_refresh_payload",
                 "message": (
-                    "No annual refresh run payload artifacts discovered for domain "
-                    "'annual_refresh'."
+                    "No annual_refresh profile run payload artifacts discovered for "
+                    "domain 'annual_refresh'."
                 ),
             }
         )
@@ -1393,10 +1395,7 @@ def _expand_and_resolve(path: Path) -> Path:
 
 def _portable_path(path: Path) -> str:
     resolved = _expand_and_resolve(path)
-    try:
-        return resolved.relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return resolved.as_posix()
+    return resolved.as_posix()
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:

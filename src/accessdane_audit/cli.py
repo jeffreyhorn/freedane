@@ -3846,6 +3846,10 @@ def observability_rollup_cmd(
             resolved_benchmark_root,
             "--benchmark-artifact-base-dir",
         )
+        resolved_startup_root = _validate_observability_path(
+            resolved_startup_root,
+            "--startup-artifact-base-dir",
+        )
         resolved_output_root = _validate_observability_path(
             resolved_output_root,
             "--artifact-base-dir",
