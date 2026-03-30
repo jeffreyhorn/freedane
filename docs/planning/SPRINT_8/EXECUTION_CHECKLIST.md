@@ -44,7 +44,7 @@ Source references:
 
 - [x] Day 11: define pipeline-enforced promotion contract (`PROMOTION_PIPELINE_V1.md`)
   - Acceptance gate: ruleset/threshold promotion approvals and evidence requirements are codified.
-- [ ] Day 12: implement promotion pipeline checks and approvals
+- [x] Day 12: implement promotion pipeline checks and approvals
   - Acceptance gate: CI/pipeline blocks unsafe promotions and records approval provenance.
 - [ ] Day 13: hardening pass + analyst dry-run rehearsal
   - Acceptance gate: full startup + daily analyst flow executes with no unresolved critical alerts.

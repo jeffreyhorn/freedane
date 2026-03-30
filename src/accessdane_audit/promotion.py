@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +45,43 @@ MANIFEST_REQUIRED_FIELDS: tuple[str, ...] = (
     "break_glass_incident_id",
 )
 SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+PROMOTION_PIPELINE_CONTRACT_VERSION = "promotion_pipeline_v1"
+PROMOTION_PIPELINE_STAGE_IDS: tuple[str, ...] = (
+    "request_normalization",
+    "manifest_contract_validation",
+    "evidence_integrity_validation",
+    "approval_policy_validation",
+    "freeze_policy_validation",
+    "activation_readiness_validation",
+)
+PIPELINE_REQUIRED_MANIFEST_FIELDS: tuple[str, ...] = (
+    "contract_version",
+    "source_commit_sha",
+    "source_pr_number",
+    "change_summary",
+    "flags",
+)
+PIPELINE_REQUIRED_EVIDENCE_INDEX_FIELDS: tuple[str, ...] = (
+    "contract_version",
+    "promotion_id",
+    "generated_at_utc",
+    "artifacts",
+)
+PIPELINE_REQUIRED_EVIDENCE_ARTIFACT_FIELDS: tuple[str, ...] = (
+    "artifact_type",
+    "path",
+    "sha256",
+    "run_id",
+    "generated_at_utc",
+)
+PIPELINE_REQUIRED_ARTIFACT_TYPES: tuple[str, ...] = (
+    "refresh_payload",
+    "review_feedback",
+    "parser_drift_diff",
+    "load_monitor",
+    "benchmark_pack",
+    "observability_rollup",
+)
 
 
 class PromotionError(ValueError):
@@ -57,6 +96,569 @@ class PromotionActivationResult:
     activation_log_path: Path
     active_selector_path: Path
     rollback_reference: Optional[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PromotionGateResult:
+    promotion_id: str
+    gate_run_id: str
+    gate_result_path: Path
+    payload: dict[str, Any]
+
+
+def run_promotion_gate(
+    *,
+    request_bundle_dir: Path,
+    profile: EnvironmentProfile,
+    activation_started_at: Optional[datetime] = None,
+    gate_run_id: Optional[str] = None,
+) -> PromotionGateResult:
+    evaluated_at = _parse_gate_reference_time(activation_started_at)
+    evaluated_at_utc = _iso_utc(evaluated_at)
+
+    request_dir = request_bundle_dir.expanduser().resolve()
+    manifest_path = request_dir / "manifest.json"
+    evidence_index_path = request_dir / "evidence_index.json"
+
+    errors: list[dict[str, Any]] = []
+    stages: list[dict[str, Any]] = []
+    manifest_payload: Optional[dict[str, Any]] = None
+    evidence_index_payload: Optional[dict[str, Any]] = None
+    normalized_manifest: Optional[dict[str, Any]] = None
+    artifact_promotion_id = "unknown_promotion"
+
+    # Stage 1: request_normalization
+    stage_id = "request_normalization"
+    start_errors = len(errors)
+    stage_details: dict[str, Any] = {
+        "request_bundle_dir": str(request_dir),
+        "manifest_path": str(manifest_path),
+        "evidence_index_path": str(evidence_index_path),
+    }
+    if not request_dir.is_dir():
+        _append_gate_error(
+            errors,
+            code="path_safety_violation",
+            message="request bundle directory must exist and be a directory.",
+            stage_id=stage_id,
+            path=request_dir,
+        )
+    manifest_payload = _load_gate_json_object(
+        path=manifest_path,
+        missing_code="manifest_missing_field",
+        invalid_code="manifest_invalid_value",
+        stage_id=stage_id,
+        errors=errors,
+    )
+    evidence_index_payload = _load_gate_json_object(
+        path=evidence_index_path,
+        missing_code="evidence_missing",
+        invalid_code="manifest_invalid_value",
+        stage_id=stage_id,
+        errors=errors,
+    )
+    if manifest_payload is not None:
+        try:
+            artifact_promotion_id = _coerce_promotion_id_for_artifact(
+                str(manifest_payload.get("promotion_id", ""))
+            )
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code="path_safety_violation",
+                message=str(exc),
+                stage_id=stage_id,
+                path=manifest_path,
+            )
+    stages.append(
+        {
+            "stage_id": stage_id,
+            "status": "failed" if len(errors) > start_errors else "passed",
+            "checked_at_utc": evaluated_at_utc,
+            "details": stage_details,
+        }
+    )
+
+    # Stage 2: manifest_contract_validation
+    stage_id = "manifest_contract_validation"
+    start_errors = len(errors)
+    stage_details = {}
+    if manifest_payload is None:
+        _append_gate_error(
+            errors,
+            code="manifest_missing_field",
+            message="manifest.json is required for manifest contract validation.",
+            stage_id=stage_id,
+            path=manifest_path,
+        )
+    else:
+        normalized_manifest = deepcopy(manifest_payload)
+        try:
+            _validate_manifest_required_fields(normalized_manifest)
+            _validate_required_metadata(normalized_manifest)
+            _validate_pipeline_manifest_fields(normalized_manifest)
+            artifact_promotion_id = _coerce_promotion_id_for_artifact(
+                str(normalized_manifest.get("promotion_id", ""))
+            )
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code=_map_manifest_error_code(str(exc)),
+                message=str(exc),
+                stage_id=stage_id,
+                path=manifest_path,
+            )
+            normalized_manifest = None
+        else:
+            stage_details = {
+                "promotion_id": normalized_manifest.get("promotion_id"),
+                "annual_refresh_impact": bool(
+                    normalized_manifest.get("flags", {}).get("annual_refresh_impact")
+                ),
+            }
+    stages.append(
+        {
+            "stage_id": stage_id,
+            "status": "failed" if len(errors) > start_errors else "passed",
+            "checked_at_utc": evaluated_at_utc,
+            "details": stage_details,
+        }
+    )
+
+    # Stage 3: evidence_integrity_validation
+    stage_id = "evidence_integrity_validation"
+    start_errors = len(errors)
+    stage_details = {}
+    if normalized_manifest is None or evidence_index_payload is None:
+        _append_gate_error(
+            errors,
+            code="evidence_missing",
+            message="manifest and evidence_index are required for evidence validation.",
+            stage_id=stage_id,
+            path=evidence_index_path,
+        )
+    else:
+        source_environment = str(normalized_manifest.get("source_environment", ""))
+        target_environment = str(normalized_manifest.get("target_environment", ""))
+        evidence_window_days = (
+            7
+            if (source_environment, target_environment)
+            == (
+                "stage",
+                "prod",
+            )
+            else 14
+        )
+        try:
+            artifacts = _validate_pipeline_evidence_index(evidence_index_payload)
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code=_map_manifest_error_code(str(exc)),
+                message=str(exc),
+                stage_id=stage_id,
+                path=evidence_index_path,
+            )
+            artifacts = []
+        if artifacts:
+            entry_paths = {
+                str(item.get("path", "")).strip()
+                for item in artifacts
+                if isinstance(item, dict)
+            }
+            for manifest_ref in normalized_manifest.get("evidence_artifacts", []):
+                manifest_ref_str = str(manifest_ref).strip()
+                if manifest_ref_str not in entry_paths:
+                    _append_gate_error(
+                        errors,
+                        code="evidence_missing",
+                        message=(
+                            "manifest.evidence_artifacts entry "
+                            f"'{manifest_ref_str}' is missing from evidence_index."
+                        ),
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
+
+            artifact_types_seen: set[str] = set()
+            for artifact in artifacts:
+                if not isinstance(artifact, dict):
+                    _append_gate_error(
+                        errors,
+                        code="manifest_invalid_value",
+                        message="evidence_index artifacts[] entries must be objects.",
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
+                    continue
+                missing_fields = [
+                    field
+                    for field in PIPELINE_REQUIRED_EVIDENCE_ARTIFACT_FIELDS
+                    if field not in artifact
+                ]
+                if missing_fields:
+                    _append_gate_error(
+                        errors,
+                        code="evidence_missing",
+                        message=(
+                            "evidence artifact missing required fields: "
+                            + ", ".join(missing_fields)
+                        ),
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
+                    continue
+                artifact_type = str(artifact["artifact_type"]).strip()
+                artifact_types_seen.add(artifact_type)
+                artifact_generated_at: Optional[datetime]
+                try:
+                    artifact_generated_at = _parse_iso_utc(
+                        str(artifact["generated_at_utc"]),
+                        field_name="generated_at_utc",
+                    )
+                except PromotionError as exc:
+                    _append_gate_error(
+                        errors,
+                        code="manifest_invalid_value",
+                        message=str(exc),
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
+                    artifact_generated_at = None
+                try:
+                    resolved_artifact_path = _resolve_evidence_artifact_path(
+                        raw_path=str(artifact["path"]),
+                        request_bundle_dir=request_dir,
+                        profile=profile,
+                    )
+                except PromotionError as exc:
+                    _append_gate_error(
+                        errors,
+                        code="path_safety_violation",
+                        message=str(exc),
+                        stage_id=stage_id,
+                        path=evidence_index_path,
+                    )
+                    continue
+                if not resolved_artifact_path.is_file():
+                    _append_gate_error(
+                        errors,
+                        code="evidence_missing",
+                        message=(
+                            f"evidence artifact is missing: {resolved_artifact_path}"
+                        ),
+                        stage_id=stage_id,
+                        path=resolved_artifact_path,
+                    )
+                    continue
+                expected_sha = str(artifact["sha256"]).strip().lower()
+                observed_sha = _hash_file_sha256(resolved_artifact_path)
+                if expected_sha != observed_sha:
+                    _append_gate_error(
+                        errors,
+                        code="evidence_hash_mismatch",
+                        message=(
+                            f"sha256 mismatch for {resolved_artifact_path}: expected "
+                            f"{expected_sha}, observed {observed_sha}."
+                        ),
+                        stage_id=stage_id,
+                        path=resolved_artifact_path,
+                    )
+                if artifact_generated_at is not None:
+                    if (
+                        artifact_generated_at + timedelta(days=evidence_window_days)
+                        <= evaluated_at
+                    ):
+                        _append_gate_error(
+                            errors,
+                            code="evidence_stale",
+                            message=(
+                                "evidence artifact is stale "
+                                f"(>{evidence_window_days} days): "
+                                f"{resolved_artifact_path}"
+                            ),
+                            stage_id=stage_id,
+                            path=resolved_artifact_path,
+                        )
+                if artifact_type == "annual_signoff" and bool(
+                    normalized_manifest.get("flags", {}).get("annual_refresh_impact")
+                ):
+                    annual_payload = _load_gate_json_object(
+                        path=resolved_artifact_path,
+                        missing_code="evidence_missing",
+                        invalid_code="manifest_invalid_value",
+                        stage_id=stage_id,
+                        errors=errors,
+                    )
+                    if annual_payload is not None:
+                        run_payload = annual_payload.get("run")
+                        run_status = (
+                            str(run_payload.get("status", "")).strip()
+                            if isinstance(run_payload, dict)
+                            else ""
+                        )
+                        if run_status != "approved":
+                            _append_gate_error(
+                                errors,
+                                code="manifest_invalid_value",
+                                message=(
+                                    "annual_signoff.run.status must be 'approved' when "
+                                    "flags.annual_refresh_impact is true."
+                                ),
+                                stage_id=stage_id,
+                                path=resolved_artifact_path,
+                            )
+
+            required_types = set(PIPELINE_REQUIRED_ARTIFACT_TYPES)
+            if bool(normalized_manifest.get("flags", {}).get("annual_refresh_impact")):
+                required_types.add("annual_signoff")
+            missing_types = sorted(required_types - artifact_types_seen)
+            if missing_types:
+                _append_gate_error(
+                    errors,
+                    code="evidence_missing",
+                    message=(
+                        "missing required evidence artifact_type values: "
+                        + ", ".join(missing_types)
+                    ),
+                    stage_id=stage_id,
+                    path=evidence_index_path,
+                )
+            stage_details = {
+                "required_artifact_types": sorted(required_types),
+                "artifact_entries": len(artifacts),
+                "evidence_freshness_window_days": evidence_window_days,
+            }
+    stages.append(
+        {
+            "stage_id": stage_id,
+            "status": "failed" if len(errors) > start_errors else "passed",
+            "checked_at_utc": evaluated_at_utc,
+            "details": stage_details,
+        }
+    )
+
+    # Stage 4: approval_policy_validation
+    stage_id = "approval_policy_validation"
+    start_errors = len(errors)
+    stage_details = {}
+    if normalized_manifest is None:
+        _append_gate_error(
+            errors,
+            code="manifest_missing_field",
+            message=(
+                "manifest contract validation must pass before approval validation."
+            ),
+            stage_id=stage_id,
+            path=manifest_path,
+        )
+    else:
+        approval_manifest = deepcopy(normalized_manifest)
+        try:
+            _validate_approvals_for_activation(
+                manifest=approval_manifest,
+                activation_started_at=evaluated_at,
+            )
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code=_map_approval_error_code(str(exc)),
+                message=str(exc),
+                stage_id=stage_id,
+                path=manifest_path,
+            )
+        else:
+            normalized_manifest["approvals"] = approval_manifest.get("approvals", [])
+            valid_approvals = _summarize_valid_approvals(
+                approvals=approval_manifest.get("approvals", []),
+                activation_started_at=evaluated_at,
+            )
+            stage_details = {
+                "approval_count": len(approval_manifest.get("approvals", [])),
+                "valid_approval_count": len(valid_approvals),
+                "valid_approvers": sorted(
+                    {item["approved_by"] for item in valid_approvals}
+                ),
+                "valid_roles": sorted(
+                    {item["approver_role"] for item in valid_approvals}
+                ),
+            }
+    stages.append(
+        {
+            "stage_id": stage_id,
+            "status": "failed" if len(errors) > start_errors else "passed",
+            "checked_at_utc": evaluated_at_utc,
+            "details": stage_details,
+        }
+    )
+
+    # Stage 5: freeze_policy_validation
+    stage_id = "freeze_policy_validation"
+    start_errors = len(errors)
+    stage_details = {}
+    if normalized_manifest is None:
+        _append_gate_error(
+            errors,
+            code="manifest_missing_field",
+            message="manifest contract validation must pass before freeze validation.",
+            stage_id=stage_id,
+            path=manifest_path,
+        )
+    else:
+        freeze_manifest = deepcopy(normalized_manifest)
+        freeze_state = "none"
+        freeze_payload = _read_json_if_exists(profile.promotion_freeze_file)
+        if freeze_payload is not None:
+            freeze_state = str(freeze_payload.get("state", "none")).strip() or "none"
+        try:
+            _enforce_freeze_policy(
+                manifest=freeze_manifest,
+                freeze_file_path=profile.promotion_freeze_file,
+                activation_started_at_utc=evaluated_at_utc,
+            )
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code=_map_freeze_error_code(str(exc)),
+                message=str(exc),
+                stage_id=stage_id,
+                path=profile.promotion_freeze_file,
+            )
+        else:
+            normalized_manifest["break_glass_validated_at_utc"] = freeze_manifest.get(
+                "break_glass_validated_at_utc"
+            )
+        stage_details = {
+            "freeze_state": freeze_state,
+            "break_glass_used": bool(normalized_manifest.get("break_glass_used")),
+        }
+    stages.append(
+        {
+            "stage_id": stage_id,
+            "status": "failed" if len(errors) > start_errors else "passed",
+            "checked_at_utc": evaluated_at_utc,
+            "details": stage_details,
+        }
+    )
+
+    # Stage 6: activation_readiness_validation
+    stage_id = "activation_readiness_validation"
+    start_errors = len(errors)
+    stage_details = {}
+    if normalized_manifest is None:
+        _append_gate_error(
+            errors,
+            code="manifest_missing_field",
+            message=(
+                "manifest contract validation must pass before activation readiness "
+                "validation."
+            ),
+            stage_id=stage_id,
+            path=manifest_path,
+        )
+    else:
+        readiness_manifest = deepcopy(normalized_manifest)
+        try:
+            _validate_source_target_matrix(manifest=readiness_manifest, profile=profile)
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code=_map_path_policy_error_code(str(exc)),
+                message=str(exc),
+                stage_id=stage_id,
+                path=manifest_path,
+            )
+        promotion_id = str(readiness_manifest.get("promotion_id", "")).strip()
+        try:
+            promotion_id = _validate_promotion_id(promotion_id)
+        except PromotionError as exc:
+            _append_gate_error(
+                errors,
+                code="path_safety_violation",
+                message=str(exc),
+                stage_id=stage_id,
+                path=manifest_path,
+            )
+            promotion_registry_slot_available = False
+        else:
+            promotion_root = profile.promotion_registry_root / promotion_id
+            promotion_registry_slot_available = not promotion_root.exists()
+            if promotion_root.exists():
+                _append_gate_error(
+                    errors,
+                    code="manifest_invalid_value",
+                    message=(
+                        "promotion registry already contains this promotion_id; "
+                        "activation is not ready."
+                    ),
+                    stage_id=stage_id,
+                    path=promotion_root,
+                )
+        stage_details = {
+            "promotion_registry_root": str(profile.promotion_registry_root),
+            "promotion_registry_slot_available": promotion_registry_slot_available,
+        }
+    stages.append(
+        {
+            "stage_id": stage_id,
+            "status": "failed" if len(errors) > start_errors else "passed",
+            "checked_at_utc": evaluated_at_utc,
+            "details": stage_details,
+        }
+    )
+
+    resolved_gate_run_id = (
+        _validate_safe_path_component(gate_run_id, field_name="gate_run_id")
+        if gate_run_id is not None
+        else _build_default_gate_run_id(evaluated_at)
+    )
+    status = (
+        "failed" if any(stage["status"] == "failed" for stage in stages) else "passed"
+    )
+
+    request_payload = normalized_manifest or manifest_payload or {}
+    payload = {
+        "gate": {
+            "contract_version": PROMOTION_PIPELINE_CONTRACT_VERSION,
+            "gate_run_id": resolved_gate_run_id,
+            "evaluated_at_utc": evaluated_at_utc,
+            "environment": profile.environment_name,
+            "status": status,
+        },
+        "request": {
+            "promotion_id": str(request_payload.get("promotion_id", "")).strip(),
+            "source_environment": str(
+                request_payload.get("source_environment", "")
+            ).strip(),
+            "target_environment": str(
+                request_payload.get("target_environment", "")
+            ).strip(),
+            "manifest_path": str(manifest_path),
+            "activation_started_at_utc": evaluated_at_utc,
+        },
+        "stages": stages,
+        "summary": {
+            "total_stages": len(PROMOTION_PIPELINE_STAGE_IDS),
+            "failed_stages": sum(1 for stage in stages if stage["status"] == "failed"),
+            "blocking_error_count": len(errors),
+        },
+        "errors": errors,
+    }
+
+    gate_result_path = (
+        profile.artifact_base_dir
+        / "promotion_gate_results"
+        / artifact_promotion_id
+        / f"{resolved_gate_run_id}.json"
+    )
+    _write_json_atomic(gate_result_path, payload)
+
+    return PromotionGateResult(
+        promotion_id=artifact_promotion_id,
+        gate_run_id=resolved_gate_run_id,
+        gate_result_path=gate_result_path,
+        payload=payload,
+    )
 
 
 def activate_promotion_manifest(
@@ -409,6 +1011,257 @@ def _enforce_freeze_policy(
 
     # Marker is written into the manifest to make break-glass audit timing explicit.
     manifest["break_glass_validated_at_utc"] = activation_started_at_utc
+
+
+def _parse_gate_reference_time(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        raise PromotionError("activation_started_at must include timezone information.")
+    return value.astimezone(timezone.utc)
+
+
+def _load_gate_json_object(
+    *,
+    path: Path,
+    missing_code: str,
+    invalid_code: str,
+    stage_id: str,
+    errors: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    if not path.is_file():
+        _append_gate_error(
+            errors,
+            code=missing_code,
+            message=f"required file is missing: {path}",
+            stage_id=stage_id,
+            path=path,
+        )
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        _append_gate_error(
+            errors,
+            code=invalid_code,
+            message=f"invalid JSON in {path}",
+            stage_id=stage_id,
+            path=path,
+        )
+        return None
+    if not isinstance(payload, dict):
+        _append_gate_error(
+            errors,
+            code=invalid_code,
+            message=f"expected JSON object payload in {path}",
+            stage_id=stage_id,
+            path=path,
+        )
+        return None
+    return payload
+
+
+def _append_gate_error(
+    errors: list[dict[str, Any]],
+    *,
+    code: str,
+    message: str,
+    stage_id: str,
+    path: Optional[Path] = None,
+) -> None:
+    errors.append(
+        {
+            "code": code,
+            "message": message,
+            "stage_id": stage_id,
+            "path": str(path) if path is not None else None,
+        }
+    )
+
+
+def _validate_pipeline_manifest_fields(manifest: dict[str, Any]) -> None:
+    missing = [key for key in PIPELINE_REQUIRED_MANIFEST_FIELDS if key not in manifest]
+    if missing:
+        raise PromotionError(
+            "Promotion manifest missing required fields: " + ", ".join(missing)
+        )
+
+    contract_version = str(manifest.get("contract_version", "")).strip()
+    if contract_version != PROMOTION_PIPELINE_CONTRACT_VERSION:
+        raise PromotionError(
+            "contract_version must be 'promotion_pipeline_v1' for promotion gate v1."
+        )
+    manifest["contract_version"] = contract_version
+
+    source_commit_sha = str(manifest.get("source_commit_sha", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit_sha):
+        raise PromotionError("source_commit_sha must be a 40-character lowercase SHA.")
+    manifest["source_commit_sha"] = source_commit_sha
+
+    source_pr_number = manifest.get("source_pr_number")
+    if not isinstance(source_pr_number, int) or source_pr_number <= 0:
+        raise PromotionError("source_pr_number must be a positive integer.")
+
+    change_summary = str(manifest.get("change_summary", "")).strip()
+    if not change_summary:
+        raise PromotionError("change_summary must be a non-empty string.")
+    manifest["change_summary"] = change_summary
+
+    flags = manifest.get("flags")
+    if not isinstance(flags, dict):
+        raise PromotionError("flags must be an object.")
+    annual_refresh_impact = flags.get("annual_refresh_impact")
+    if not isinstance(annual_refresh_impact, bool):
+        raise PromotionError("flags.annual_refresh_impact must be a boolean.")
+
+
+def _validate_pipeline_evidence_index(
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    missing = [
+        key for key in PIPELINE_REQUIRED_EVIDENCE_INDEX_FIELDS if key not in payload
+    ]
+    if missing:
+        raise PromotionError(
+            "evidence_index missing required fields: " + ", ".join(missing)
+        )
+    contract_version = str(payload.get("contract_version", "")).strip()
+    if contract_version != PROMOTION_PIPELINE_CONTRACT_VERSION:
+        raise PromotionError(
+            "evidence_index.contract_version must be 'promotion_pipeline_v1'."
+        )
+    _parse_iso_utc(
+        str(payload.get("generated_at_utc", "")), field_name="generated_at_utc"
+    )
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise PromotionError("evidence_index.artifacts must be a list.")
+    return artifacts
+
+
+def _map_manifest_error_code(message: str) -> str:
+    lowered = message.lower()
+    if "missing required fields" in lowered:
+        return "manifest_missing_field"
+    if (
+        "path traversal" in lowered
+        or "absolute path" in lowered
+        or "single filesystem path component" in lowered
+        or "unsupported path characters" in lowered
+    ):
+        return "path_safety_violation"
+    return "manifest_invalid_value"
+
+
+def _map_approval_error_code(message: str) -> str:
+    lowered = message.lower()
+    if "self-approval" in lowered:
+        return "approval_self_approval"
+    if (
+        "approver_role must be one of" in lowered
+        or "must include one analyst_owner" in lowered
+    ):
+        return "approval_role_missing"
+    return "approval_insufficient"
+
+
+def _map_freeze_error_code(message: str) -> str:
+    lowered = message.lower()
+    if (
+        "advisory freeze requires" in lowered
+        or "hard freeze blocks activation" in lowered
+    ):
+        return "freeze_override_required"
+    return "break_glass_invalid"
+
+
+def _map_path_policy_error_code(message: str) -> str:
+    lowered = message.lower()
+    if "unsupported promotion path" in lowered:
+        return "promotion_path_not_allowed"
+    if "target_environment must match" in lowered:
+        return "target_environment_mismatch"
+    return "manifest_invalid_value"
+
+
+def _resolve_evidence_artifact_path(
+    *,
+    raw_path: str,
+    request_bundle_dir: Path,
+    profile: EnvironmentProfile,
+) -> Path:
+    candidate = raw_path.strip()
+    if not candidate:
+        raise PromotionError("evidence artifact path is required.")
+    parsed = Path(candidate)
+    if parsed.is_absolute():
+        resolved = parsed.resolve()
+    else:
+        resolved = (profile.artifact_base_dir / parsed).resolve()
+    allowed_roots = (
+        profile.artifact_base_dir.resolve(),
+        profile.refresh_log_dir.resolve(),
+        profile.benchmark_base_dir.resolve(),
+        profile.promotion_registry_root.resolve(),
+        request_bundle_dir.resolve(),
+    )
+    if not any(
+        _path_is_within_root(path=resolved, root=root) for root in allowed_roots
+    ):
+        raise PromotionError(
+            "evidence artifact path must resolve under active environment "
+            "artifact roots."
+        )
+    return resolved
+
+
+def _path_is_within_root(*, path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _hash_file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _coerce_promotion_id_for_artifact(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        return "unknown_promotion"
+    return _validate_promotion_id(candidate)
+
+
+def _build_default_gate_run_id(evaluated_at: datetime) -> str:
+    return f"gate_{evaluated_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def _summarize_valid_approvals(
+    *, approvals: list[dict[str, Any]], activation_started_at: datetime
+) -> list[dict[str, str]]:
+    valid_approvals: list[dict[str, str]] = []
+    for approval in approvals:
+        approved_at_raw = str(approval.get("approved_at_utc", "")).strip()
+        try:
+            approved_at = _parse_iso_utc(approved_at_raw, field_name="approved_at_utc")
+        except PromotionError:
+            continue
+        if approved_at + timedelta(hours=24) <= activation_started_at:
+            continue
+        valid_approvals.append(
+            {
+                "approved_by": str(approval.get("approved_by", "")).strip(),
+                "approved_at_utc": _iso_utc(approved_at),
+                "approver_role": str(approval.get("approver_role", "")).strip(),
+            }
+        )
+    return valid_approvals
 
 
 def _read_json_if_exists(path: Path) -> Optional[dict[str, Any]]:
