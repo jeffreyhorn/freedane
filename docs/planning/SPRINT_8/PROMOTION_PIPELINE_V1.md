@@ -200,6 +200,10 @@ Evidence validation rules:
 - every indexed path must exist and resolve under the active environment artifact roots.
 - SHA-256 in evidence index must match on-disk bytes.
 - evidence timestamps must be UTC with trailing `Z`.
+- `review_feedback` evidence must include:
+  - `run.status = "succeeded"`
+  - `request.feature_version` matching `manifest.feature_version`
+  - `request.ruleset_version` matching `manifest.ruleset_version`
 
 Evidence freshness policy (v1):
 
@@ -367,6 +371,14 @@ Required named checks (v1):
 - `promotion-manifest-validate`
 - `promotion-evidence-verify`
 - `promotion-policy-gate`
+
+Recommended pipeline invocation:
+
+```bash
+scripts/run_promotion_gate_ci.sh \
+  --request-dir <promotion-request-dir> \
+  --out <artifact-output-path>
+```
 
 ## Audit And Retention
 
