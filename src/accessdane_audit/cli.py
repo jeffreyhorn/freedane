@@ -86,7 +86,7 @@ from .parser_drift import (
 )
 from .permits import PermitImportFileError, ingest_permits_csv
 from .profiling import build_data_profile
-from .promotion import PromotionError, activate_promotion_manifest
+from .promotion import PromotionError, activate_promotion_manifest, run_promotion_gate
 from .quality import quality_report_to_dict, run_data_quality_checks
 from .refresh_automation import run_scheduled_refresh
 from .retr import (
@@ -1971,6 +1971,93 @@ def promotion_activate_cmd(
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     else:
         typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("promotion-gate")
+def promotion_gate_cmd(
+    request_dir: Path = typer.Option(
+        ...,
+        "--request-dir",
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Promotion request bundle directory containing manifest.json and "
+            "evidence_index.json."
+        ),
+    ),
+    activation_started_at_utc: Optional[str] = typer.Option(
+        None,
+        "--activation-started-at-utc",
+        help=(
+            "Optional reference timestamp for approval/freeze/evidence "
+            "freshness checks (UTC ISO-8601). Defaults to now."
+        ),
+    ),
+    gate_run_id: Optional[str] = typer.Option(
+        None,
+        "--gate-run-id",
+        help="Optional deterministic gate run identifier (safe path segment).",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        dir_okay=False,
+        help="Optional output JSON path for gate payload.",
+    ),
+) -> None:
+    try:
+        profile = load_environment_profile()
+    except EnvironmentProfileError as exc:
+        raise typer.BadParameter(
+            str(exc),
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        ) from exc
+    if profile is None:
+        raise typer.BadParameter(
+            "promotion-gate requires ACCESSDANE_ENVIRONMENT and full environment "
+            "profile keys.",
+            param_hint="ACCESSDANE_ENVIRONMENT",
+        )
+
+    resolved_activation_started_at: Optional[datetime] = None
+    if activation_started_at_utc is not None:
+        candidate = activation_started_at_utc.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                "--activation-started-at-utc must be a valid ISO-8601 timestamp.",
+                param_hint="--activation-started-at-utc",
+            ) from exc
+        if parsed.tzinfo is None:
+            raise typer.BadParameter(
+                "--activation-started-at-utc must include timezone information.",
+                param_hint="--activation-started-at-utc",
+            )
+        resolved_activation_started_at = parsed.astimezone(timezone.utc)
+
+    try:
+        result = run_promotion_gate(
+            request_bundle_dir=request_dir,
+            profile=profile,
+            activation_started_at=resolved_activation_started_at,
+            gate_run_id=gate_run_id,
+        )
+    except PromotionError as exc:
+        typer.echo(f"promotion gate execution failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    payload = result.payload
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        typer.echo(json.dumps(payload, indent=2))
+
+    if payload["gate"]["status"] != "passed":
+        raise typer.Exit(code=1)
 
 
 @app.command("enumerate-trs")
