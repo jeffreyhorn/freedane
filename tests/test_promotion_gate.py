@@ -759,7 +759,7 @@ def test_promotion_gate_cli_rejects_review_feedback_missing_feature_version(
     )
 
 
-def test_promotion_gate_cli_rejects_review_feedback_missing_ruleset_version(
+def test_promotion_gate_cli_rejects_review_feedback_blank_ruleset_version(
     tmp_path: Path, monkeypatch
 ) -> None:
     env = _profile_env(tmp_path, environment_name="stage")
