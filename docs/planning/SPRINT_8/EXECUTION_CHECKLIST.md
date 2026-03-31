@@ -46,7 +46,7 @@ Source references:
   - Acceptance gate: ruleset/threshold promotion approvals and evidence requirements are codified.
 - [x] Day 12: implement promotion pipeline checks and approvals
   - Acceptance gate: CI/pipeline blocks unsafe promotions and records approval provenance.
-- [ ] Day 13: hardening pass + analyst dry-run rehearsal
+- [x] Day 13: hardening pass + analyst dry-run rehearsal
   - Acceptance gate: full startup + daily analyst flow executes with no unresolved critical alerts.
 - [ ] Day 14: acceptance review + Sprint 9 handoff
   - Acceptance gate: analyst-readiness is explicitly assessed and remaining risks are documented for next sprint.

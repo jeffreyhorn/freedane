@@ -466,6 +466,32 @@ def run_promotion_gate(
                             stage_id=stage_id,
                             path=resolved_artifact_path,
                         )
+            if artifact_type == "review_feedback":
+                review_feedback_payload = _load_gate_json_object(
+                    path=resolved_artifact_path,
+                    missing_code="evidence_missing",
+                    invalid_code="evidence_missing",
+                    stage_id=stage_id,
+                    errors=errors,
+                )
+                if review_feedback_payload is not None:
+                    review_feedback_errors = _validate_review_feedback_evidence_payload(
+                        payload=review_feedback_payload,
+                        manifest_feature_version=str(
+                            normalized_manifest.get("feature_version", "")
+                        ).strip(),
+                        manifest_ruleset_version=str(
+                            normalized_manifest.get("ruleset_version", "")
+                        ).strip(),
+                    )
+                    for error_message in review_feedback_errors:
+                        _append_gate_error(
+                            errors,
+                            code="evidence_missing",
+                            message=error_message,
+                            stage_id=stage_id,
+                            path=resolved_artifact_path,
+                        )
 
         required_types = set(PIPELINE_REQUIRED_ARTIFACT_TYPES)
         if bool(normalized_manifest.get("flags", {}).get("annual_refresh_impact")):
@@ -1334,6 +1360,46 @@ def _validate_pipeline_evidence_index(
     if not isinstance(artifacts, list):
         raise PromotionError("evidence_index.artifacts must be a list.")
     return artifacts
+
+
+def _validate_review_feedback_evidence_payload(
+    *,
+    payload: dict[str, Any],
+    manifest_feature_version: str,
+    manifest_ruleset_version: str,
+) -> list[str]:
+    errors: list[str] = []
+    run_payload = payload.get("run")
+    if not isinstance(run_payload, dict):
+        errors.append("review_feedback.run object is required.")
+    else:
+        run_status = str(run_payload.get("status", "")).strip()
+        if run_status != "succeeded":
+            errors.append("review_feedback.run.status must be 'succeeded'.")
+
+    request_payload = payload.get("request")
+    if not isinstance(request_payload, dict):
+        errors.append("review_feedback.request object is required.")
+        return errors
+
+    feedback_feature_version = str(request_payload.get("feature_version", "")).strip()
+    if not feedback_feature_version:
+        errors.append("review_feedback.request.feature_version is required.")
+    elif feedback_feature_version != manifest_feature_version:
+        errors.append(
+            "review_feedback.request.feature_version must match "
+            "manifest.feature_version."
+        )
+
+    feedback_ruleset_version = str(request_payload.get("ruleset_version", "")).strip()
+    if not feedback_ruleset_version:
+        errors.append("review_feedback.request.ruleset_version is required.")
+    elif feedback_ruleset_version != manifest_ruleset_version:
+        errors.append(
+            "review_feedback.request.ruleset_version must match "
+            "manifest.ruleset_version."
+        )
+    return errors
 
 
 def _map_manifest_error_code(message: str) -> str:
