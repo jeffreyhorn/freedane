@@ -774,6 +774,7 @@ def test_promotion_gate_cli_enforces_trailing_z_for_evidence_timestamps(
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["gate"]["status"] == "failed"
+    assert any(err["code"] == "evidence_missing" for err in payload["errors"])
     assert any(
         "evidence_index.generated_at_utc must be a UTC timestamp ending with 'Z'."
         in err["message"]
@@ -810,6 +811,7 @@ def test_promotion_gate_cli_enforces_trailing_z_for_evidence_timestamps(
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["gate"]["status"] == "failed"
+    assert any(err["code"] == "evidence_missing" for err in payload["errors"])
     assert any(
         "generated_at_utc must be an ISO-8601 UTC timestamp ending with 'Z'."
         in err["message"]
@@ -1563,4 +1565,149 @@ def test_promotion_gate_cli_avoids_default_gate_run_id_collisions(
     assert (
         request_stage["details"]["gate_run_id_uniqueness"]
         == "default_collision_avoided"
+    )
+
+
+def test_promotion_gate_cli_maps_evidence_index_contract_errors_to_evidence_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    evidence_index["contract_version"] = "promotion_pipeline_v0"
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["gate"]["status"] == "failed"
+    assert any(err["code"] == "evidence_missing" for err in payload["errors"])
+    assert any(
+        "evidence_index.contract_version must be 'promotion_pipeline_v1'."
+        in err["message"]
+        for err in payload["errors"]
+    )
+
+
+def test_promotion_gate_cli_rejects_evidence_paths_outside_artifact_roots(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    external_artifact_path = (
+        tmp_path / "request_bundle" / "evidence" / "outside_artifact_roots.json"
+    )
+    external_sha = _write_artifact_file(
+        external_artifact_path,
+        {
+            "artifact_type": "refresh_payload",
+            "generated_at_utc": "2026-03-26T10:00:00Z",
+        },
+    )
+    evidence_index["artifacts"][0]["path"] = str(external_artifact_path)
+    evidence_index["artifacts"][0]["sha256"] = external_sha
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["gate"]["status"] == "failed"
+    assert any(err["code"] == "path_safety_violation" for err in payload["errors"])
+    assert any(
+        "evidence artifact path must resolve under active environment artifact roots."
+        in err["message"]
+        for err in payload["errors"]
     )

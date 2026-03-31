@@ -350,7 +350,7 @@ def run_promotion_gate(
                 if not raw_generated_at.endswith("Z"):
                     _append_gate_error(
                         errors,
-                        code="manifest_invalid_value",
+                        code="evidence_missing",
                         message=(
                             "generated_at_utc must be an ISO-8601 UTC "
                             "timestamp ending with 'Z'."
@@ -366,7 +366,7 @@ def run_promotion_gate(
             except PromotionError as exc:
                 _append_gate_error(
                     errors,
-                    code="manifest_invalid_value",
+                    code="evidence_missing",
                     message=str(exc),
                     stage_id=stage_id,
                     path=evidence_index_path,
@@ -1292,10 +1292,8 @@ def _map_manifest_error_code(message: str) -> str:
 
 
 def _map_evidence_error_code(message: str) -> str:
-    lowered = message.lower()
-    if "missing required fields" in lowered or "must be a list" in lowered:
-        return "evidence_missing"
-    return "manifest_invalid_value"
+    _ = message
+    return "evidence_missing"
 
 
 def _map_approval_error_code(message: str) -> str:
@@ -1348,7 +1346,6 @@ def _resolve_evidence_artifact_path(
         profile.refresh_log_dir.resolve(),
         profile.benchmark_base_dir.resolve(),
         profile.promotion_registry_root.resolve(),
-        request_bundle_dir.resolve(),
     )
     if not any(
         _path_is_within_root(path=resolved, root=root) for root in allowed_roots
