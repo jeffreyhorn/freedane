@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -287,7 +288,7 @@ def run_promotion_gate(
                 if evidence_promotion_id != manifest_promotion_id:
                     _append_gate_error(
                         errors,
-                        code="manifest_invalid_value",
+                        code="evidence_missing",
                         message=(
                             "evidence_index.promotion_id must match "
                             "manifest.promotion_id."
@@ -457,7 +458,7 @@ def run_promotion_gate(
                     if run_status != "approved":
                         _append_gate_error(
                             errors,
-                            code="manifest_invalid_value",
+                            code="evidence_missing",
                             message=(
                                 "annual_signoff.run.status must be 'approved' when "
                                 "flags.annual_refresh_impact is true."
@@ -769,14 +770,46 @@ def run_promotion_gate(
         promotion_id=artifact_promotion_id,
         gate_run_id=resolved_gate_run_id,
     )
-    try:
-        _write_json_atomic(gate_result_path, payload)
-    except OSError as exc:
+    collision_retries = 0
+    max_collision_retries = 5
+    persistence_exc: Optional[OSError] = None
+    while True:
+        try:
+            _write_json_atomic(gate_result_path, payload, overwrite=False)
+        except FileExistsError:
+            collision_retries += 1
+            if collision_retries > max_collision_retries:
+                persistence_exc = OSError(
+                    "exhausted gate_result write retries due to path collisions"
+                )
+                break
+            resolved_gate_run_id = _ensure_unique_gate_run_id(
+                profile=profile,
+                promotion_id=artifact_promotion_id,
+                base_gate_run_id=_build_default_gate_run_id(datetime.now(timezone.utc)),
+            )
+            payload_gate = payload.get("gate")
+            if isinstance(payload_gate, dict):
+                payload_gate["gate_run_id"] = resolved_gate_run_id
+            gate_result_path = _build_gate_result_path(
+                profile=profile,
+                promotion_id=artifact_promotion_id,
+                gate_run_id=resolved_gate_run_id,
+            )
+            continue
+        except OSError as exc:
+            persistence_exc = exc
+            break
+        else:
+            persistence_exc = None
+            break
+    if persistence_exc is not None:
         _append_gate_error(
             errors,
             code="manifest_invalid_value",
             message=(
-                f"failed to persist gate result artifact: {gate_result_path}: {exc}"
+                "failed to persist gate result artifact: "
+                f"{gate_result_path}: {persistence_exc}"
             ),
             stage_id="request_normalization",
             path=gate_result_path,
@@ -790,7 +823,13 @@ def run_promotion_gate(
         payload["summary"]["blocking_error_count"] = len(errors)
         payload["errors"] = errors
     else:
-        stages[0]["details"]["gate_result_persistence"] = "written"
+        if collision_retries > 0:
+            stages[0]["details"][
+                "gate_result_persistence"
+            ] = "written_after_collision_retry"
+            stages[0]["details"]["gate_result_collision_retries"] = collision_retries
+        else:
+            stages[0]["details"]["gate_result_persistence"] = "written"
 
     return PromotionGateResult(
         promotion_id=artifact_promotion_id,
@@ -1468,7 +1507,9 @@ def _read_json_if_exists(path: Path) -> Optional[dict[str, Any]]:
     return payload
 
 
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+def _write_json_atomic(
+    path: Path, payload: dict[str, Any], *, overwrite: bool = True
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload_text = json.dumps(payload, indent=2)
     fd, tmp_name = tempfile.mkstemp(
@@ -1480,10 +1521,23 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload_text)
-        os.replace(tmp_name, path)
+        if overwrite:
+            os.replace(tmp_name, path)
+        else:
+            try:
+                os.link(tmp_name, path)
+            except FileExistsError as exc:
+                raise FileExistsError(
+                    errno.EEXIST,
+                    f"destination already exists: {path}",
+                    str(path),
+                ) from exc
+            else:
+                os.unlink(tmp_name)
+                tmp_name = ""
     finally:
         try:
-            if os.path.exists(tmp_name):
+            if tmp_name and os.path.exists(tmp_name):
                 os.unlink(tmp_name)
         except OSError:
             pass

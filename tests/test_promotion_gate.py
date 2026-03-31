@@ -519,6 +519,12 @@ def test_promotion_gate_cli_rejects_mismatched_evidence_index_promotion_id(
     payload = json.loads(result.output)
     assert payload["gate"]["status"] == "failed"
     assert any(
+        err["code"] == "evidence_missing"
+        and "evidence_index.promotion_id must match manifest.promotion_id."
+        in err["message"]
+        for err in payload["errors"]
+    )
+    assert any(
         "evidence_index.promotion_id must match manifest.promotion_id."
         in err["message"]
         for err in payload["errors"]
@@ -655,6 +661,11 @@ def test_promotion_gate_cli_rejects_non_approved_annual_signoff_status(
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["gate"]["status"] == "failed"
+    assert any(
+        err["code"] == "evidence_missing"
+        and "annual_signoff.run.status must be 'approved'" in err["message"]
+        for err in payload["errors"]
+    )
     assert any(
         "annual_signoff.run.status must be 'approved'" in err["message"]
         for err in payload["errors"]
@@ -1756,9 +1767,12 @@ def test_promotion_gate_cli_handles_gate_result_write_oserror_and_emits_payload(
         evidence_index=evidence_index,
     )
 
-    def _raise_write_failure(path: Path, payload: dict[str, Any]) -> None:
+    def _raise_write_failure(
+        path: Path, payload: dict[str, Any], *, overwrite: bool = True
+    ) -> None:
         _ = path
         _ = payload
+        _ = overwrite
         raise OSError("disk full")
 
     monkeypatch.setattr(promotion_module, "_write_json_atomic", _raise_write_failure)
@@ -1783,3 +1797,93 @@ def test_promotion_gate_cli_handles_gate_result_write_oserror_and_emits_payload(
         "failed to persist gate result artifact:" in err["message"]
         for err in payload["errors"]
     )
+
+
+def test_promotion_gate_cli_retries_on_gate_result_write_collision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = _profile_env(tmp_path, environment_name="stage")
+    freeze_path = Path(env["PROMOTION_FREEZE_FILE"])
+    freeze_path.parent.mkdir(parents=True, exist_ok=True)
+    freeze_path.write_text('{"state": "none"}', encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    manifest = _base_pipeline_manifest(
+        source_environment="dev", target_environment="stage"
+    )
+    manifest["approvals"] = [
+        {
+            "approved_by": "owner@example.test",
+            "approved_at_utc": "2026-03-26T11:00:00Z",
+            "approver_role": "release_operator",
+        }
+    ]
+    required_types = [
+        "refresh_payload",
+        "review_feedback",
+        "parser_drift_diff",
+        "load_monitor",
+        "benchmark_pack",
+        "observability_rollup",
+    ]
+    evidence_index = _build_evidence_index(
+        artifact_root=Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"]),
+        promotion_id="promotion_001",
+        generated_at_utc="2026-03-26T10:00:00Z",
+        include_types=required_types,
+    )
+    manifest["evidence_artifacts"] = [
+        item["path"] for item in evidence_index["artifacts"]
+    ]
+    request_dir = _write_request_bundle(
+        bundle_dir=tmp_path / "request_bundle",
+        manifest=manifest,
+        evidence_index=evidence_index,
+    )
+
+    original_write = promotion_module._write_json_atomic
+    write_attempts = {"count": 0}
+
+    def _write_collision_once(
+        path: Path, payload: dict[str, Any], *, overwrite: bool = True
+    ) -> None:
+        write_attempts["count"] += 1
+        if write_attempts["count"] == 1:
+            raise FileExistsError("simulated write collision")
+        original_write(path, payload, overwrite=overwrite)
+
+    monkeypatch.setattr(promotion_module, "_write_json_atomic", _write_collision_once)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        [
+            "promotion-gate",
+            "--request-dir",
+            str(request_dir),
+            "--activation-started-at-utc",
+            "2026-03-26T12:00:00Z",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["gate"]["status"] == "passed"
+    request_stage = next(
+        stage
+        for stage in payload["stages"]
+        if stage["stage_id"] == "request_normalization"
+    )
+    assert request_stage["details"]["gate_result_persistence"] == (
+        "written_after_collision_retry"
+    )
+    assert request_stage["details"]["gate_result_collision_retries"] == 1
+    assert write_attempts["count"] >= 2
+    persisted_path = (
+        Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"])
+        / "promotion_gate_results"
+        / "promotion_001"
+        / f"{payload['gate']['gate_run_id']}.json"
+    )
+    assert persisted_path.is_file()
