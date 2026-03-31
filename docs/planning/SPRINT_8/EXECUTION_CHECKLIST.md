@@ -47,16 +47,16 @@ Source references:
 - [x] Day 12: implement promotion pipeline checks and approvals
   - Acceptance gate: CI/pipeline blocks unsafe promotions and records approval provenance.
 - [x] Day 13: hardening pass + analyst dry-run rehearsal
-  - Acceptance gate: full startup + daily analyst flow executes with no unresolved critical alerts.
-- [ ] Day 14: acceptance review + Sprint 9 handoff
+  - Acceptance gate: full startup + daily analyst flow executes, and unresolved critical alerts are surfaced with intake-blocking go/no-go status.
+- [x] Day 14: acceptance review + Sprint 9 handoff
   - Acceptance gate: analyst-readiness is explicitly assessed and remaining risks are documented for next sprint.
 
 ## Sprint 8 Acceptance Criteria Tracking
 
 - [x] Analysts can run the startup workflow and receive an objective go/no-go decision.
-- [ ] Scheduler, alerting, and observability paths are productionized beyond script-only operation.
-- [ ] Data quality/replay and promotion governance are pipeline-enforced and auditable.
-- [ ] Daily analyst workflow is executable with owned incident routing for critical failures.
+- [x] Scheduler, alerting, and observability paths are productionized beyond script-only operation.
+- [x] Data quality/replay and promotion governance are pipeline-enforced and auditable.
+- [x] Daily analyst workflow is executable with owned incident routing for critical failures.
 
 ## Day 1 Outcome Snapshot
 

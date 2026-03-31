@@ -1,84 +1,60 @@
-# Sprint 8 Handoff (Draft)
+# Sprint 8 Handoff (Final)
 
-Prepared on: 2026-03-23
+Prepared on: 2026-03-31
 
-## Starting Baseline
+## Sprint 8 Closeout Summary
 
-Sprint 8 starts from a completed Sprint 7 automation and monitoring baseline:
+Sprint 8 productionized the Sprint 7 automation stack and delivered:
 
-- scheduled refresh orchestration is implemented (`accessdane refresh-runner`)
-- scheduler entrypoint and artifact retention/locking patterns are implemented (`scripts/run_scheduled_refresh.sh`)
-- parser drift diagnostics are implemented (`accessdane parser-drift-snapshot`, `accessdane parser-drift-diff`)
-- load monitoring and threshold alerts are implemented (`accessdane load-monitor`)
-- annual refresh runner with stage checklist/signoff artifacts is implemented (`accessdane annual-refresh-runner`)
-- benchmark pack and trend workflow is implemented (`accessdane benchmark-pack`)
-- Sprint 7 operations runbook and escalation guidance are documented
+- environment profile + promotion governance contracts and implementation
+- startup workflow automation with deterministic go/no-go artifacts
+- scheduler reliability controls (retry/dead-letter/overlap safety)
+- alert transport integration and routing payload support
+- observability rollups and SLO-oriented monitoring outputs
+- data quality/replay controls
+- pipeline-enforced promotion policy checks with CI validation path
 
-Latest Sprint 7 closeout evidence:
+Primary closeout references:
 
-- targeted Sprint 7 automation/monitoring suite: `68 passed`
-- full quality/regression suite: `297 passed`
-- integrated dry-run workflow evidence captured in `docs/planning/SPRINT_7/DAY_13_VALIDATION.md`
+- [Sprint 8 acceptance review](ACCEPTANCE_REVIEW.md)
+- [Sprint 8 execution checklist](EXECUTION_CHECKLIST.md)
+- [Sprint 8 plan](PLAN.md)
+- [startup checklist](../../todo_immediately.md)
+- [daily analyst runbook](../../daily_analyst_runbook.md)
 
-Reference artifacts:
+## Day 14 Acceptance Evidence
 
-- [Sprint 7 acceptance review](../SPRINT_7/ACCEPTANCE_REVIEW.md)
-- [Sprint 7 operations runbook](../SPRINT_7/OPERATIONS.md)
-- [Sprint 7 plan](../SPRINT_7/PLAN.md)
-- [refresh automation contract](../SPRINT_7/REFRESH_AUTOMATION_V1.md)
-- [parser drift contract](../SPRINT_7/PARSER_DRIFT_V1.md)
-- [load monitoring contract](../SPRINT_7/LOAD_MONITORING_V1.md)
-- [annual refresh contract](../SPRINT_7/ANNUAL_REFRESH_V1.md)
-- [benchmark pack contract](../SPRINT_7/BENCHMARK_PACK_V1.md)
-- [threshold promotion governance notes](../SPRINT_7/THRESHOLD_PROMOTION_GOVERNANCE_NOTES.md)
+Startup acceptance run:
 
-## Highest-Priority Productionization Carryover
+- command: `scripts/run_startup_workflow.sh --run-date 20260331 --run-id startup_20260331_day14_acceptance --force`
+- result: `NO_GO` (intake blocked by critical freshness monitor state)
+- artifacts:
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_go_no_go.json`
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_run_summary.json`
+- note: startup run artifacts are runtime outputs (not tracked in git); reproduce with the same startup command above.
 
-Start Sprint 8 with these items in order:
+Analyst smoke cycle evidence (queue -> dossier -> case-review -> feedback/report):
 
-1. Production deployment profile and environment promotion workflow (dev/stage/prod config boundaries).
-2. Managed scheduler integration and resilient job execution policy (retries, concurrency controls, dead-letter handling).
-3. Alert transport integration for emitted payloads (email/Slack/PagerDuty or equivalent).
-4. Operational observability surfaces (dashboards/SLOs) from refresh, drift, load, annual, and benchmark artifacts.
-5. Data quality guardrails and replay controls for recurring ingest and annual refresh correction cycles.
-6. Pipeline-enforced threshold/ruleset promotion workflow with approval checkpoints.
+- `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/`
+- note: this directory is generated locally at runtime and will not exist in a fresh checkout until the smoke cycle is rerun.
 
-## Open Risks And Constraints
+## Operational Status At Handoff
 
-- Recurring operations are functional but still artifact-driven; observability and incident routing are not yet centralized.
-- Alert payloads are generated but not delivered by an integrated notification channel.
-- Scheduler entrypoint is script-first; production orchestration behavior under long outages still needs hardening.
-- Governance remains documented/manual at promotion time; accidental drift between approved policy and runtime selection remains possible.
+- analyst workflow commands are executable and evidence-producing
+- startup gating is active and correctly blocking intake on critical health state
+- promotion governance is enforced in pipeline/CI checks
+- alert and observability outputs are integrated into startup/operations flows
 
-## Recommended First Validation Pass
+## Open Risks To Carry Forward
 
-Before Sprint 8 productionization work begins:
+1. Clear freshness-critical monitoring state before unblocking analyst intake in active environments.
+2. Ensure production source-drop cadence (RETR/permits/appeals) keeps startup and analyst artifacts current.
+3. Validate production alert route ownership/escalation mappings per environment.
+4. Continue operational hardening around sustained outage/recovery exercises.
 
-```bash
-make typecheck && make lint && make format && make test
-.venv/bin/python -m pytest tests/test_refresh_automation.py tests/test_parser_drift.py tests/test_load_monitoring.py tests/test_benchmark_pack.py -n auto -m "not slow"
-```
+## Recommended First Sprint 9 Actions
 
-Then run one operational smoke sequence from the Sprint 7 runbook:
-
-```bash
-scripts/run_scheduled_refresh.sh
-.venv/bin/accessdane parser-drift-snapshot --out data/sprint8_baseline_parser_snapshot.json
-.venv/bin/accessdane load-monitor --out data/sprint8_baseline_load_monitor.json
-.venv/bin/accessdane benchmark-pack --out data/sprint8_baseline_benchmark_pack.json --trend-out data/sprint8_baseline_benchmark_trend.json
-```
-
-## What Should Not Be Redone
-
-- Re-implementing Sprint 6 investigation/report workflows without a concrete defect.
-- Reworking Sprint 7 command contracts unless a productionization change requires explicit version bump or migration note.
-- Treating automation/monitoring output as adjudicated proof rather than operational triage evidence.
-
-## Sprint 8 Success Definition
-
-Sprint 8 should move Sprint 7 automation from reproducible operation to production-ready operation:
-
-- scheduled workflows run reliably under managed orchestration with explicit incident routing
-- alert payloads are delivered to operators through an integrated notification channel
-- run health, drift, load, annual, and benchmark outcomes are visible in operational dashboards/SLOs
-- policy promotion from review-feedback evidence to active ruleset versions is auditable and pipeline-enforced
+1. Run a fresh scheduled refresh cycle, then re-run startup workflow until decision is `GO`.
+2. Verify alert transport deliveries against real route targets (not template-only paths).
+3. Execute a weekly analyst calibration loop with real reviewer outcomes and promotion candidate tracking.
+4. Capture one full incident drill for stale-run critical alerts and document response SLA adherence.

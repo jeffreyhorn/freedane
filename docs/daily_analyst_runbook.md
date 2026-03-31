@@ -18,6 +18,18 @@ Start each analyst day with current artifacts:
 
 If monitoring shows unresolved `critical` issues, pause triage and route to operations first.
 
+Sprint 8 Day 14 smoke evidence (`2026-03-31`):
+
+- queue: `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/daily_review_queue.json`
+- dossier sample: `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/061002408541_dossier.json`
+- case review create/update:
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/case_review_create.json`
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/case_review_update.json`
+- feedback/report:
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/daily_review_feedback.json`
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/daily_investigation_report.json`
+- note: these files are runtime artifacts from a specific run and are not committed to git; regenerate by rerunning the startup workflow and analyst smoke commands.
+
 ## 2. Build The Working Set
 
 Generate (or refresh) the ranked queue:

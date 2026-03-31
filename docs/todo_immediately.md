@@ -30,6 +30,16 @@ Behavior:
 - Exit code `0` + decision `GO`: analyst intake may proceed.
 - Exit code `1` + decision `NO_GO`: analyst intake stays blocked until reasons are resolved.
 
+Latest operational snapshot (Sprint 8 Day 14, `2026-03-31`):
+
+- run id: `startup_20260331_day14_acceptance`
+- decision: `NO_GO`
+- blocking reason: `load_monitor` freshness critical severity
+- evidence:
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_go_no_go.json`
+  - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_run_summary.json`
+- note: these are runtime artifacts and are not committed to git; generate them by rerunning `scripts/run_startup_workflow.sh`.
+
 Notes:
 
 - `--retr-file`, `--permits-file`, and `--appeals-file` are optional; when omitted those ingest steps are skipped.
