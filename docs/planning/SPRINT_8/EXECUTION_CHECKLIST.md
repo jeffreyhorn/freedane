@@ -47,7 +47,7 @@ Source references:
 - [x] Day 12: implement promotion pipeline checks and approvals
   - Acceptance gate: CI/pipeline blocks unsafe promotions and records approval provenance.
 - [x] Day 13: hardening pass + analyst dry-run rehearsal
-  - Acceptance gate: full startup + daily analyst flow executes with no unresolved critical alerts.
+  - Acceptance gate: full startup + daily analyst flow executes, and unresolved critical alerts are surfaced with intake-blocking go/no-go status.
 - [x] Day 14: acceptance review + Sprint 9 handoff
   - Acceptance gate: analyst-readiness is explicitly assessed and remaining risks are documented for next sprint.
 

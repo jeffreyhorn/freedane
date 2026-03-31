@@ -31,10 +31,12 @@ Startup acceptance run:
 - artifacts:
   - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_go_no_go.json`
   - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_run_summary.json`
+- note: startup run artifacts are runtime outputs (not tracked in git); reproduce with the same startup command above.
 
 Analyst smoke cycle evidence (queue -> dossier -> case-review -> feedback/report):
 
 - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/analyst_smoke/`
+- note: this directory is generated locally at runtime and will not exist in a fresh checkout until the smoke cycle is rerun.
 
 ## Operational Status At Handoff
 

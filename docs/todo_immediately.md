@@ -38,6 +38,7 @@ Latest operational snapshot (Sprint 8 Day 14, `2026-03-31`):
 - evidence:
   - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_go_no_go.json`
   - `data/startup_runs/20260331/startup_20260331_day14_acceptance/outputs/startup_run_summary.json`
+- note: these are runtime artifacts and are not committed to git; generate them by rerunning `scripts/run_startup_workflow.sh`.
 
 Notes:
 
