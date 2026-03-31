@@ -123,5 +123,5 @@ if [[ -n "${OUT_PATH}" ]]; then
   cmd+=(--out "${OUT_PATH}")
 fi
 
-echo "Running promotion-policy gate for request bundle: ${REQUEST_DIR}" >&2
+echo "Running promotion-gate for request bundle: ${REQUEST_DIR}" >&2
 "${cmd[@]}"

@@ -315,11 +315,7 @@ def test_promotion_gate_cli_passes_and_records_approval_provenance(
     assert stage["status"] == "passed"
     assert stage["details"]["valid_approval_count"] == 1
     assert stage["details"]["valid_approvers"] == ["owner@example.test"]
-    assert not any(
-        "review_feedback.request.feature_version must match manifest.feature_version."
-        in err["message"]
-        for err in payload["errors"]
-    )
+    assert payload["errors"] == []
     gate_result_path = (
         Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"])
         / "promotion_gate_results"
