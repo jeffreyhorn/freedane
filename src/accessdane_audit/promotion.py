@@ -786,7 +786,7 @@ def run_promotion_gate(
             resolved_gate_run_id = _ensure_unique_gate_run_id(
                 profile=profile,
                 promotion_id=artifact_promotion_id,
-                base_gate_run_id=_build_default_gate_run_id(datetime.now(timezone.utc)),
+                base_gate_run_id=resolved_gate_run_id,
             )
             payload_gate = payload.get("gate")
             if isinstance(payload_gate, dict):

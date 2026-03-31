@@ -1842,6 +1842,11 @@ def test_promotion_gate_cli_retries_on_gate_result_write_collision(
         evidence_index=evidence_index,
     )
 
+    monkeypatch.setattr(
+        promotion_module,
+        "_build_default_gate_run_id",
+        lambda _: "gate_collision",
+    )
     original_write = promotion_module._write_json_atomic
     write_attempts = {"count": 0}
 
@@ -1850,6 +1855,8 @@ def test_promotion_gate_cli_retries_on_gate_result_write_collision(
     ) -> None:
         write_attempts["count"] += 1
         if write_attempts["count"] == 1:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
             raise FileExistsError("simulated write collision")
         original_write(path, payload, overwrite=overwrite)
 
@@ -1880,6 +1887,7 @@ def test_promotion_gate_cli_retries_on_gate_result_write_collision(
     )
     assert request_stage["details"]["gate_result_collision_retries"] == 1
     assert write_attempts["count"] >= 2
+    assert payload["gate"]["gate_run_id"] == "gate_collision_1"
     persisted_path = (
         Path(env["ACCESSDANE_ARTIFACT_BASE_DIR"])
         / "promotion_gate_results"
