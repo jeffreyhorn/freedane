@@ -375,7 +375,6 @@ def run_promotion_gate(
             try:
                 resolved_artifact_path = _resolve_evidence_artifact_path(
                     raw_path=str(artifact["path"]),
-                    request_bundle_dir=request_dir,
                     profile=profile,
                 )
             except PromotionError as exc:
@@ -737,7 +736,7 @@ def run_promotion_gate(
     )
 
     request_payload = normalized_manifest or manifest_payload or {}
-    payload = {
+    payload: dict[str, Any] = {
         "gate": {
             "contract_version": PROMOTION_PIPELINE_CONTRACT_VERSION,
             "gate_run_id": resolved_gate_run_id,
@@ -770,7 +769,28 @@ def run_promotion_gate(
         promotion_id=artifact_promotion_id,
         gate_run_id=resolved_gate_run_id,
     )
-    _write_json_atomic(gate_result_path, payload)
+    try:
+        _write_json_atomic(gate_result_path, payload)
+    except OSError as exc:
+        _append_gate_error(
+            errors,
+            code="manifest_invalid_value",
+            message=(
+                f"failed to persist gate result artifact: {gate_result_path}: {exc}"
+            ),
+            stage_id="request_normalization",
+            path=gate_result_path,
+        )
+        stages[0]["status"] = "failed"
+        stages[0]["details"]["gate_result_persistence"] = "write_failed"
+        payload["gate"]["status"] = "failed"
+        payload["summary"]["failed_stages"] = sum(
+            1 for stage in stages if stage["status"] == "failed"
+        )
+        payload["summary"]["blocking_error_count"] = len(errors)
+        payload["errors"] = errors
+    else:
+        stages[0]["details"]["gate_result_persistence"] = "written"
 
     return PromotionGateResult(
         promotion_id=artifact_promotion_id,
@@ -1330,7 +1350,6 @@ def _map_path_policy_error_code(message: str) -> str:
 def _resolve_evidence_artifact_path(
     *,
     raw_path: str,
-    request_bundle_dir: Path,
     profile: EnvironmentProfile,
 ) -> Path:
     candidate = raw_path.strip()
