@@ -116,22 +116,25 @@ def _build_evidence_index(
                 "generated_at_utc": generated_at_utc,
             }
         elif artifact_type == "review_feedback":
-            artifact_payload = review_feedback_payload or {
-                "run": {
-                    "run_id": None,
-                    "run_persisted": False,
-                    "run_type": "review_feedback",
-                    "version_tag": "review_feedback_v1",
-                    "status": "succeeded",
-                },
-                "request": {
-                    "feature_version": "feature_v1",
-                    "ruleset_version": "scoring_rules_v1",
-                },
-                "summary": {
-                    "reviewed_case_count": 1,
-                },
-            }
+            if review_feedback_payload is not None:
+                artifact_payload = review_feedback_payload
+            else:
+                artifact_payload = {
+                    "run": {
+                        "run_id": None,
+                        "run_persisted": False,
+                        "run_type": "review_feedback",
+                        "version_tag": "review_feedback_v1",
+                        "status": "succeeded",
+                    },
+                    "request": {
+                        "feature_version": "feature_v1",
+                        "ruleset_version": "scoring_rules_v1",
+                    },
+                    "summary": {
+                        "reviewed_case_count": 1,
+                    },
+                }
         else:
             artifact_payload = {
                 "artifact_type": artifact_type,
